@@ -400,11 +400,78 @@ def download_pixeldrain(_driver, url: str, download_dir: str) -> bool:
     return False
 
 
+def download_hanimetv(driver, url: str, download_dir: str) -> bool:
+    """Navigate to a hanime.tv watch page and download via its pixeldrain-backed quality links."""
+    driver.get(url)
+
+    try:
+        time.sleep(3)
+
+        # Step 1: click the top-level DOWNLOAD button to open the quality selection page.
+        download_btn = driver.find_element(
+            By.XPATH,
+            '//span[contains(@class,"hvpabb-text") and '
+            'contains(normalize-space(.),"DOWNLOAD")]'
+        )
+        original_handles = set(driver.window_handles)
+        download_btn.click()
+        time.sleep(2)
+
+        # Switch to the new tab if one was opened.
+        new_handles = set(driver.window_handles) - original_handles
+        if new_handles:
+            driver.switch_to.window(new_handles.pop())
+            time.sleep(2)
+
+        # Step 2: click "Get Download Links" to reveal the quality buttons.
+        get_links_btn = driver.find_element(
+            By.XPATH,
+            '//div[contains(@class,"btn__content") and '
+            'contains(normalize-space(.),"Get Download Links")]'
+        )
+        driver.execute_script('arguments[0].click()', get_links_btn)
+        time.sleep(2)
+
+        # Step 3: collect quality anchor elements inside content__dls__btn containers.
+        # Each <a> wraps a button whose text is the resolution label (e.g. "720p").
+        links = driver.find_elements(
+            By.XPATH,
+            '//div[contains(@class,"content__dls__btn")]//a[@href]'
+        )
+        if not links:
+            print('  [hanime.tv] no quality download links found')
+            return False
+
+        best, resolution = _pick_best(
+            links,
+            lambda el: _parse_resolution(el.text or ''),
+        )
+        pixeldrain_url = best.get_attribute('href')
+        if not pixeldrain_url:
+            print('  [hanime.tv] best quality link has no href')
+            return False
+
+        # Close the quality-selection tab before the (potentially long) fetch.
+        extra_handles = set(driver.window_handles) - original_handles
+        if extra_handles:
+            driver.close()
+            driver.switch_to.window(driver.window_handles[0])
+
+        print(f'  [hanime.tv] fetching {resolution}p via pixeldrain...')
+        # The quality links point to pixeldrain, so reuse the pixeldrain handler.
+        return download_pixeldrain(driver, pixeldrain_url, download_dir)
+
+    except Exception as e:
+        print(f'  [hanime.tv] handler error: {e}')
+
+    return False
+
+
 # Map each KNOWN_DOMAINS entry to its handler.
 # When adding a new domain, add it to KNOWN_DOMAINS above AND here.
 DOMAIN_HANDLERS = {
     'hanime1.me':     download_hanime,
-    'hanime.tv':      download_hanime,
+    'hanime.tv':      download_hanimetv,
     'gofile.io':      download_gofile,
     'pixeldrain.com': download_pixeldrain,
     'rule34video.com': download_rule34video,
