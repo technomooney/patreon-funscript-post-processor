@@ -245,6 +245,26 @@ def download_gofile(driver, url: str, download_dir: str) -> bool:
     try:
         time.sleep(3)  # let the JS-heavy page render
 
+        # gofile.io embeds its file-manager state in window.__NUXT__ (Vue/Nuxt app).
+        # Check for an error status before attempting any clicks.
+        try:
+            status = driver.execute_script("""
+                try {
+                    var nuxt = window.__NUXT__;
+                    if (nuxt) {
+                        var s = JSON.stringify(nuxt);
+                        var m = s.match(/"status"\\s*:\\s*"(error-[^"]+)"/);
+                        return m ? m[1] : null;
+                    }
+                } catch(e) {}
+                return null;
+            """)
+            if status:
+                print(f'  [gofile.io] link is invalid — server returned status: {status}')
+                return False
+        except Exception:
+            pass  # JS execution failed; fall through to DOM-based checks
+
         # gofile.io renders file rows with a download icon/button per file.
         # Try the most common selectors; adjust if gofile changes their markup.
         candidates = driver.find_elements(By.XPATH, (
