@@ -44,7 +44,8 @@ def processFile(fileList:list,fileRoots:list):
     strippedFileList = []
     modifiedFileList = []
     for index,file in enumerate(fileList):
-        fileNameSplit = file.split("_")
+        basename = os.path.basename(file)
+        fileNameSplit = basename.split("_")
         if len(fileNameSplit) > 2 and fileNameSplit[1].isdigit():
             filename = fileNameSplit[2:]
             strippedFileName = "_".join(filename)
@@ -55,7 +56,7 @@ def processFile(fileList:list,fileRoots:list):
             else:
                 continue
         else:
-            print(f"{file} is does not have the prefix, skipping...")
+            print(f"{file} does not have the prefix, skipping... (parsed: {fileNameSplit[:3]})")
     return strippedFileList,modifiedFileList
 
 def renameFile(fileList,strippedFileList):
