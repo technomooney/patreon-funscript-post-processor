@@ -233,12 +233,182 @@ def _pick_best(candidates: list, resolution_fn) -> tuple:
 
 
 # ---------------------------------------------------------------------------
-# Per-domain download handlers — added in subsequent commits
+# Per-domain download handlers
+# Each handler receives (driver, url, download_dir) and is responsible for
+# placing a completed file in download_dir.  Returns True on success.
 # ---------------------------------------------------------------------------
+
+def download_gofile(driver, url: str, download_dir: str) -> bool:
+    """Navigate to a gofile.io share and click the download button."""
+    driver.get(url)
+
+    try:
+        time.sleep(3)  # let the JS-heavy page render
+
+        # gofile.io renders file rows with a download icon/button per file.
+        # Try the most common selectors; adjust if gofile changes their markup.
+        candidates = driver.find_elements(By.XPATH, (
+            '//*['
+            'contains(@class,"downloadButton") or '
+            'contains(@class,"download-btn") or '
+            '(self::button and contains('
+            '  translate(normalize-space(.),"DOWNLOAD","download"),'
+            '  "download"'
+            '))'
+            ']'
+        ))
+        if candidates:
+            candidates[0].click()
+            return True
+
+        # Fallback: any anchor whose href contains "gofile.io" and "download"
+        links = driver.find_elements(By.XPATH, '//a[contains(@href,"gofile.io")]')
+        for link in links:
+            href = link.get_attribute('href') or ''
+            text = (link.text or '').lower().strip()
+            if 'download' in href.lower() or text == 'download':
+                link.click()
+                return True
+
+    except Exception as e:
+        print(f"  [gofile.io] handler error: {e}")
+
+    return False
+
+
+def download_hanime(driver, url: str, download_dir: str) -> bool:
+    """Navigate to a hanime1.me watch page and download the highest available resolution."""
+    driver.get(url)
+
+    try:
+        time.sleep(3)  # let the video player initialise
+
+        # Click the download icon (id="video-download-btn") which opens a resolution page.
+        download_btn = driver.find_element(By.ID, 'video-download-btn')
+        original_handles = set(driver.window_handles)
+        download_btn.click()
+        time.sleep(2)
+
+        # Switch to the new tab if one was opened, otherwise stay on the current page.
+        new_handles = set(driver.window_handles) - original_handles
+        if new_handles:
+            driver.switch_to.window(new_handles.pop())
+            time.sleep(2)
+
+        # The resolution page has <a data-url="...1080p.mp4?token=..."> entries.
+        links = driver.find_elements(By.XPATH, '//a[@data-url]')
+        if not links:
+            print('  [hanime1.me] no data-url links found on download page')
+            return False
+
+        best, resolution = _pick_best(
+            links,
+            lambda el: _parse_resolution(el.get_attribute('data-url') or ''),
+        )
+        video_url = best.get_attribute('data-url')
+        if not video_url:
+            print('  [hanime1.me] best link has no data-url value')
+            return False
+
+        # Close the download tab and return to the main window before the long fetch.
+        if new_handles and len(driver.window_handles) > 1:
+            driver.close()
+            driver.switch_to.window(driver.window_handles[0])
+
+        # The data-url contains a self-contained token so no browser session is needed.
+        # Downloading via urllib avoids the browser opening the mp4 inline.
+        print(f'  [hanime] fetching {resolution}p...')
+        return _direct_fetch(video_url, download_dir, '_hanime_temp', 'https://hanime1.me/')
+
+    except Exception as e:
+        print(f'  [hanime1.me] handler error: {e}')
+
+    return False
+
+
+def download_rule34video(driver, url: str, download_dir: str) -> bool:
+    """Navigate to a rule34video.com video page and download the highest quality."""
+    driver.get(url)
+
+    try:
+        time.sleep(3)
+
+        # rule34video.com hides quality links behind a download button.
+        # Use JS to click it so the DOM reveals the links without the browser
+        # treating it as a real click and starting its own download.
+        download_btns = driver.find_elements(By.XPATH, (
+            '//a[contains(@class,"download")] | '
+            '//button[contains(@class,"download") or '
+            'contains(translate(normalize-space(.),"DOWNLOAD","download"),"download")]'
+        ))
+        if download_btns:
+            driver.execute_script('arguments[0].click()', download_btns[0])
+            time.sleep(1)
+
+        mp4_links = driver.find_elements(By.XPATH, '//a[contains(@href,".mp4")]')
+        if not mp4_links:
+            print('  [rule34video.com] no mp4 links found')
+            return False
+
+        best, resolution = _pick_best(
+            mp4_links,
+            lambda el: _parse_resolution((el.text or '') + (el.get_attribute('href') or '')),
+        )
+        video_url = best.get_attribute('href')
+        if not video_url:
+            print('  [rule34video.com] best link has no href')
+            return False
+
+        print(f'  [rule34video.com] fetching {resolution}p...')
+        return _direct_fetch(video_url, download_dir, '_r34v_temp', 'https://rule34video.com/')
+
+    except Exception as e:
+        print(f'  [rule34video.com] handler error: {e}')
+
+    return False
+
+
+def download_pixeldrain(_driver, url: str, download_dir: str) -> bool:
+    """Download a pixeldrain.com file directly via its public API (no browser needed)."""
+    try:
+        # Page URL: /u/<id>  →  API URL: /api/file/<id>
+        file_id = urlparse(url).path.rstrip('/').split('/')[-1]
+        video_url = f'https://pixeldrain.com/api/file/{file_id}'
+        print(f'  [pixeldrain.com] fetching {file_id}...')
+
+        headers: dict[str, str] = {'Referer': 'https://pixeldrain.com/'}
+        api_key = os.getenv('PIXELDRAIN_API_KEY', '').strip()
+        if api_key:
+            # Pixeldrain uses HTTP Basic Auth: empty username, API key as password.
+            token = base64.b64encode(f':{api_key}'.encode()).decode()
+            headers['Authorization'] = f'Basic {token}'
+
+        ext = os.path.splitext(urlparse(video_url).path)[1] or '.mp4'
+        temp_path = os.path.join(download_dir, f'_pixeldrain_temp{ext}')
+        req = urllib.request.Request(video_url, headers=headers)
+        with urllib.request.urlopen(req) as response:
+            size_mb = int(response.headers.get('Content-Length', 0)) / 1024 / 1024
+            if size_mb:
+                print(f'  file size: {size_mb:.1f} MB')
+            with open(temp_path, 'wb') as f:
+                shutil.copyfileobj(response, f)
+        return True
+
+    except Exception as e:
+        print(f'  [pixeldrain.com] handler error: {e}')
+
+    return False
+
 
 # Map each KNOWN_DOMAINS entry to its handler.
 # When adding a new domain, add it to KNOWN_DOMAINS above AND here.
-DOMAIN_HANDLERS: dict = {}
+DOMAIN_HANDLERS = {
+    'hanime1.me':     download_hanime,
+    'hanime.tv':      download_hanime,
+    'gofile.io':      download_gofile,
+    'pixeldrain.com': download_pixeldrain,
+    'rule34video.com': download_rule34video,
+}
 
 
 # ---------------------------------------------------------------------------
