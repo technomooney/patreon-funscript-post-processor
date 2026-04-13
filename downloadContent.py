@@ -639,18 +639,33 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
             print(f'  [iwara.tv] no fileUrl in metadata — keys: {list(video_meta.keys())}')
             return False
 
+        # The quality list CDN URL is pre-signed — do NOT send Authorization.
+        cdn_headers: dict[str, str] = {
+            'User-Agent': api_headers['User-Agent'],
+            'Referer': 'https://www.iwara.tv/',
+        }
+
         # Fetch the quality list.
         try:
-            fl_req = urllib.request.Request(file_list_url, headers=api_headers)
+            fl_req = urllib.request.Request(file_list_url, headers=cdn_headers)
             with urllib.request.urlopen(fl_req) as resp:
-                files: list[dict] = json.loads(resp.read())
+                content_type = resp.headers.get('Content-Type', '')
+                raw = resp.read()
         except urllib.error.HTTPError as e:
             body = e.read().decode('utf-8', errors='replace')
             print(f'  [iwara.tv] HTTP {e.code} fetching quality list: {body}')
             return False
 
+        print(f'  [iwara.tv] quality list content-type: {content_type}')
+
+        try:
+            files: list[dict] = json.loads(raw)
+        except Exception:
+            print(f'  [iwara.tv] quality list response is not JSON: {raw[:200]!r}')
+            return False
+
         if not isinstance(files, list) or not files:
-            print(f'  [iwara.tv] unexpected quality list response: {files!r}')
+            print(f'  [iwara.tv] unexpected quality list: {files!r}')
             return False
 
         # Pick the best quality within MAX_RESOLUTION.
@@ -674,9 +689,10 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
                 break
 
         src = chosen.get('src') or {}
-        download_url = src.get('download') or src.get('view') or ''
+        # Prefer view URL — some CDNs serve the file on view and metadata on download.
+        download_url = src.get('view') or src.get('download') or ''
         if not download_url:
-            print(f'  [iwara.tv] no download URL in chosen quality: {chosen}')
+            print(f'  [iwara.tv] no URL in chosen quality: {chosen}')
             return False
 
         # URLs are protocol-relative (//host/path) — prepend https:.
@@ -684,13 +700,9 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
             download_url = 'https:' + download_url
 
         res_label = chosen.get('name', '?')
-        print(f'  [iwara.tv] fetching {res_label}p...')
+        print(f'  [iwara.tv] downloading {res_label} from: {download_url}')
 
-        dl_headers: dict[str, str] = {
-            'User-Agent': api_headers['User-Agent'],
-            'Referer': 'https://www.iwara.tv/',
-        }
-        return _direct_fetch(download_url, download_dir, '_iwara_temp', dl_headers)
+        return _direct_fetch(download_url, download_dir, '_iwara_temp', cdn_headers)
 
     except Exception as e:
         print(f'  [iwara.tv] handler error: {e}')
