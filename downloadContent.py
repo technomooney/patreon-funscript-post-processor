@@ -571,8 +571,20 @@ def _iwara_browser_login(driver) -> bool:
         print('  [iwara.tv] no credentials — set IWARA_EMAIL and IWARA_PASSWORD via setup_credentials.py')
         return False
 
-    driver.get('https://www.iwara.tv/login')
-    time.sleep(2)
+    for attempt in range(3):
+        driver.get('https://www.iwara.tv/login')
+        time.sleep(2)
+
+        page_src = driver.page_source.lower()
+        if 'too many requests' in page_src or '429' in driver.title:
+            wait = [1, 5, 10][attempt]
+            print(f'  [iwara.tv] rate-limited on login page — waiting {wait}s before retry {attempt + 1}/3...')
+            time.sleep(wait)
+            continue
+        break
+    else:
+        print('  [iwara.tv] login page rate-limited after 3 attempts')
+        return False
 
     # Dismiss age gate if present.
     try:
@@ -608,17 +620,43 @@ def _iwara_browser_login(driver) -> bool:
             time.sleep(0.05)
 
         time.sleep(0.5)
-        # JS-click the submit button — avoids triggering any global search
-        # handler that a plain Enter keypress might hit on React SPAs.
-        submit = driver.find_element(By.XPATH, '//button[@type="submit"]')
-        driver.execute_script('arguments[0].click()', submit)
-        time.sleep(5)
+        # Find the submit button scoped to the login form so we don't
+        # accidentally click a navbar/search form's submit button instead.
+        try:
+            login_form = pw_field.find_element(By.XPATH, './ancestor::form')
+            submit = login_form.find_element(By.XPATH, './/button[@type="submit"]')
+        except Exception:
+            # Fallback: pick the last submit button (search is usually first)
+            submits = driver.find_elements(By.XPATH, '//button[@type="submit"]')
+            submit = submits[-1] if submits else driver.find_element(By.XPATH, '//button[@type="submit"]')
+        for submit_attempt in range(3):
+            driver.execute_script('arguments[0].click()', submit)
 
-        # Confirm we left the login page.
-        if 'login' in driver.current_url:
-            print(f'  [iwara.tv] login did not redirect — still on: {driver.current_url}')
-            print(f'  [iwara.tv] page title: {driver.title!r}')
+            # Wait up to 10 s for the URL to change away from the login page.
+            try:
+                WebDriverWait(driver, 10).until(
+                    lambda d: 'login' not in d.current_url
+                )
+            except Exception:
+                pass
+
+            # If still on the login page, check for a rate-limit response.
+            if 'login' in driver.current_url:
+                page_src = driver.page_source.lower()
+                if 'too many requests' in page_src or '429' in page_src:
+                    wait = [1, 5, 10][submit_attempt]
+                    print(f'  [iwara.tv] rate-limited after submit — waiting {wait}s before retry {submit_attempt + 1}/3...')
+                    time.sleep(wait)
+                    continue
+                # Not a rate-limit — just failed.
+                print(f'  [iwara.tv] login did not redirect — still on: {driver.current_url}')
+                print(f'  [iwara.tv] page title: {driver.title!r}')
+                return False
+            break
+        else:
+            print('  [iwara.tv] login submit rate-limited after 3 attempts')
             return False
+
         print('  [iwara.tv] browser login successful')
 
         _iwara_browser_logged_in = True
@@ -636,6 +674,16 @@ def _download_iwara_browser(driver, url: str, download_dir: str) -> bool:
     time.sleep(2)  # Let session establish before navigating.
     driver.get(url)
     time.sleep(5)
+    print(f'  [iwara.tv] navigated to video — current URL: {driver.current_url}')
+
+    # If the SPA redirected us away from the video path (e.g. to home/search),
+    # navigate again — the session cookie is usually fully set by now.
+    video_path = urlparse(url).path
+    if urlparse(driver.current_url).path != video_path:
+        print(f'  [iwara.tv] unexpected redirect, retrying navigation...')
+        driver.get(url)
+        time.sleep(5)
+        print(f'  [iwara.tv] current URL after retry: {driver.current_url}')
 
     # If the React app shows an error page on first load, a refresh usually fixes it.
     if 'error' in driver.title.lower():
@@ -689,11 +737,18 @@ def _download_iwara_browser(driver, url: str, download_dir: str) -> bool:
     scored = [(el, _res_from_href(el.get_attribute('href') or '')) for el in links]
     scored.sort(key=lambda x: x[1], reverse=True)
 
-    chosen_el, chosen_res = scored[0]
-    for el, res in scored:
-        if res <= max_res:
-            chosen_el, chosen_res = el, res
-            break
+    # If source is available and every transcode is below max_res, prefer source —
+    # a lower-resolution transcode is not better than the original.
+    best_transcode = max((r for _, r in scored if r not in (0, 9999)), default=0)
+    source_items = [(el, r) for el, r in scored if r == 9999]
+    if source_items and best_transcode < max_res:
+        chosen_el, chosen_res = source_items[0]
+    else:
+        chosen_el, chosen_res = scored[0]
+        for el, res in scored:
+            if res <= max_res:
+                chosen_el, chosen_res = el, res
+                break
 
     download_url = chosen_el.get_attribute('href') or ''
     if download_url.startswith('//'):
@@ -727,17 +782,25 @@ def _iwara_login() -> str | None:
         },
         method='POST',
     )
-    try:
-        with urllib.request.urlopen(req) as resp:
-            result = json.loads(resp.read())
-            return result.get('token')
-    except urllib.error.HTTPError as e:
-        body = e.read().decode('utf-8', errors='replace')
-        print(f'  [iwara.tv] login failed: HTTP {e.code} — {body}')
-        return None
-    except Exception as e:
-        print(f'  [iwara.tv] login failed: {e}')
-        return None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req) as resp:
+                result = json.loads(resp.read())
+                return result.get('token')
+        except urllib.error.HTTPError as e:
+            body = e.read().decode('utf-8', errors='replace')
+            if e.code == 429:
+                wait = [1, 5, 10][attempt]
+                print(f'  [iwara.tv] rate-limited (429) — waiting {wait}s before retry {attempt + 1}/3...')
+                time.sleep(wait)
+                continue
+            print(f'  [iwara.tv] login failed: HTTP {e.code} — {body}')
+            return None
+        except Exception as e:
+            print(f'  [iwara.tv] login failed: {e}')
+            return None
+    print('  [iwara.tv] login failed after 3 attempts (rate limited)')
+    return None
 
 
 def download_iwara(_driver, url: str, download_dir: str) -> bool:
@@ -844,11 +907,19 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
             return int(digits) if digits else 0
 
         files_sorted = sorted(files, key=_iwara_res, reverse=True)
-        chosen = files_sorted[0]
-        for candidate in files_sorted:
-            if _iwara_res(candidate) <= max_res:
-                chosen = candidate
-                break
+
+        # If source is available and every transcode is below max_res, prefer source —
+        # a lower-resolution transcode is not better than the original.
+        best_transcode = max((_iwara_res(f) for f in files_sorted if _iwara_res(f) not in (0, 9999)), default=0)
+        source_entries = [f for f in files_sorted if _iwara_res(f) == 9999]
+        if source_entries and best_transcode < max_res:
+            chosen = source_entries[0]
+        else:
+            chosen = files_sorted[0]
+            for candidate in files_sorted:
+                if _iwara_res(candidate) <= max_res:
+                    chosen = candidate
+                    break
 
         src = chosen.get('src') or {}
         # Prefer view URL — some CDNs serve the file on view and metadata on download.
