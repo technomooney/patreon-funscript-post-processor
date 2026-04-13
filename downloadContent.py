@@ -627,15 +627,30 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
         }
 
         # Fetch the list of available files for this video.
-        file_req = urllib.request.Request(
-            f'https://api.iwara.tv/video/{video_id}/file',
-            headers=headers,
-        )
-        with urllib.request.urlopen(file_req) as resp:
-            files: list[dict] = json.loads(resp.read())
+        try:
+            file_req = urllib.request.Request(
+                f'https://api.iwara.tv/video/{video_id}/file',
+                headers=headers,
+            )
+            with urllib.request.urlopen(file_req) as resp:
+                raw = resp.read()
+                files = json.loads(raw)
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                print('  [iwara.tv] 401 Unauthorized on file list — credentials may be wrong.')
+                print('  Re-run setup_credentials.py to update them.')
+            elif e.code == 403:
+                print('  [iwara.tv] 403 Forbidden on file list — token rejected.')
+                print('  Re-run setup_credentials.py to update your credentials.')
+            elif e.code == 404:
+                print('  [iwara.tv] 404 — video not found or requires login to view.')
+                print('  Make sure your account has access to this video.')
+            else:
+                print(f'  [iwara.tv] HTTP {e.code} fetching file list: {e}')
+            return False
 
-        if not files:
-            print('  [iwara.tv] API returned no files for this video')
+        if not isinstance(files, list) or not files:
+            print(f'  [iwara.tv] unexpected file list response: {files!r}')
             return False
 
         # Pick the best quality within MAX_RESOLUTION.
@@ -666,11 +681,17 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
         expires = str(chosen.get('expires', ''))
         res_label = chosen.get('name', '?')
 
+        if not expires:
+            print(f'  [iwara.tv] WARNING: no "expires" field in file entry — X-Version cannot be computed.')
+            print(f'  [iwara.tv] File entry keys: {list(chosen.keys())}')
+
         def _attempt(secret: str) -> bool:
             dl_headers = dict(headers)
             if file_id and expires:
                 sig = hashlib.sha1(f'{file_id}_{expires}_{secret}'.encode()).hexdigest()
                 dl_headers['X-Version'] = sig
+            else:
+                print('  [iwara.tv] WARNING: sending request without X-Version header — likely to 403.')
             print(f'  [iwara.tv] fetching {res_label}...')
             return _direct_fetch(download_url, download_dir, '_iwara_temp', dl_headers)
 
