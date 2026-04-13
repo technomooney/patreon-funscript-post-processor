@@ -38,6 +38,38 @@ if [ ! -f ".env" ]; then
     exit 1
 fi
 
-.venv/bin/python downloadContent.py
+# --- Program selection ------------------------------------------------------
 
+echo ""
+echo "========================================"
+echo "  Patreon Downloader Post-Processor"
+echo "========================================"
+echo ""
+echo "  1) Download content  — find links in description.json files"
+echo "     and download the associated videos"
+echo ""
+echo "  2) Fix file prefixes — strip the attachment ID prefix from"
+echo "     downloaded filenames"
+echo ""
+
+while true; do
+    read -rp "Choose a program to run (1 or 2): " choice
+    case "$choice" in
+        1)
+            echo ""
+            .venv/bin/python downloadContent.py
+            break
+            ;;
+        2)
+            echo ""
+            .venv/bin/python prefixFix.py
+            break
+            ;;
+        *)
+            echo "Invalid choice. Please enter 1 or 2."
+            ;;
+    esac
+done
+
+echo ""
 read -rp "Press Enter to close..."
