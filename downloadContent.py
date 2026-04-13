@@ -1,4 +1,5 @@
 import base64
+import csv
 import json
 import mimetypes
 import os
@@ -525,14 +526,14 @@ def _video_exists(folder: str, basename: str) -> str | None:
     return None
 
 
-def collect_tasks(base_path: str) -> list:
+def collect_tasks(base_path: str) -> tuple[list, list]:
     """
     Walk *base_path* looking for folders that contain both a description.json
-    and at least one .funscript.  Returns a list of task dicts.
-    Folders whose description.json contains an unsupported domain are skipped
-    with an error message (but do not abort the whole run).
+    and at least one .funscript.  Returns (tasks, failures).
+    Unsupported domains are added to failures instead of aborting the run.
     """
     tasks = []
+    failures = []
 
     for root, dirs, files in os.walk(base_path):
         if 'description.json' not in files:
@@ -561,6 +562,12 @@ def collect_tasks(base_path: str) -> list:
             except UnknownDomainError as e:
                 print(f"[ERROR] {e}")
                 print(f"        Skipping link: {link}  (in {root})")
+                failures.append({
+                    'link': link,
+                    'funscript_name': funscript_basename,
+                    'description_json_path': desc_path,
+                    'domain': domain,
+                })
 
         if not validated_links:
             continue
@@ -571,14 +578,27 @@ def collect_tasks(base_path: str) -> list:
             'links': validated_links,
         })
 
-    return tasks
+    return tasks, failures
+
+
+def _write_failures_csv(base_path: str, failures: list):
+    """Write failed download entries to failed_downloads.csv in *base_path*."""
+    if not failures:
+        return
+    csv_path = os.path.join(base_path, 'failed_downloads.csv')
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=['link', 'funscript_name', 'description_json_path', 'domain'])
+        writer.writeheader()
+        writer.writerows(failures)
+    print(f"\nFailed downloads ({len(failures)}) written to: {csv_path}")
 
 
 def find_and_download(base_path: str):
-    tasks = collect_tasks(base_path)
+    tasks, failures = collect_tasks(base_path)
 
     if not tasks:
         print("No valid download tasks found.")
+        _write_failures_csv(base_path, failures)
         return
 
     print(f"\nFound {len(tasks)} folder(s) to process:")
@@ -599,6 +619,7 @@ def find_and_download(base_path: str):
             folder   = task['folder']
             basename = task['basename']
             links    = task['links']
+            desc_path = os.path.join(folder, 'description.json')
 
             print(f"\n--- {basename} ---")
             _cleanup_temp_files(folder)
@@ -619,12 +640,25 @@ def find_and_download(base_path: str):
                 triggered = handler(driver, link, folder)
                 if not triggered:
                     print("  Could not trigger download — check the handler for this domain.")
+                    failures.append({
+                        'link': link,
+                        'funscript_name': basename,
+                        'description_json_path': desc_path,
+                        'domain': domain,
+                    })
                     continue
 
                 print("  Waiting for download to complete...")
                 downloaded = wait_for_download(folder, before_files)
 
                 if downloaded is None:
+                    print("  Download did not complete.")
+                    failures.append({
+                        'link': link,
+                        'funscript_name': basename,
+                        'description_json_path': desc_path,
+                        'domain': domain,
+                    })
                     continue
 
                 ext = os.path.splitext(downloaded)[1]
@@ -645,6 +679,7 @@ def find_and_download(base_path: str):
 
     finally:
         driver.quit()
+        _write_failures_csv(base_path, failures)
 
 
 def main():
