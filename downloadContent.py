@@ -7,6 +7,7 @@ import os
 import shutil
 import time
 import glob
+import urllib.error
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
@@ -543,6 +544,28 @@ _iwara_token: str | None = None
 _IWARA_SECRET = os.getenv('IWARA_SECRET', '5nFp9kmbNnHdAFhaqMvt')
 
 
+def _iwara_update_secret(new_secret: str):
+    """Persist *new_secret* to .env and update the in-process global."""
+    global _IWARA_SECRET
+    _IWARA_SECRET = new_secret
+    os.environ['IWARA_SECRET'] = new_secret
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+    if os.path.exists(env_path):
+        with open(env_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        found = False
+        for i, line in enumerate(lines):
+            if line.startswith('IWARA_SECRET='):
+                lines[i] = f'IWARA_SECRET={new_secret}\n'
+                found = True
+                break
+        if not found:
+            lines.append(f'IWARA_SECRET={new_secret}\n')
+        with open(env_path, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
+        print(f'  [iwara.tv] .env updated with new secret.')
+
+
 def _iwara_login() -> str | None:
     """POST credentials to the iwara API and return a Bearer token, or None."""
     email = os.getenv('IWARA_EMAIL', '').strip()
@@ -625,16 +648,40 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
             print(f'  [iwara.tv] no download URL in file entry: {chosen}')
             return False
 
-        # The CDN requires an X-Version header: SHA1(fileId + "_" + expires + "_" + SECRET)
         file_id = chosen.get('id', '')
         expires = str(chosen.get('expires', ''))
-        if file_id and expires:
-            sig = hashlib.sha1(f'{file_id}_{expires}_{_IWARA_SECRET}'.encode()).hexdigest()
-            headers['X-Version'] = sig
-
         res_label = chosen.get('name', '?')
-        print(f'  [iwara.tv] fetching {res_label}...')
-        return _direct_fetch(download_url, download_dir, '_iwara_temp', headers)
+
+        def _attempt(secret: str) -> bool:
+            dl_headers = dict(headers)
+            if file_id and expires:
+                sig = hashlib.sha1(f'{file_id}_{expires}_{secret}'.encode()).hexdigest()
+                dl_headers['X-Version'] = sig
+            print(f'  [iwara.tv] fetching {res_label}...')
+            return _direct_fetch(download_url, download_dir, '_iwara_temp', dl_headers)
+
+        try:
+            return _attempt(_IWARA_SECRET)
+        except urllib.error.HTTPError as e:
+            if e.code != 403:
+                raise
+            print(f'\n  [iwara.tv] 403 Forbidden — the CDN signing secret is likely out of date.')
+            print(f'  Current secret: {_IWARA_SECRET}')
+            print()
+            print('  To find the new secret:')
+            print('    1. Open https://www.iwara.tv in your browser and go to any video')
+            print('    2. Open DevTools (F12) > Network tab')
+            print('    3. Filter by "/file" — click the api.iwara.tv/.../file request')
+            print('       and note the "id" and "expires" values from the JSON response')
+            print('    4. Filter for the CDN download request (e.g. i.iwara.tv)')
+            print('       and read the X-Version header from its request headers')
+            print('    5. Or in Sources, press Ctrl+Shift+F and search for sha1 or X-Version')
+            print()
+            new_secret = input('  Enter new IWARA_SECRET (or press Enter to skip): ').strip()
+            if not new_secret:
+                return False
+            _iwara_update_secret(new_secret)
+            return _attempt(new_secret)
 
     except Exception as e:
         print(f'  [iwara.tv] handler error: {e}')
