@@ -248,17 +248,24 @@ def wait_for_download(download_dir: str, before_files: set[str], timeout: int | 
 # ---------------------------------------------------------------------------
 
 def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: dict[str, str]) -> bool:
-    """Download *video_url* straight to *download_dir* using urllib, no browser needed."""
+    """Download *video_url* straight to *download_dir* using urllib, no browser needed.
+
+    Writes to a .part file while in progress so that wait_for_download ignores
+    it until the download is complete, then renames to the final temp name.
+    This ensures an interrupted download is never mistaken for a finished one.
+    """
     ext = os.path.splitext(urlparse(video_url).path)[1] or '.mp4'
-    temp_path = os.path.join(download_dir, f'{temp_prefix}{ext}')
+    final_temp = os.path.join(download_dir, f'{temp_prefix}{ext}')
+    writing_path = final_temp + '.part'
     req = urllib.request.Request(video_url, headers=headers)
     with urllib.request.urlopen(req) as response:
         size_mb = int(response.headers.get('Content-Length', 0)) / 1024 / 1024
         if size_mb:
             print(f'  file size: {size_mb:.1f} MB')
-        with open(temp_path, 'wb') as f:
+        with open(writing_path, 'wb') as f:
             while chunk := response.read(65536):
                 f.write(chunk)
+    os.rename(writing_path, final_temp)
     return True
 
 
@@ -962,8 +969,11 @@ DOMAIN_HANDLERS = {
 def _cleanup_temp_files(folder: str):
     """Remove any leftover temp files created by the download handlers."""
     for f in os.listdir(folder):
-        stem, _ = os.path.splitext(f)
-        if stem.endswith('_temp'):
+        stem = Path(f).stem  # strips last extension, e.g. _iwara_temp.mp4.part → _iwara_temp.mp4
+        outer_stem = Path(stem).stem  # strips one more, e.g. _iwara_temp.mp4 → _iwara_temp
+        is_temp = outer_stem.endswith('_temp') or stem.endswith('_temp')
+        is_part = f.endswith('.part')
+        if is_temp or is_part:
             path = os.path.join(folder, f)
             try:
                 os.remove(path)
@@ -1006,6 +1016,38 @@ def _update_env_file(key: str, value: str):
         f.writelines(lines)
 
 
+def _match_links_to_funscripts(links: list[str], funscript_paths: list[str]) -> dict[str, str]:
+    """
+    Fuzzy-match each link URL to the best-fitting funscript stem using token
+    overlap.  Returns {link: funscript_stem}.
+
+    Scoring: tokenise both the funscript name and the URL path (split on
+    non-alphanumeric chars, ignore tokens ≤ 2 chars), then compute
+    (matching tokens) / (total funscript tokens).  The funscript with the
+    highest score wins; ties go to the first funscript.  If the best score
+    is below 0.25 the link is left unmatched (falls back to first funscript).
+    """
+    def tokenize(s: str) -> list[str]:
+        return [t for t in re.split(r'[^a-z0-9]+', s.lower()) if len(t) > 2]
+
+    stems = [Path(p).stem for p in funscript_paths]
+    stem_tokens = {stem: set(tokenize(stem)) for stem in stems}
+    fallback = stems[0]
+
+    result: dict[str, str] = {}
+    for link in links:
+        url_tokens = set(tokenize(link))
+        best_stem, best_score = fallback, 0.0
+        for stem, fs_tokens in stem_tokens.items():
+            if not fs_tokens:
+                continue
+            score = len(fs_tokens & url_tokens) / len(fs_tokens)
+            if score > best_score:
+                best_score, best_stem = score, stem
+        result[link] = best_stem if best_score >= 0.25 else fallback
+    return result
+
+
 def collect_tasks(base_path: str) -> tuple[list, list]:
     """
     Walk *base_path* looking for folders that contain both a description.json
@@ -1015,14 +1057,21 @@ def collect_tasks(base_path: str) -> tuple[list, list]:
     tasks = []
     failures = []
 
+    axis_suffixes = ('.surge', '.pitch', '.roll', '.twist', '.sway')
+
     for root, dirs, files in os.walk(base_path):
         if 'description.json' not in files:
             continue
 
-        funscript_basename = get_funscript_basename(root)
-        if funscript_basename is None:
+        all_funscripts = glob.glob(os.path.join(glob.escape(root), '*.funscript'))
+        if not all_funscripts:
             print(f"[SKIP] No .funscript in: {root}")
             continue
+        main_scripts = [fs for fs in all_funscripts
+                        if not any(Path(fs).stem.endswith(s) for s in axis_suffixes)]
+        if not main_scripts:
+            main_scripts = all_funscripts
+        funscript_basename = Path(main_scripts[0]).stem
 
         desc_path = os.path.join(root, 'description.json')
         links = extract_links_from_description(desc_path)
@@ -1045,29 +1094,52 @@ def collect_tasks(base_path: str) -> tuple[list, list]:
                 failures.append({
                     'link': link,
                     'funscript_name': funscript_basename,
-                    'description_json_path': desc_path,
+                    'save_directory': root,
                     'domain': domain,
                 })
 
         if not validated_links:
             continue
 
-        tasks.append({
-            'folder': root,
-            'basename': funscript_basename,
-            'links': validated_links,
-        })
+        # When there are multiple funscripts AND multiple links, fuzzy-match
+        # each link to the funscript whose name shares the most URL tokens.
+        if len(main_scripts) > 1 and len(validated_links) > 1:
+            link_to_stem = _match_links_to_funscripts(validated_links, main_scripts)
+            stem_to_links: dict[str, list[str]] = {}
+            for link, stem in link_to_stem.items():
+                stem_to_links.setdefault(stem, []).append(link)
+            for stem, stem_links in stem_to_links.items():
+                print(f"  [fuzzy] '{stem}' matched {len(stem_links)} link(s)")
+                tasks.append({'folder': root, 'basename': stem, 'links': stem_links})
+        else:
+            tasks.append({
+                'folder': root,
+                'basename': funscript_basename,
+                'links': validated_links,
+            })
 
     return tasks, failures
 
 
-def _write_playlist(base_path: str):
+def _write_playlist(base_path: str, newly_downloaded: list[str] | None = None):
     """
     Scan *base_path* recursively for video files and write playlist.m3u8.
     Files are sorted newest-first by modification time so the most recently
     downloaded videos appear at the top when opened in a media player.
     Temp files and the playlist itself are excluded.
+
+    If *newly_downloaded* is provided, also write playlist_new.m3u8 containing
+    only those files (in the same newest-first order).
     """
+    def _write_m3u8(path: str, video_paths: list[str]):
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('#EXTM3U\n')
+            for video_path in video_paths:
+                title = Path(video_path).stem
+                rel_path = os.path.relpath(video_path, base_path).replace('\\', '/')
+                f.write(f'#EXTINF:-1,{title}\n')
+                f.write(f'{rel_path}\n')
+
     video_files = []
     for root, dirs, files in os.walk(base_path):
         for f in files:
@@ -1086,17 +1158,19 @@ def _write_playlist(base_path: str):
     video_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
 
     playlist_path = os.path.join(base_path, 'playlist.m3u8')
-    with open(playlist_path, 'w', encoding='utf-8') as f:
-        f.write('#EXTM3U\n')
-        for video_path in video_files:
-            title = Path(video_path).stem
-            # Relative path from the playlist location; forward slashes for
-            # cross-platform compatibility with media players.
-            rel_path = os.path.relpath(video_path, base_path).replace('\\', '/')
-            f.write(f'#EXTINF:-1,{title}\n')
-            f.write(f'{rel_path}\n')
-
+    _write_m3u8(playlist_path, video_files)
     print(f'\nPlaylist updated ({len(video_files)} videos): {playlist_path}')
+
+    if newly_downloaded:
+        new_sorted = sorted(
+            (p for p in newly_downloaded if os.path.exists(p)),
+            key=lambda p: os.path.getmtime(p),
+            reverse=True,
+        )
+        if new_sorted:
+            new_path = os.path.join(base_path, 'playlist_new.m3u8')
+            _write_m3u8(new_path, new_sorted)
+            print(f'New-downloads playlist ({len(new_sorted)} videos): {new_path}')
 
 
 def _write_failures_csv(base_path: str, failures: list):
@@ -1105,7 +1179,7 @@ def _write_failures_csv(base_path: str, failures: list):
         return
     csv_path = os.path.join(base_path, 'failed_downloads.csv')
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=['link', 'funscript_name', 'description_json_path', 'domain'])
+        writer = csv.DictWriter(f, fieldnames=['link', 'funscript_name', 'save_directory', 'domain'])
         writer.writeheader()
         writer.writerows(failures)
     print(f"\nFailed downloads ({len(failures)}) written to: {csv_path}")
@@ -1138,13 +1212,13 @@ def find_and_download(base_path: str):
     current_basename: str = ''
     current_link_idx: int = 0
 
+    newly_downloaded: list[str] = []
     total = len(tasks)
     try:
         for task_idx, task in enumerate(tasks, start=1):
             folder   = task['folder']
             basename = task['basename']
             links    = task['links']
-            desc_path = os.path.join(folder, 'description.json')
 
             current_folder = folder
             current_basename = basename
@@ -1177,7 +1251,7 @@ def find_and_download(base_path: str):
                         failures.append({
                             'link': link,
                             'funscript_name': basename,
-                            'description_json_path': desc_path,
+                            'save_directory': folder,
                             'domain': domain,
                         })
                         continue
@@ -1195,7 +1269,7 @@ def find_and_download(base_path: str):
                         failures.append({
                             'link': link,
                             'funscript_name': basename,
-                            'description_json_path': desc_path,
+                            'save_directory': folder,
                             'domain': domain,
                         })
                         continue
@@ -1205,7 +1279,7 @@ def find_and_download(base_path: str):
                     failures.append({
                         'link': link,
                         'funscript_name': basename,
-                        'description_json_path': desc_path,
+                        'save_directory': folder,
                         'domain': domain,
                     })
                     continue
@@ -1217,7 +1291,7 @@ def find_and_download(base_path: str):
                     failures.append({
                         'link': link,
                         'funscript_name': basename,
-                        'description_json_path': desc_path,
+                        'save_directory': folder,
                         'domain': domain,
                     })
                     continue
@@ -1235,6 +1309,7 @@ def find_and_download(base_path: str):
                 else:
                     os.rename(downloaded, dest_path)
                     print(f"  Saved as: {dest_name}")
+                    newly_downloaded.append(dest_path)
 
             _cleanup_temp_files(folder)
 
@@ -1250,6 +1325,7 @@ def find_and_download(base_path: str):
             dest_path = os.path.join(current_folder, dest_name)
             if not os.path.exists(dest_path):
                 os.rename(downloaded, dest_path)
+                newly_downloaded.append(dest_path)
                 print(f'  Saved as: {dest_name}')
         else:
             print('  Download did not complete in time — removing temp files.')
@@ -1258,7 +1334,7 @@ def find_and_download(base_path: str):
     finally:
         driver.quit()
         _write_failures_csv(base_path, failures)
-        _write_playlist(base_path)
+        _write_playlist(base_path, newly_downloaded)
 
 
 def main():
