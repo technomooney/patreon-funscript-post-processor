@@ -717,14 +717,15 @@ def find_and_download(base_path: str):
 
     driver = setup_driver(tasks[0]['folder'])
 
+    total = len(tasks)
     try:
-        for task in tasks:
+        for task_idx, task in enumerate(tasks, start=1):
             folder   = task['folder']
             basename = task['basename']
             links    = task['links']
             desc_path = os.path.join(folder, 'description.json')
 
-            print(f"\n--- {basename} ---")
+            print(f"\n[{task_idx}/{total}] {basename}")
             _cleanup_temp_files(folder)
             set_download_dir(driver, folder)
 
