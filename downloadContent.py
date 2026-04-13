@@ -162,13 +162,20 @@ def set_download_dir(driver, download_dir: str):
     })
 
 
-def _switch_to_new_tab(driver, original_handles: set) -> bool:
-    """Switch to a newly opened tab if one exists. Returns True if a new tab was found."""
-    new_handles = set(driver.window_handles) - original_handles
-    if new_handles:
-        driver.switch_to.window(next(iter(new_handles)))
-        time.sleep(2)
-        return True
+def _switch_to_new_tab(driver, original_handles: set, timeout: int = 8) -> bool:
+    """
+    Poll until a new tab appears, then switch to it. Returns True if switched.
+    A single snapshot check misses tabs that open slightly after the click;
+    polling up to *timeout* seconds handles slow servers reliably.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        new_handles = set(driver.window_handles) - original_handles
+        if new_handles:
+            driver.switch_to.window(next(iter(new_handles)))
+            time.sleep(2)
+            return True
+        time.sleep(0.5)
     return False
 
 
@@ -325,6 +332,9 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
 
         # Switch to the new tab if one was opened, otherwise stay on the current page.
         switched = _switch_to_new_tab(driver, original_handles)
+
+        # Give the download table time to finish rendering before scraping links.
+        time.sleep(3)
 
         # The resolution page has <a data-url="...1080p.mp4?token=..."> entries.
         links = driver.find_elements(By.XPATH, '//a[@data-url]')
