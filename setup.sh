@@ -90,6 +90,34 @@ if ! [[ "$MAX_RESOLUTION" =~ ^[0-9]+$ ]]; then
     MAX_RESOLUTION="1080"
 fi
 
+# IWARA_EMAIL
+if [ -f ".env" ]; then
+    existing_iwara_email=$(grep -oP '(?<=IWARA_EMAIL=).*' .env 2>/dev/null || echo "")
+else
+    existing_iwara_email=""
+fi
+if [ -n "$existing_iwara_email" ]; then
+    read -rp "iwara.tv email [current: ${existing_iwara_email}]: " IWARA_EMAIL
+    IWARA_EMAIL="${IWARA_EMAIL:-$existing_iwara_email}"
+else
+    read -rp "iwara.tv email (leave blank to skip iwara.tv downloads): " IWARA_EMAIL
+fi
+
+# IWARA_PASSWORD
+if [ -f ".env" ]; then
+    existing_iwara_pass=$(grep -oP '(?<=IWARA_PASSWORD=).*' .env 2>/dev/null || echo "")
+else
+    existing_iwara_pass=""
+fi
+if [ -n "$existing_iwara_pass" ]; then
+    read -rsp "iwara.tv password [press Enter to keep current]: " IWARA_PASSWORD
+    echo ""
+    IWARA_PASSWORD="${IWARA_PASSWORD:-$existing_iwara_pass}"
+else
+    read -rsp "iwara.tv password (leave blank to skip iwara.tv downloads): " IWARA_PASSWORD
+    echo ""
+fi
+
 # Write .env
 cat > .env <<EOF
 # Pixeldrain API key — found at https://pixeldrain.com/user/api
@@ -103,6 +131,11 @@ BROWSER_HEADLESS=${BROWSER_HEADLESS}
 # Maximum resolution to download (e.g. 1080, 720, 2160).
 # Downloads the highest quality available up to this value.
 MAX_RESOLUTION=${MAX_RESOLUTION}
+
+# iwara.tv account credentials — required for 18+ content.
+# Leave both blank to skip iwara.tv downloads.
+IWARA_EMAIL=${IWARA_EMAIL}
+IWARA_PASSWORD=${IWARA_PASSWORD}
 EOF
 
 echo ""

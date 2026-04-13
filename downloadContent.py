@@ -1,5 +1,6 @@
 import base64
 import csv
+import hashlib
 import json
 import mimetypes
 import os
@@ -25,6 +26,7 @@ KNOWN_DOMAINS = [
     'hanime1.me',
     'hanime.tv',
     'gofile.io',
+    'iwara.tv',
     'pixeldrain.com',
     'rule34video.com',
 ]
@@ -529,13 +531,124 @@ def download_hanimetv(driver, url: str, download_dir: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# iwara.tv handler
+# ---------------------------------------------------------------------------
+
+# Cached Bearer token — obtained once per session on first iwara.tv download.
+_iwara_token: str | None = None
+
+# Signing secret embedded in the iwara.tv frontend client.
+_IWARA_SECRET = '5nFp9kmbNnHdAFhaqMvt'
+
+
+def _iwara_login() -> str | None:
+    """POST credentials to the iwara API and return a Bearer token, or None."""
+    email = os.getenv('IWARA_EMAIL', '').strip()
+    password = os.getenv('IWARA_PASSWORD', '').strip()
+    if not email or not password:
+        return None
+    data = json.dumps({'email': email, 'password': password}).encode()
+    req = urllib.request.Request(
+        'https://api.iwara.tv/user/login',
+        data=data,
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            result = json.loads(resp.read())
+            return result.get('token')
+    except Exception as e:
+        print(f'  [iwara.tv] login failed: {e}')
+        return None
+
+
+def download_iwara(_driver, url: str, download_dir: str) -> bool:
+    """Download from iwara.tv via the REST API (requires IWARA_EMAIL / IWARA_PASSWORD in .env)."""
+    global _iwara_token
+
+    try:
+        # URL format: https://www.iwara.tv/video/{id}/{optional-slug}
+        path_parts = urlparse(url).path.strip('/').split('/')
+        if len(path_parts) < 2 or path_parts[0] != 'video':
+            print('  [iwara.tv] unrecognised URL — expected /video/{id}/...')
+            return False
+        video_id = path_parts[1]
+
+        # Authenticate once per session.
+        if _iwara_token is None:
+            _iwara_token = _iwara_login()
+            if _iwara_token is None:
+                print('  [iwara.tv] login failed — set IWARA_EMAIL and IWARA_PASSWORD in .env')
+                return False
+
+        headers: dict[str, str] = {
+            'User-Agent': 'Mozilla/5.0',
+            'Authorization': f'Bearer {_iwara_token}',
+        }
+
+        # Fetch the list of available files for this video.
+        file_req = urllib.request.Request(
+            f'https://api.iwara.tv/video/{video_id}/file',
+            headers=headers,
+        )
+        with urllib.request.urlopen(file_req) as resp:
+            files: list[dict] = json.loads(resp.read())
+
+        if not files:
+            print('  [iwara.tv] API returned no files for this video')
+            return False
+
+        # Pick the best quality within MAX_RESOLUTION.
+        # "Source" is treated as 9999 p so it is only chosen when no cap applies.
+        max_res = int(os.getenv('MAX_RESOLUTION', '1080'))
+
+        def _iwara_res(entry: dict) -> int:
+            name = (entry.get('name') or '').lower()
+            if name == 'source':
+                return 9999
+            digits = ''.join(c for c in name if c.isdigit())
+            return int(digits) if digits else 0
+
+        files_sorted = sorted(files, key=_iwara_res, reverse=True)
+        chosen = files_sorted[0]
+        for candidate in files_sorted:
+            if _iwara_res(candidate) <= max_res:
+                chosen = candidate
+                break
+
+        src = chosen.get('src') or {}
+        download_url = src.get('download') or src.get('view') or ''
+        if not download_url:
+            print(f'  [iwara.tv] no download URL in file entry: {chosen}')
+            return False
+
+        # The CDN requires an X-Version header: SHA1(fileId + "_" + expires + "_" + SECRET)
+        file_id = chosen.get('id', '')
+        expires = str(chosen.get('expires', ''))
+        if file_id and expires:
+            sig = hashlib.sha1(f'{file_id}_{expires}_{_IWARA_SECRET}'.encode()).hexdigest()
+            headers['X-Version'] = sig
+
+        res_label = chosen.get('name', '?')
+        print(f'  [iwara.tv] fetching {res_label}...')
+        return _direct_fetch(download_url, download_dir, '_iwara_temp', headers)
+
+    except Exception as e:
+        print(f'  [iwara.tv] handler error: {e}')
+
+    return False
+
+
 # Map each KNOWN_DOMAINS entry to its handler.
 # When adding a new domain, add it to KNOWN_DOMAINS above AND here.
 DOMAIN_HANDLERS = {
-    'hanime1.me':     download_hanime,
-    'hanime.tv':      download_hanimetv,
-    'gofile.io':      download_gofile,
-    'pixeldrain.com': download_pixeldrain,
+    'hanime1.me':      download_hanime,
+    'hanime.tv':       download_hanimetv,
+    'gofile.io':       download_gofile,
+    'iwara.tv':        download_iwara,
+    'pixeldrain.com':  download_pixeldrain,
     'rule34video.com': download_rule34video,
 }
 

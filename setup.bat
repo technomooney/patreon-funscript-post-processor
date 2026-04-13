@@ -40,12 +40,16 @@ echo Dependencies installed.
 set "EXISTING_KEY="
 set "EXISTING_HEADLESS=false"
 set "EXISTING_RES=1080"
+set "EXISTING_IWARA_EMAIL="
+set "EXISTING_IWARA_PASSWORD="
 
 if exist ".env" (
     for /f "usebackq tokens=1,* delims==" %%A in (".env") do (
         if "%%A"=="PIXELDRAIN_API_KEY"  set "EXISTING_KEY=%%B"
         if "%%A"=="BROWSER_HEADLESS"    set "EXISTING_HEADLESS=%%B"
         if "%%A"=="MAX_RESOLUTION"      set "EXISTING_RES=%%B"
+        if "%%A"=="IWARA_EMAIL"         set "EXISTING_IWARA_EMAIL=%%B"
+        if "%%A"=="IWARA_PASSWORD"      set "EXISTING_IWARA_PASSWORD=%%B"
     )
 )
 
@@ -88,6 +92,24 @@ if errorlevel 1 (
     set "MAX_RESOLUTION=1080"
 )
 
+:: IWARA_EMAIL
+if defined EXISTING_IWARA_EMAIL (
+    set "IWARA_EMAIL=!EXISTING_IWARA_EMAIL!"
+    set /p "IWARA_EMAIL=iwara.tv email [!EXISTING_IWARA_EMAIL!]: "
+) else (
+    set "IWARA_EMAIL="
+    set /p "IWARA_EMAIL=iwara.tv email (leave blank to skip iwara.tv downloads): "
+)
+
+:: IWARA_PASSWORD (note: cmd has no silent input, password will be visible)
+if defined EXISTING_IWARA_PASSWORD (
+    set "IWARA_PASSWORD=!EXISTING_IWARA_PASSWORD!"
+    set /p "IWARA_PASSWORD=iwara.tv password (press Enter to keep current): "
+) else (
+    set "IWARA_PASSWORD="
+    set /p "IWARA_PASSWORD=iwara.tv password (leave blank to skip iwara.tv downloads): "
+)
+
 :: --- Write .env -------------------------------------------------------------
 
 (
@@ -102,6 +124,11 @@ if errorlevel 1 (
     echo # Maximum resolution to download ^(e.g. 1080, 720, 2160^).
     echo # Downloads the highest quality available up to this value.
     echo MAX_RESOLUTION=!MAX_RESOLUTION!
+    echo.
+    echo # iwara.tv account credentials -- required for 18+ content.
+    echo # Leave both blank to skip iwara.tv downloads.
+    echo IWARA_EMAIL=!IWARA_EMAIL!
+    echo IWARA_PASSWORD=!IWARA_PASSWORD!
 ) > .env
 
 echo.
