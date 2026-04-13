@@ -315,10 +315,10 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
     try:
         time.sleep(3)  # let the video player initialize
 
-        # Click the download icon (id="video-download-btn") which opens a resolution page.
-        # The icon is a Material Icons <i> element; JS click is more reliable than
-        # a native click on icon-only elements that have no real hit area.
-        download_btn = driver.find_element(By.ID, 'video-download-btn')
+        # Click the download anchor (id="downloadBtn") which opens a resolution page.
+        # The <a> wraps a Material Icons <i> (id="video-download-btn") and has
+        # target="_blank", so it opens a new tab pointing to /download?v=<id>.
+        download_btn = driver.find_element(By.ID, 'downloadBtn')
         original_handles = set(driver.window_handles)
         driver.execute_script('arguments[0].click()', download_btn)
         time.sleep(2)
