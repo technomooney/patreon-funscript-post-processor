@@ -656,12 +656,10 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
             print(f'  [iwara.tv] HTTP {e.code} fetching quality list: {body}')
             return False
 
-        print(f'  [iwara.tv] quality list content-type: {content_type}')
-
         try:
             files: list[dict] = json.loads(raw)
         except Exception:
-            print(f'  [iwara.tv] quality list response is not JSON: {raw[:200]!r}')
+            print(f'  [iwara.tv] quality list response is not JSON ({content_type}): {raw[:200]!r}')
             return False
 
         if not isinstance(files, list) or not files:
@@ -700,7 +698,7 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
             download_url = 'https:' + download_url
 
         res_label = chosen.get('name', '?')
-        print(f'  [iwara.tv] downloading {res_label} from: {download_url}')
+        print(f'  [iwara.tv] downloading {res_label}...')
 
         return _direct_fetch(download_url, download_dir, '_iwara_temp', cdn_headers)
 
