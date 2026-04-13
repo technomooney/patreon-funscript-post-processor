@@ -77,22 +77,9 @@ if ! [[ "$MAX_RESOLUTION" =~ ^[0-9]+$ ]]; then
     MAX_RESOLUTION="1080"
 fi
 
-# IWARA_SECRET
-if [ -f ".env" ]; then
-    existing_iwara_secret=$(grep -oP '(?<=IWARA_SECRET=).*' .env 2>/dev/null || echo "5nFp9kmbNnHdAFhaqMvt")
-else
-    existing_iwara_secret="5nFp9kmbNnHdAFhaqMvt"
-fi
-echo ""
-echo "  iwara.tv signing secret — only change this if downloads start"
-echo "  failing with 403 errors. To find the new value, open iwara.tv"
-echo "  in your browser, go to DevTools > Network, watch the CDN download"
-echo "  request, and read the X-Version header from its request headers."
-echo ""
-read -rp "iwara.tv signing secret [${existing_iwara_secret}]: " IWARA_SECRET
-IWARA_SECRET="${IWARA_SECRET:-$existing_iwara_secret}"
-
 # Write .env (credentials are stored in the OS keyring, not here)
+# IWARA_SECRET is not written here — it is managed automatically by the
+# downloader when a 403 is detected and will be appended to .env at that time.
 cat > .env <<EOF
 # Run the browser in headless mode (no visible window).
 # Set to false if sites start blocking the automation.
@@ -101,11 +88,6 @@ BROWSER_HEADLESS=${BROWSER_HEADLESS}
 # Maximum resolution to download (e.g. 1080, 720, 2160).
 # Downloads the highest quality available up to this value.
 MAX_RESOLUTION=${MAX_RESOLUTION}
-
-# iwara.tv CDN signing secret — embedded in the iwara.tv frontend JS.
-# If downloads return 403, find the new value via DevTools Network tab:
-# watch the CDN download request and read the X-Version request header.
-IWARA_SECRET=${IWARA_SECRET}
 EOF
 
 echo ""
