@@ -14,6 +14,7 @@ import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 
 load_dotenv()
 
@@ -326,7 +327,14 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
 
         # Wait for the download anchor to be present — headless mode renders
         # slower so a fixed sleep is not reliable here.
-        download_btn = wait.until(EC.presence_of_element_located((By.ID, 'downloadBtn')))
+        try:
+            download_btn = wait.until(EC.presence_of_element_located((By.ID, 'downloadBtn')))
+        except TimeoutException:
+            print(f'  [hanime1.me] timed out waiting for #downloadBtn')
+            print(f'  [hanime1.me] current URL : {driver.current_url}')
+            print(f'  [hanime1.me] page title  : {driver.title!r}')
+            return False
+
         download_page_url = download_btn.get_attribute('href')
         if not download_page_url:
             print('  [hanime1.me] downloadBtn has no href')
@@ -336,7 +344,13 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
         driver.get(download_page_url)
 
         # Wait for at least one quality link to appear in the resolution table.
-        wait.until(EC.presence_of_element_located((By.XPATH, '//a[@data-url]')))
+        try:
+            wait.until(EC.presence_of_element_located((By.XPATH, '//a[@data-url]')))
+        except TimeoutException:
+            print(f'  [hanime1.me] timed out waiting for quality links on download page')
+            print(f'  [hanime1.me] current URL : {driver.current_url}')
+            print(f'  [hanime1.me] page title  : {driver.title!r}')
+            return False
         links = driver.find_elements(By.XPATH, '//a[@data-url]')
         if not links:
             print('  [hanime1.me] no data-url links found on download page')
