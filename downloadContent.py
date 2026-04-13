@@ -392,6 +392,8 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
         print(f'  [hanime] fetching {resolution}p...')
         return _direct_fetch(video_url, download_dir, '_hanime_temp', {'Referer': 'https://hanime1.me/'})
 
+    except CloudflareBlockedError:
+        raise  # let find_and_download handle the retry prompt
     except Exception as e:
         print(f'  [hanime1.me] handler error: {e}')
 
