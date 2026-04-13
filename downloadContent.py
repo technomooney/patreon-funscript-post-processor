@@ -12,6 +12,8 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 load_dotenv()
 
@@ -320,20 +322,21 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
     driver.get(url)
 
     try:
-        time.sleep(1)  # let the video player initialize
+        wait = WebDriverWait(driver, 15)
 
-        # Read the href from the download anchor and navigate directly in the same
-        # tab — avoids relying on target="_blank" opening a new tab reliably.
-        download_btn = driver.find_element(By.ID, 'downloadBtn')
+        # Wait for the download anchor to be present — headless mode renders
+        # slower so a fixed sleep is not reliable here.
+        download_btn = wait.until(EC.presence_of_element_located((By.ID, 'downloadBtn')))
         download_page_url = download_btn.get_attribute('href')
         if not download_page_url:
             print('  [hanime1.me] downloadBtn has no href')
             return False
 
+        # Navigate directly to the download page in the same tab.
         driver.get(download_page_url)
-        time.sleep(1)  # let the download table render
 
-        # The resolution table has <a data-url="...1080p.mp4?token=..."> entries.
+        # Wait for at least one quality link to appear in the resolution table.
+        wait.until(EC.presence_of_element_located((By.XPATH, '//a[@data-url]')))
         links = driver.find_elements(By.XPATH, '//a[@data-url]')
         if not links:
             print('  [hanime1.me] no data-url links found on download page')
