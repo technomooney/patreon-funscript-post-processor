@@ -322,21 +322,18 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
     try:
         time.sleep(3)  # let the video player initialize
 
-        # Click the download anchor (id="downloadBtn") which opens a resolution page.
-        # The <a> wraps a Material Icons <i> (id="video-download-btn") and has
-        # target="_blank", so it opens a new tab pointing to /download?v=<id>.
+        # Read the href from the download anchor and navigate directly in the same
+        # tab — avoids relying on target="_blank" opening a new tab reliably.
         download_btn = driver.find_element(By.ID, 'downloadBtn')
-        original_handles = set(driver.window_handles)
-        driver.execute_script('arguments[0].click()', download_btn)
-        time.sleep(2)
+        download_page_url = download_btn.get_attribute('href')
+        if not download_page_url:
+            print('  [hanime1.me] downloadBtn has no href')
+            return False
 
-        # Switch to the new tab if one was opened, otherwise stay on the current page.
-        switched = _switch_to_new_tab(driver, original_handles)
+        driver.get(download_page_url)
+        time.sleep(3)  # let the download table render
 
-        # Give the download table time to finish rendering before scraping links.
-        time.sleep(3)
-
-        # The resolution page has <a data-url="...1080p.mp4?token=..."> entries.
+        # The resolution table has <a data-url="...1080p.mp4?token=..."> entries.
         links = driver.find_elements(By.XPATH, '//a[@data-url]')
         if not links:
             print('  [hanime1.me] no data-url links found on download page')
@@ -350,11 +347,6 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
         if not video_url:
             print('  [hanime1.me] best link has no data-url value')
             return False
-
-        # Close the download tab and return to the main window before the long fetch.
-        if switched and len(driver.window_handles) > 1:
-            driver.close()
-            driver.switch_to.window(driver.window_handles[0])
 
         # The data-url contains a self-contained token, so no browser session is needed.
         # Downloading via urllib avoids the browser opening the mp4 inline.
