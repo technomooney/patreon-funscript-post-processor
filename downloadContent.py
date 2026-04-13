@@ -637,31 +637,47 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
             'Authorization': f'Bearer {_iwara_token}',
         }
 
-        # Fetch the list of available files for this video.
+        # Fetch video metadata — the file list may be embedded here or at /file.
         try:
-            file_req = urllib.request.Request(
-                f'https://api.iwara.tv/video/{video_id}/file',
+            meta_req = urllib.request.Request(
+                f'https://api.iwara.tv/video/{video_id}',
                 headers=headers,
             )
-            with urllib.request.urlopen(file_req) as resp:
-                raw = resp.read()
-                files = json.loads(raw)
+            with urllib.request.urlopen(meta_req) as resp:
+                video_meta = json.loads(resp.read())
         except urllib.error.HTTPError as e:
+            body = e.read().decode('utf-8', errors='replace')
             if e.code == 401:
-                print('  [iwara.tv] 401 Unauthorized on file list — credentials may be wrong.')
+                print('  [iwara.tv] 401 Unauthorized — credentials may be wrong.')
                 print('  Re-run setup_credentials.py to update them.')
             elif e.code == 403:
-                print('  [iwara.tv] 403 Forbidden on file list — token rejected.')
+                print('  [iwara.tv] 403 Forbidden on video metadata — token rejected.')
                 print('  Re-run setup_credentials.py to update your credentials.')
             elif e.code == 404:
-                print('  [iwara.tv] 404 — video not found or requires login to view.')
-                print('  Make sure your account has access to this video.')
+                print('  [iwara.tv] 404 on video metadata — video not found or account lacks access.')
             else:
-                print(f'  [iwara.tv] HTTP {e.code} fetching file list: {e}')
+                print(f'  [iwara.tv] HTTP {e.code} fetching video metadata: {body}')
             return False
 
+        print(f'  [iwara.tv] video metadata keys: {list(video_meta.keys())}')
+
+        # Files may be embedded in the metadata or at the /file sub-endpoint.
+        files = video_meta.get('files') or video_meta.get('fileUrl') or []
         if not isinstance(files, list) or not files:
-            print(f'  [iwara.tv] unexpected file list response: {files!r}')
+            try:
+                file_req = urllib.request.Request(
+                    f'https://api.iwara.tv/video/{video_id}/file',
+                    headers=headers,
+                )
+                with urllib.request.urlopen(file_req) as resp:
+                    files = json.loads(resp.read())
+            except urllib.error.HTTPError as e:
+                body = e.read().decode('utf-8', errors='replace')
+                print(f'  [iwara.tv] HTTP {e.code} fetching file list: {body}')
+                return False
+
+        if not isinstance(files, list) or not files:
+            print(f'  [iwara.tv] no files found. Full metadata: {video_meta!r}')
             return False
 
         # Pick the best quality within MAX_RESOLUTION.
