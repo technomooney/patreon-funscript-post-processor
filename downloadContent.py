@@ -46,6 +46,7 @@ KNOWN_DOMAINS = [
     'rule34video.com',
     'rule34.xxx',
     'fap-nation.org',
+    'eporner.com',
 ]
 
 # Links to these domains are creator pages / social profiles — no file to download.
@@ -424,6 +425,50 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
         raise  # let find_and_download handle the retry prompt
     except Exception as e:
         print(f'  [hanime1.me] handler error: {e}')
+
+    return False
+
+
+def download_eporner(driver, url: str, download_dir: str) -> bool:
+    """Navigate to an eporner.com video page and download the best quality within MAX_RESOLUTION.
+
+    eporner hides its download div (display:none) but Selenium can still read
+    the href attributes.  AV1 links (.download-av1 a) are preferred over h264
+    (.download-h264 a) when available.
+    """
+    driver.get(url)
+
+    try:
+        time.sleep(2)
+
+        # Prefer AV1; fall back to h264 if none found.
+        links = driver.find_elements(By.CSS_SELECTOR, '.download-av1 a')
+        codec = 'av1'
+        if not links:
+            links = driver.find_elements(By.CSS_SELECTOR, '.download-h264 a')
+            codec = 'h264'
+        if not links:
+            print('  [eporner.com] no download links found in #downloaddiv')
+            return False
+
+        best, resolution = _pick_best(
+            links,
+            lambda el: _parse_resolution((el.get_attribute('href') or '') + (el.text or '')),
+        )
+        rel_href = best.get_attribute('href') or ''
+        if not rel_href:
+            print('  [eporner.com] best link has no href')
+            return False
+
+        # hrefs are root-relative (/dload/...) — prepend the origin.
+        video_url = rel_href if rel_href.startswith('http') else f'https://www.eporner.com{rel_href}'
+
+        print(f'  [eporner.com] fetching {resolution}p ({codec})...')
+        return _direct_fetch(video_url, download_dir, '_eporner_temp',
+                             {'Referer': 'https://www.eporner.com/'})
+
+    except Exception as e:
+        print(f'  [eporner.com] handler error: {e}')
 
     return False
 
@@ -1027,6 +1072,7 @@ DOMAIN_HANDLERS = {
     'rule34video.com': download_rule34video,
     'rule34.xxx':      download_rule34xxx,
     'fap-nation.org':  download_fapnation,
+    'eporner.com':     download_eporner,
 }
 
 
