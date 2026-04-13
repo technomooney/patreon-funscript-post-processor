@@ -665,9 +665,13 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
             print(f'  [iwara.tv] unexpected quality list: {files!r}')
             return False
 
+        available = [f.get('name') for f in files]
+        print(f'  [iwara.tv] available qualities: {available}')
+
         # Pick the best quality within MAX_RESOLUTION.
         # Names are e.g. "preview", "360", "720", "1080", "Source".
         max_res = int(os.getenv('MAX_RESOLUTION', '1080'))
+        print(f'  [iwara.tv] MAX_RESOLUTION={max_res}')
 
         def _iwara_res(entry: dict) -> int:
             name = (entry.get('name') or '').lower()
