@@ -44,6 +44,11 @@ class UnknownDomainError(Exception):
     pass
 
 
+class CloudflareBlockedError(Exception):
+    """Raised when a handler detects a Cloudflare challenge page."""
+    pass
+
+
 # ---------------------------------------------------------------------------
 # Parsing helpers
 # ---------------------------------------------------------------------------
@@ -346,11 +351,10 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
             download_btn = wait.until(EC.presence_of_element_located((By.ID, 'downloadBtn')))
         except TimeoutException:
             if _is_cloudflare_blocked(driver):
-                print('  [hanime1.me] blocked by Cloudflare — set BROWSER_HEADLESS=false in .env and retry')
-            else:
-                print(f'  [hanime1.me] timed out waiting for #downloadBtn')
-                print(f'  [hanime1.me] current URL : {driver.current_url}')
-                print(f'  [hanime1.me] page title  : {driver.title!r}')
+                raise CloudflareBlockedError('hanime1.me blocked by Cloudflare in headless mode')
+            print(f'  [hanime1.me] timed out waiting for #downloadBtn')
+            print(f'  [hanime1.me] current URL : {driver.current_url}')
+            print(f'  [hanime1.me] page title  : {driver.title!r}')
             return False
 
         download_page_url = download_btn.get_attribute('href')
@@ -565,6 +569,26 @@ def _video_exists(folder: str, basename: str) -> str | None:
     return None
 
 
+def _update_env_file(key: str, value: str):
+    """Update a key=value pair in the .env file, preserving all other lines."""
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+    if not os.path.exists(env_path):
+        return
+    lines = []
+    found = False
+    with open(env_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            if line.startswith(f'{key}='):
+                lines.append(f'{key}={value}\n')
+                found = True
+            else:
+                lines.append(line)
+    if not found:
+        lines.append(f'{key}={value}\n')
+    with open(env_path, 'w', encoding='utf-8') as f:
+        f.writelines(lines)
+
+
 def collect_tasks(base_path: str) -> tuple[list, list]:
     """
     Walk *base_path* looking for folders that contain both a description.json
@@ -676,7 +700,40 @@ def find_and_download(base_path: str):
                 before_files: set[str] = set(os.listdir(str(folder)))
                 print(f"  [{domain}] {link}")
 
-                triggered = handler(driver, link, folder)
+                try:
+                    triggered = handler(driver, link, folder)
+                except CloudflareBlockedError as cf_err:
+                    print(f'  [cloudflare] {cf_err}')
+                    answer = input('  Switch to windowed mode and retry? (y/n): ').strip().lower()
+                    if answer != 'y':
+                        failures.append({
+                            'link': link,
+                            'funscript_name': basename,
+                            'description_json_path': desc_path,
+                            'domain': domain,
+                        })
+                        continue
+                    # Restart the driver in windowed mode and persist the setting.
+                    driver.quit()
+                    os.environ['BROWSER_HEADLESS'] = 'false'
+                    _update_env_file('BROWSER_HEADLESS', 'false')
+                    print('  BROWSER_HEADLESS set to false in .env.')
+                    print('  Restarting browser in windowed mode...')
+                    driver = setup_driver(folder)
+                    set_download_dir(driver, folder)
+                    before_files = set(os.listdir(str(folder)))
+                    try:
+                        triggered = handler(driver, link, folder)
+                    except CloudflareBlockedError:
+                        print('  Still blocked after switching to windowed mode.')
+                        failures.append({
+                            'link': link,
+                            'funscript_name': basename,
+                            'description_json_path': desc_path,
+                            'domain': domain,
+                        })
+                        continue
+
                 if not triggered:
                     print("  Could not trigger download — check the handler for this domain.")
                     failures.append({
