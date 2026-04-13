@@ -639,15 +639,14 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
             print(f'  [iwara.tv] no fileUrl in metadata — keys: {list(video_meta.keys())}')
             return False
 
-        # The quality list CDN URL is pre-signed — do NOT send Authorization.
         cdn_headers: dict[str, str] = {
             'User-Agent': api_headers['User-Agent'],
             'Referer': 'https://www.iwara.tv/',
         }
 
-        # Fetch the quality list.
+        # Fetch the quality list — requires Authorization to get all qualities.
         try:
-            fl_req = urllib.request.Request(file_list_url, headers=cdn_headers)
+            fl_req = urllib.request.Request(file_list_url, headers=api_headers)
             with urllib.request.urlopen(fl_req) as resp:
                 content_type = resp.headers.get('Content-Type', '')
                 raw = resp.read()
