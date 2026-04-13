@@ -196,9 +196,9 @@ def _switch_to_new_tab(driver, original_handles: set, timeout: int = 8) -> bool:
         new_handles = set(driver.window_handles) - original_handles
         if new_handles:
             driver.switch_to.window(next(iter(new_handles)))
-            time.sleep(0.5)
+            time.sleep(1)
             return True
-        time.sleep(0.25)
+        time.sleep(0.5)
     return False
 
 
@@ -417,7 +417,7 @@ def download_rule34video(driver, url: str, download_dir: str) -> bool:
         ))
         if download_btns:
             driver.execute_script('arguments[0].click()', download_btns[0])
-            time.sleep(0.5)
+            time.sleep(1)
 
         mp4_links = driver.find_elements(By.XPATH, '//a[contains(@href,".mp4")]')
         if not mp4_links:
