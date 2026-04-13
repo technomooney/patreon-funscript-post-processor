@@ -45,6 +45,7 @@ KNOWN_DOMAINS = [
     'pixeldrain.com',
     'rule34video.com',
     'rule34.xxx',
+    'fap-nation.org',
 ]
 
 # Links to these domains are creator pages / social profiles — no file to download.
@@ -423,6 +424,43 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
         raise  # let find_and_download handle the retry prompt
     except Exception as e:
         print(f'  [hanime1.me] handler error: {e}')
+
+    return False
+
+
+def download_fapnation(driver, url: str, download_dir: str) -> bool:
+    """Navigate to a fap-nation.org post and download the best quality within MAX_RESOLUTION.
+
+    Quality buttons are rendered as .wp-block-button__link anchors whose visible
+    text contains the resolution label (e.g. "1080P", "720P").
+    """
+    driver.get(url)
+
+    try:
+        time.sleep(2)
+
+        links = driver.find_elements(By.XPATH,
+            '//a[contains(@class,"wp-block-button__link") and @href]'
+        )
+        if not links:
+            print('  [fap-nation.org] no quality buttons found on page')
+            return False
+
+        best, resolution = _pick_best(
+            links,
+            lambda el: _parse_resolution(el.text or ''),
+        )
+        video_url = best.get_attribute('href') or ''
+        if not video_url:
+            print('  [fap-nation.org] best quality button has no href')
+            return False
+
+        print(f'  [fap-nation.org] fetching {resolution}p...')
+        return _direct_fetch(video_url, download_dir, '_fapnation_temp',
+                             {'Referer': 'https://fap-nation.org/'})
+
+    except Exception as e:
+        print(f'  [fap-nation.org] handler error: {e}')
 
     return False
 
@@ -988,6 +1026,7 @@ DOMAIN_HANDLERS = {
     'pixeldrain.com':  download_pixeldrain,
     'rule34video.com': download_rule34video,
     'rule34.xxx':      download_rule34xxx,
+    'fap-nation.org':  download_fapnation,
 }
 
 
