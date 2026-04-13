@@ -16,6 +16,7 @@ import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import TimeoutException
 
 load_dotenv()
@@ -608,17 +609,23 @@ def _iwara_browser_login(driver) -> bool:
             time.sleep(0.05)
 
         time.sleep(0.5)
-        submit = driver.find_element(By.XPATH, '//button[@type="submit"]')
-        submit.click()
-
-        # Wait until we leave the login page (successful redirect).
+        # Press Enter on the password field — more reliable than clicking
+        # the submit button on React SPAs where button click may not fire.
+        pw_field.send_keys(Keys.RETURN)
+        # Also try JS-clicking the submit button as a belt-and-braces measure.
         try:
-            WebDriverWait(driver, 15).until(EC.url_changes('https://www.iwara.tv/login'))
-            print('  [iwara.tv] browser login successful')
-        except TimeoutException:
-            print(f'  [iwara.tv] login may have failed — still on: {driver.current_url}')
+            submit = driver.find_element(By.XPATH, '//button[@type="submit"]')
+            driver.execute_script('arguments[0].click()', submit)
+        except Exception:
+            pass
+        time.sleep(10)
+
+        # Confirm we left the login page.
+        if 'login' in driver.current_url:
+            print(f'  [iwara.tv] login did not redirect — still on: {driver.current_url}')
             print(f'  [iwara.tv] page title: {driver.title!r}')
             return False
+        print('  [iwara.tv] browser login successful')
 
         _iwara_browser_logged_in = True
         return True
