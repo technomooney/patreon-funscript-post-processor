@@ -16,7 +16,6 @@ import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import TimeoutException
 
 load_dotenv()
@@ -609,16 +608,11 @@ def _iwara_browser_login(driver) -> bool:
             time.sleep(0.05)
 
         time.sleep(0.5)
-        # Press Enter on the password field — more reliable than clicking
-        # the submit button on React SPAs where button click may not fire.
-        pw_field.send_keys(Keys.RETURN)
-        # Also try JS-clicking the submit button as a belt-and-braces measure.
-        try:
-            submit = driver.find_element(By.XPATH, '//button[@type="submit"]')
-            driver.execute_script('arguments[0].click()', submit)
-        except Exception:
-            pass
-        time.sleep(10)
+        # JS-click the submit button — avoids triggering any global search
+        # handler that a plain Enter keypress might hit on React SPAs.
+        submit = driver.find_element(By.XPATH, '//button[@type="submit"]')
+        driver.execute_script('arguments[0].click()', submit)
+        time.sleep(5)
 
         # Confirm we left the login page.
         if 'login' in driver.current_url:
@@ -639,8 +633,15 @@ def _download_iwara_browser(driver, url: str, download_dir: str) -> bool:
     if not _iwara_browser_login(driver):
         return False
 
+    time.sleep(2)  # Let session establish before navigating.
     driver.get(url)
-    time.sleep(3)
+    time.sleep(5)
+
+    # If the React app shows an error page on first load, a refresh usually fixes it.
+    if 'error' in driver.title.lower():
+        print(f'  [iwara.tv] got error page ({driver.title!r}), refreshing...')
+        driver.refresh()
+        time.sleep(5)
 
     # Dismiss age gate if it appears on the video page.
     try:
@@ -655,14 +656,19 @@ def _download_iwara_browser(driver, url: str, download_dir: str) -> bool:
     except Exception:
         pass
 
+    print(f'  [iwara.tv] page title after load: {driver.title!r}')
+
     # Collect all CDN download/view links rendered by the React app.
     links = driver.find_elements(By.XPATH,
         '//a[contains(@href,".iwara.tv/download") or contains(@href,".iwara.tv/view")]'
     )
 
     if not links:
-        print('  [iwara.tv] no CDN links found in browser DOM — page may not have loaded')
-        print(f'  [iwara.tv] page title: {driver.title!r}')
+        # Print all hrefs to help diagnose the correct selector.
+        all_hrefs = [el.get_attribute('href') for el in driver.find_elements(By.XPATH, '//a[@href]')]
+        print('  [iwara.tv] no CDN links found — all hrefs on page:')
+        for href in all_hrefs:
+            print(f'    {href}')
         return False
 
     max_res = int(os.getenv('MAX_RESOLUTION', '1080'))
