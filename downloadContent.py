@@ -602,6 +602,10 @@ def _iwara_login() -> str | None:
         with urllib.request.urlopen(req) as resp:
             result = json.loads(resp.read())
             return result.get('token')
+    except urllib.error.HTTPError as e:
+        body = e.read().decode('utf-8', errors='replace')
+        print(f'  [iwara.tv] login failed: HTTP {e.code} — {body}')
+        return None
     except Exception as e:
         print(f'  [iwara.tv] login failed: {e}')
         return None
