@@ -659,25 +659,24 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
                 print(f'  [iwara.tv] HTTP {e.code} fetching video metadata: {body}')
             return False
 
-        print(f'  [iwara.tv] video metadata keys: {list(video_meta.keys())}')
+        # 'fileUrl' is the quality list; 'file' is the raw upload object.
+        file_url_val = video_meta.get('fileUrl')
+        file_val     = video_meta.get('file')
+        print(f'  [iwara.tv] fileUrl={file_url_val!r}')
+        print(f'  [iwara.tv] file={file_val!r}')
 
-        # Files may be embedded in the metadata or at the /file sub-endpoint.
-        files = video_meta.get('files') or video_meta.get('fileUrl') or []
-        if not isinstance(files, list) or not files:
-            try:
-                file_req = urllib.request.Request(
-                    f'https://api.iwara.tv/video/{video_id}/file',
-                    headers=headers,
-                )
-                with urllib.request.urlopen(file_req) as resp:
-                    files = json.loads(resp.read())
-            except urllib.error.HTTPError as e:
-                body = e.read().decode('utf-8', errors='replace')
-                print(f'  [iwara.tv] HTTP {e.code} fetching file list: {body}')
-                return False
+        if isinstance(file_url_val, list) and file_url_val:
+            files = file_url_val
+        elif isinstance(file_val, list) and file_val:
+            files = file_val
+        elif isinstance(file_val, dict):
+            files = [file_val]
+        else:
+            print(f'  [iwara.tv] no usable file list in metadata — keys: {list(video_meta.keys())}')
+            return False
 
-        if not isinstance(files, list) or not files:
-            print(f'  [iwara.tv] no files found. Full metadata: {video_meta!r}')
+        if not files:
+            print(f'  [iwara.tv] file list is empty')
             return False
 
         # Pick the best quality within MAX_RESOLUTION.
