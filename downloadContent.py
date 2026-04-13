@@ -717,6 +717,12 @@ def find_and_download(base_path: str):
 
     driver = setup_driver(tasks[0]['folder'])
 
+    # State tracked so KeyboardInterrupt can finish/clean the active download.
+    current_folder: str = tasks[0]['folder']
+    current_before_files: set[str] = set()
+    current_basename: str = ''
+    current_link_idx: int = 0
+
     total = len(tasks)
     try:
         for task_idx, task in enumerate(tasks, start=1):
@@ -724,6 +730,9 @@ def find_and_download(base_path: str):
             basename = task['basename']
             links    = task['links']
             desc_path = os.path.join(folder, 'description.json')
+
+            current_folder = folder
+            current_basename = basename
 
             print(f"\n[{task_idx}/{total}] {basename}")
             _cleanup_temp_files(folder)
@@ -739,7 +748,10 @@ def find_and_download(base_path: str):
                 handler = DOMAIN_HANDLERS[domain]
 
                 before_files: set[str] = set(os.listdir(str(folder)))
+                current_before_files = before_files
+                current_link_idx = link_idx
                 print(f"  [{domain}] {link}")
+                print("  Downloading...")
 
                 try:
                     triggered = handler(driver, link, folder)
@@ -783,7 +795,6 @@ def find_and_download(base_path: str):
                     })
                     continue
 
-                print("  Waiting for download to complete...")
                 downloaded = wait_for_download(folder, before_files)
 
                 if downloaded is None:
@@ -811,6 +822,23 @@ def find_and_download(base_path: str):
                     print(f"  Saved as: {dest_name}")
 
             _cleanup_temp_files(folder)
+
+    except KeyboardInterrupt:
+        print('\n\nInterrupted — waiting up to 120 s for the active download to finish...')
+        downloaded = wait_for_download(current_folder, current_before_files, timeout=120)
+        if downloaded:
+            ext = os.path.splitext(downloaded)[1]
+            if current_link_idx == 0:
+                dest_name = current_basename + ext
+            else:
+                dest_name = f"{current_basename} ({current_link_idx + 1}){ext}"
+            dest_path = os.path.join(current_folder, dest_name)
+            if not os.path.exists(dest_path):
+                os.rename(downloaded, dest_path)
+                print(f'  Saved as: {dest_name}')
+        else:
+            print('  Download did not complete in time — removing temp files.')
+            _cleanup_temp_files(current_folder)
 
     finally:
         driver.quit()
