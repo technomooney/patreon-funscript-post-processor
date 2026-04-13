@@ -632,26 +632,65 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
                 print(f'  [iwara.tv] HTTP {e.code} fetching video metadata: {body}')
             return False
 
-        # fileUrl is a pre-signed CDN URL (expires + hash in query string).
+        # fileUrl is an API endpoint that returns a JSON array of quality options.
         # file    is the raw upload metadata (height, size, etc.).
-        file_url = video_meta.get('fileUrl') or ''
-        file_info = video_meta.get('file') or {}
-
-        if not file_url:
+        file_list_url = video_meta.get('fileUrl') or ''
+        if not file_list_url:
             print(f'  [iwara.tv] no fileUrl in metadata — keys: {list(video_meta.keys())}')
             return False
 
-        height = file_info.get('height', '?')
-        size_mb = file_info.get('size', 0) / 1024 / 1024
-        print(f'  [iwara.tv] fetching {height}p ({size_mb:.0f} MB)...')
+        # Fetch the quality list.
+        try:
+            fl_req = urllib.request.Request(file_list_url, headers=api_headers)
+            with urllib.request.urlopen(fl_req) as resp:
+                files: list[dict] = json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            body = e.read().decode('utf-8', errors='replace')
+            print(f'  [iwara.tv] HTTP {e.code} fetching quality list: {body}')
+            return False
 
-        # The pre-signed URL already carries authentication — only send
-        # a browser-like User-Agent and Referer, not the Bearer token.
+        if not isinstance(files, list) or not files:
+            print(f'  [iwara.tv] unexpected quality list response: {files!r}')
+            return False
+
+        # Pick the best quality within MAX_RESOLUTION.
+        # Names are e.g. "preview", "360", "720", "1080", "Source".
+        max_res = int(os.getenv('MAX_RESOLUTION', '1080'))
+
+        def _iwara_res(entry: dict) -> int:
+            name = (entry.get('name') or '').lower()
+            if name == 'source':
+                return 9999
+            if name == 'preview':
+                return 0
+            digits = ''.join(c for c in name if c.isdigit())
+            return int(digits) if digits else 0
+
+        files_sorted = sorted(files, key=_iwara_res, reverse=True)
+        chosen = files_sorted[0]
+        for candidate in files_sorted:
+            if _iwara_res(candidate) <= max_res:
+                chosen = candidate
+                break
+
+        src = chosen.get('src') or {}
+        download_url = src.get('download') or src.get('view') or ''
+        if not download_url:
+            print(f'  [iwara.tv] no download URL in chosen quality: {chosen}')
+            return False
+
+        # URLs are protocol-relative (//host/path) — prepend https:.
+        if download_url.startswith('//'):
+            download_url = 'https:' + download_url
+
+        res_label = chosen.get('name', '?')
+        print(f'  [iwara.tv] fetching {res_label}p...')
+
         dl_headers: dict[str, str] = {
             'User-Agent': api_headers['User-Agent'],
             'Referer': 'https://www.iwara.tv/',
         }
-        return _direct_fetch(file_url, download_dir, '_iwara_temp', dl_headers)
+        return _direct_fetch(download_url, download_dir, '_iwara_temp', dl_headers)
 
     except Exception as e:
         print(f'  [iwara.tv] handler error: {e}')
