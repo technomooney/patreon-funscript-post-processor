@@ -173,9 +173,9 @@ def _switch_to_new_tab(driver, original_handles: set, timeout: int = 8) -> bool:
         new_handles = set(driver.window_handles) - original_handles
         if new_handles:
             driver.switch_to.window(next(iter(new_handles)))
-            time.sleep(2)
+            time.sleep(0.5)
             return True
-        time.sleep(0.5)
+        time.sleep(0.25)
     return False
 
 
@@ -262,7 +262,7 @@ def download_gofile(driver, url: str, _download_dir: str) -> bool:
     driver.get(url)
 
     try:
-        time.sleep(2)  # let the JS-heavy page render
+        time.sleep(1)  # let the JS-heavy page render
 
         # gofile.io embeds its file-manager state in window.__NUXT__ (Vue/Nuxt app).
         # Check for an error status before attempting any clicks.
@@ -320,7 +320,7 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
     driver.get(url)
 
     try:
-        time.sleep(3)  # let the video player initialize
+        time.sleep(1)  # let the video player initialize
 
         # Read the href from the download anchor and navigate directly in the same
         # tab — avoids relying on target="_blank" opening a new tab reliably.
@@ -331,7 +331,7 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
             return False
 
         driver.get(download_page_url)
-        time.sleep(3)  # let the download table render
+        time.sleep(1)  # let the download table render
 
         # The resolution table has <a data-url="...1080p.mp4?token=..."> entries.
         links = driver.find_elements(By.XPATH, '//a[@data-url]')
@@ -364,7 +364,7 @@ def download_rule34video(driver, url: str, download_dir: str) -> bool:
     driver.get(url)
 
     try:
-        time.sleep(3)
+        time.sleep(1)
 
         # rule34video.com hides quality links behind a download button.
         # Use JS to click it so the DOM reveals the links without the browser
@@ -376,7 +376,7 @@ def download_rule34video(driver, url: str, download_dir: str) -> bool:
         ))
         if download_btns:
             driver.execute_script('arguments[0].click()', download_btns[0])
-            time.sleep(1)
+            time.sleep(0.5)
 
         mp4_links = driver.find_elements(By.XPATH, '//a[contains(@href,".mp4")]')
         if not mp4_links:
@@ -429,7 +429,7 @@ def download_hanimetv(driver, url: str, download_dir: str) -> bool:
     driver.get(url)
 
     try:
-        time.sleep(3)
+        time.sleep(1)
 
         # Step 1: click the top-level DOWNLOAD button to open the quality selection page.
         download_btn = driver.find_element(
@@ -439,7 +439,7 @@ def download_hanimetv(driver, url: str, download_dir: str) -> bool:
         )
         original_handles = set(driver.window_handles)
         download_btn.click()
-        time.sleep(2)
+        time.sleep(1)
 
         # Switch to the new tab if one was opened.
         _switch_to_new_tab(driver, original_handles)
@@ -451,7 +451,7 @@ def download_hanimetv(driver, url: str, download_dir: str) -> bool:
             'contains(normalize-space(.),"Get Download Links")]'
         )
         driver.execute_script('arguments[0].click()', get_links_btn)
-        time.sleep(2)
+        time.sleep(1)
 
         # Step 3: collect quality anchor elements inside content__dls__btn containers.
         # Each <a> wraps a button whose text is the resolution label (e.g. "720p").
