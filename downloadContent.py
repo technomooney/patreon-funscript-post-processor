@@ -590,7 +590,12 @@ def _iwara_login() -> str | None:
     req = urllib.request.Request(
         'https://api.iwara.tv/user/login',
         data=data,
-        headers={'Content-Type': 'application/json'},
+        headers={
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Origin': 'https://www.iwara.tv',
+            'Referer': 'https://www.iwara.tv/',
+        },
         method='POST',
     )
     try:
@@ -622,7 +627,9 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
                 return False
 
         headers: dict[str, str] = {
-            'User-Agent': 'Mozilla/5.0',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Origin': 'https://www.iwara.tv',
+            'Referer': 'https://www.iwara.tv/',
             'Authorization': f'Bearer {_iwara_token}',
         }
 
