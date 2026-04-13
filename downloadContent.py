@@ -160,6 +160,8 @@ def setup_driver(initial_download_dir: str):
         'download.prompt_for_download': False,
         'download.directory_upgrade': True,
         'safebrowsing.enabled': True,
+        'credentials_enable_service': False,
+        'profile.password_manager_enabled': False,
     }
     options.add_experimental_option('prefs', prefs)
 
@@ -587,19 +589,36 @@ def _iwara_browser_login(driver) -> bool:
 
     try:
         wait = WebDriverWait(driver, 10)
+
         email_field = wait.until(EC.presence_of_element_located(
             (By.XPATH, '//input[@type="email" or @name="email" or @autocomplete="email"]')
         ))
+        email_field.click()
+        time.sleep(0.3)
         email_field.clear()
-        email_field.send_keys(email)
+        for char in email:
+            email_field.send_keys(char)
+            time.sleep(0.05)
 
         pw_field = driver.find_element(By.XPATH, '//input[@type="password"]')
-        pw_field.clear()
-        pw_field.send_keys(password)
+        pw_field.click()
+        time.sleep(0.3)
+        for char in password:
+            pw_field.send_keys(char)
+            time.sleep(0.05)
 
+        time.sleep(0.5)
         submit = driver.find_element(By.XPATH, '//button[@type="submit"]')
         submit.click()
-        time.sleep(3)
+
+        # Wait until we leave the login page (successful redirect).
+        try:
+            WebDriverWait(driver, 15).until(EC.url_changes('https://www.iwara.tv/login'))
+            print('  [iwara.tv] browser login successful')
+        except TimeoutException:
+            print(f'  [iwara.tv] login may have failed — still on: {driver.current_url}')
+            print(f'  [iwara.tv] page title: {driver.title!r}')
+            return False
 
         _iwara_browser_logged_in = True
         return True
