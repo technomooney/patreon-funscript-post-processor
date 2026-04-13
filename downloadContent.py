@@ -713,11 +713,9 @@ def find_and_download(base_path: str):
                             'domain': domain,
                         })
                         continue
-                    # Restart the driver in windowed mode and persist the setting.
+                    # Restart the driver in windowed mode for this run only.
                     driver.quit()
                     os.environ['BROWSER_HEADLESS'] = 'false'
-                    _update_env_file('BROWSER_HEADLESS', 'false')
-                    print('  BROWSER_HEADLESS set to false in .env.')
                     print('  Restarting browser in windowed mode...')
                     driver = setup_driver(folder)
                     set_download_dir(driver, folder)
