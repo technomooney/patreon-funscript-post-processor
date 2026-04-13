@@ -1,6 +1,5 @@
 import base64
 import csv
-import hashlib
 import json
 import mimetypes
 import os
@@ -553,32 +552,6 @@ def download_hanimetv(driver, url: str, download_dir: str) -> bool:
 # Cached Bearer token — obtained once per session on first iwara.tv download.
 _iwara_token: str | None = None
 
-# Signing secret embedded in the iwara.tv frontend client.
-# Can be overridden via IWARA_SECRET in .env if the site rotates it.
-_IWARA_SECRET = os.getenv('IWARA_SECRET', '5nFp9kmbNnHdAFhaqMvt')
-
-
-def _iwara_update_secret(new_secret: str):
-    """Persist *new_secret* to .env and update the in-process global."""
-    global _IWARA_SECRET
-    _IWARA_SECRET = new_secret
-    os.environ['IWARA_SECRET'] = new_secret
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
-    if os.path.exists(env_path):
-        with open(env_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        found = False
-        for i, line in enumerate(lines):
-            if line.startswith('IWARA_SECRET='):
-                lines[i] = f'IWARA_SECRET={new_secret}\n'
-                found = True
-                break
-        if not found:
-            lines.append(f'IWARA_SECRET={new_secret}\n')
-        with open(env_path, 'w', encoding='utf-8') as f:
-            f.writelines(lines)
-        print(f'  [iwara.tv] .env updated with new secret.')
-
 
 def _iwara_login() -> str | None:
     """POST credentials to the iwara API and return a Bearer token, or None."""
@@ -630,18 +603,18 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
                 print('  [iwara.tv] login failed — set IWARA_EMAIL and IWARA_PASSWORD in .env')
                 return False
 
-        headers: dict[str, str] = {
+        api_headers: dict[str, str] = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             'Origin': 'https://www.iwara.tv',
             'Referer': 'https://www.iwara.tv/',
             'Authorization': f'Bearer {_iwara_token}',
         }
 
-        # Fetch video metadata — the file list may be embedded here or at /file.
+        # Fetch video metadata.
         try:
             meta_req = urllib.request.Request(
                 f'https://api.iwara.tv/video/{video_id}',
-                headers=headers,
+                headers=api_headers,
             )
             with urllib.request.urlopen(meta_req) as resp:
                 video_meta = json.loads(resp.read())
@@ -651,98 +624,34 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
                 print('  [iwara.tv] 401 Unauthorized — credentials may be wrong.')
                 print('  Re-run setup_credentials.py to update them.')
             elif e.code == 403:
-                print('  [iwara.tv] 403 Forbidden on video metadata — token rejected.')
+                print('  [iwara.tv] 403 Forbidden — token rejected.')
                 print('  Re-run setup_credentials.py to update your credentials.')
             elif e.code == 404:
-                print('  [iwara.tv] 404 on video metadata — video not found or account lacks access.')
+                print('  [iwara.tv] 404 — video not found or account lacks access.')
             else:
                 print(f'  [iwara.tv] HTTP {e.code} fetching video metadata: {body}')
             return False
 
-        # 'fileUrl' is the quality list; 'file' is the raw upload object.
-        file_url_val = video_meta.get('fileUrl')
-        file_val     = video_meta.get('file')
-        print(f'  [iwara.tv] fileUrl={file_url_val!r}')
-        print(f'  [iwara.tv] file={file_val!r}')
+        # fileUrl is a pre-signed CDN URL (expires + hash in query string).
+        # file    is the raw upload metadata (height, size, etc.).
+        file_url = video_meta.get('fileUrl') or ''
+        file_info = video_meta.get('file') or {}
 
-        if isinstance(file_url_val, list) and file_url_val:
-            files = file_url_val
-        elif isinstance(file_val, list) and file_val:
-            files = file_val
-        elif isinstance(file_val, dict):
-            files = [file_val]
-        else:
-            print(f'  [iwara.tv] no usable file list in metadata — keys: {list(video_meta.keys())}')
+        if not file_url:
+            print(f'  [iwara.tv] no fileUrl in metadata — keys: {list(video_meta.keys())}')
             return False
 
-        if not files:
-            print(f'  [iwara.tv] file list is empty')
-            return False
+        height = file_info.get('height', '?')
+        size_mb = file_info.get('size', 0) / 1024 / 1024
+        print(f'  [iwara.tv] fetching {height}p ({size_mb:.0f} MB)...')
 
-        # Pick the best quality within MAX_RESOLUTION.
-        # "Source" is treated as 9999 p so it is only chosen when no cap applies.
-        max_res = int(os.getenv('MAX_RESOLUTION', '1080'))
-
-        def _iwara_res(entry: dict) -> int:
-            name = (entry.get('name') or '').lower()
-            if name == 'source':
-                return 9999
-            digits = ''.join(c for c in name if c.isdigit())
-            return int(digits) if digits else 0
-
-        files_sorted = sorted(files, key=_iwara_res, reverse=True)
-        chosen = files_sorted[0]
-        for candidate in files_sorted:
-            if _iwara_res(candidate) <= max_res:
-                chosen = candidate
-                break
-
-        src = chosen.get('src') or {}
-        download_url = src.get('download') or src.get('view') or ''
-        if not download_url:
-            print(f'  [iwara.tv] no download URL in file entry: {chosen}')
-            return False
-
-        file_id = chosen.get('id', '')
-        expires = str(chosen.get('expires', ''))
-        res_label = chosen.get('name', '?')
-
-        if not expires:
-            print(f'  [iwara.tv] WARNING: no "expires" field in file entry — X-Version cannot be computed.')
-            print(f'  [iwara.tv] File entry keys: {list(chosen.keys())}')
-
-        def _attempt(secret: str) -> bool:
-            dl_headers = dict(headers)
-            if file_id and expires:
-                sig = hashlib.sha1(f'{file_id}_{expires}_{secret}'.encode()).hexdigest()
-                dl_headers['X-Version'] = sig
-            else:
-                print('  [iwara.tv] WARNING: sending request without X-Version header — likely to 403.')
-            print(f'  [iwara.tv] fetching {res_label}...')
-            return _direct_fetch(download_url, download_dir, '_iwara_temp', dl_headers)
-
-        try:
-            return _attempt(_IWARA_SECRET)
-        except urllib.error.HTTPError as e:
-            if e.code != 403:
-                raise
-            print(f'\n  [iwara.tv] 403 Forbidden — the CDN signing secret is likely out of date.')
-            print(f'  Current secret: {_IWARA_SECRET}')
-            print()
-            print('  To find the new secret:')
-            print('    1. Open https://www.iwara.tv in your browser and go to any video')
-            print('    2. Open DevTools (F12) > Network tab')
-            print('    3. Filter by "/file" — click the api.iwara.tv/.../file request')
-            print('       and note the "id" and "expires" values from the JSON response')
-            print('    4. Filter for the CDN download request (e.g. i.iwara.tv)')
-            print('       and read the X-Version header from its request headers')
-            print('    5. Or in Sources, press Ctrl+Shift+F and search for sha1 or X-Version')
-            print()
-            new_secret = input('  Enter new IWARA_SECRET (or press Enter to skip): ').strip()
-            if not new_secret:
-                return False
-            _iwara_update_secret(new_secret)
-            return _attempt(new_secret)
+        # The pre-signed URL already carries authentication — only send
+        # a browser-like User-Agent and Referer, not the Bearer token.
+        dl_headers: dict[str, str] = {
+            'User-Agent': api_headers['User-Agent'],
+            'Referer': 'https://www.iwara.tv/',
+        }
+        return _direct_fetch(file_url, download_dir, '_iwara_temp', dl_headers)
 
     except Exception as e:
         print(f'  [iwara.tv] handler error: {e}')
