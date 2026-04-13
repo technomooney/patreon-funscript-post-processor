@@ -646,6 +646,44 @@ def collect_tasks(base_path: str) -> tuple[list, list]:
     return tasks, failures
 
 
+def _write_playlist(base_path: str):
+    """
+    Scan *base_path* recursively for video files and write playlist.m3u8.
+    Files are sorted newest-first by modification time so the most recently
+    downloaded videos appear at the top when opened in a media player.
+    Temp files and the playlist itself are excluded.
+    """
+    video_files = []
+    for root, dirs, files in os.walk(base_path):
+        for f in files:
+            # Skip temp files left by handlers
+            if Path(f).stem.endswith('_temp'):
+                continue
+            full_path = os.path.join(root, f)
+            mime, _ = mimetypes.guess_type(full_path)
+            if mime and mime.startswith('video/'):
+                video_files.append(full_path)
+
+    if not video_files:
+        return
+
+    # Newest downloads first
+    video_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+
+    playlist_path = os.path.join(base_path, 'playlist.m3u8')
+    with open(playlist_path, 'w', encoding='utf-8') as f:
+        f.write('#EXTM3U\n')
+        for video_path in video_files:
+            title = Path(video_path).stem
+            # Relative path from the playlist location; forward slashes for
+            # cross-platform compatibility with media players.
+            rel_path = os.path.relpath(video_path, base_path).replace('\\', '/')
+            f.write(f'#EXTINF:-1,{title}\n')
+            f.write(f'{rel_path}\n')
+
+    print(f'\nPlaylist updated ({len(video_files)} videos): {playlist_path}')
+
+
 def _write_failures_csv(base_path: str, failures: list):
     """Write failed download entries to failed_downloads.csv in *base_path*."""
     if not failures:
@@ -776,6 +814,7 @@ def find_and_download(base_path: str):
     finally:
         driver.quit()
         _write_failures_csv(base_path, failures)
+        _write_playlist(base_path)
 
 
 def main():
