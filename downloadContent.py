@@ -1,5 +1,6 @@
 import base64
 import csv
+import re
 import json
 import mimetypes
 import os
@@ -552,6 +553,129 @@ def download_hanimetv(driver, url: str, download_dir: str) -> bool:
 # Cached Bearer token — obtained once per session on first iwara.tv download.
 _iwara_token: str | None = None
 
+# Whether the browser session has already completed the iwara.tv login flow.
+_iwara_browser_logged_in: bool = False
+
+
+def _iwara_browser_login(driver) -> bool:
+    """Log into iwara.tv via the browser UI. Returns True if successful."""
+    global _iwara_browser_logged_in
+    if _iwara_browser_logged_in:
+        return True
+
+    email    = _get_secret('IWARA_EMAIL').strip()
+    password = _get_secret('IWARA_PASSWORD').strip()
+    if not email or not password:
+        print('  [iwara.tv] no credentials — set IWARA_EMAIL and IWARA_PASSWORD via setup_credentials.py')
+        return False
+
+    driver.get('https://www.iwara.tv/login')
+    time.sleep(2)
+
+    # Dismiss age gate if present.
+    try:
+        age_btn = driver.find_element(By.XPATH,
+            '//button[contains(normalize-space(.),"18") or '
+            'contains(normalize-space(.),"Yes") or '
+            'contains(normalize-space(.),"Enter") or '
+            'contains(normalize-space(.),"I am")]'
+        )
+        age_btn.click()
+        time.sleep(1)
+    except Exception:
+        pass
+
+    try:
+        wait = WebDriverWait(driver, 10)
+        email_field = wait.until(EC.presence_of_element_located(
+            (By.XPATH, '//input[@type="email" or @name="email" or @autocomplete="email"]')
+        ))
+        email_field.clear()
+        email_field.send_keys(email)
+
+        pw_field = driver.find_element(By.XPATH, '//input[@type="password"]')
+        pw_field.clear()
+        pw_field.send_keys(password)
+
+        submit = driver.find_element(By.XPATH, '//button[@type="submit"]')
+        submit.click()
+        time.sleep(3)
+
+        _iwara_browser_logged_in = True
+        return True
+    except Exception as e:
+        print(f'  [iwara.tv] browser login failed: {e}')
+        return False
+
+
+def _download_iwara_browser(driver, url: str, download_dir: str) -> bool:
+    """Use the browser to scrape download links when the API quality list is incomplete."""
+    if not _iwara_browser_login(driver):
+        return False
+
+    driver.get(url)
+    time.sleep(3)
+
+    # Dismiss age gate if it appears on the video page.
+    try:
+        age_btn = driver.find_element(By.XPATH,
+            '//button[contains(normalize-space(.),"18") or '
+            'contains(normalize-space(.),"Yes") or '
+            'contains(normalize-space(.),"Enter") or '
+            'contains(normalize-space(.),"I am")]'
+        )
+        age_btn.click()
+        time.sleep(2)
+    except Exception:
+        pass
+
+    # Collect all CDN download/view links rendered by the React app.
+    links = driver.find_elements(By.XPATH,
+        '//a[contains(@href,".iwara.tv/download") or contains(@href,".iwara.tv/view")]'
+    )
+
+    if not links:
+        print('  [iwara.tv] no CDN links found in browser DOM — page may not have loaded')
+        print(f'  [iwara.tv] page title: {driver.title!r}')
+        return False
+
+    max_res = int(os.getenv('MAX_RESOLUTION', '1080'))
+
+    def _res_from_href(href: str) -> int:
+        href_lower = href.lower()
+        if 'preview' in href_lower:
+            return 0
+        for label in ('source',):
+            if label in href_lower:
+                return 9999
+        # filename pattern: ..._1080.mp4, ..._540.mp4, ..._360.mp4
+        m = re.search(r'_(\d+)\.mp4', href_lower)
+        if m:
+            return int(m.group(1))
+        return 1
+
+    scored = [(el, _res_from_href(el.get_attribute('href') or '')) for el in links]
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    chosen_el, chosen_res = scored[0]
+    for el, res in scored:
+        if res <= max_res:
+            chosen_el, chosen_res = el, res
+            break
+
+    download_url = chosen_el.get_attribute('href') or ''
+    if download_url.startswith('//'):
+        download_url = 'https:' + download_url
+
+    label = f'{chosen_res}p' if chosen_res not in (0, 9999) else ('source' if chosen_res == 9999 else 'preview')
+    print(f'  [iwara.tv] browser found {label}: {download_url}')
+
+    cdn_headers: dict[str, str] = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Referer': 'https://www.iwara.tv/',
+    }
+    return _direct_fetch(download_url, download_dir, '_iwara_temp', cdn_headers)
+
 
 def _iwara_login() -> str | None:
     """POST credentials to the iwara API and return a Bearer token, or None."""
@@ -668,10 +792,15 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
         available = [f.get('name') for f in files]
         print(f'  [iwara.tv] available qualities: {available}')
 
+        # If the API only returns low-quality transcodes (known site bug),
+        # fall back to the browser which renders the full quality list.
+        if all((f.get('name') or '').lower() in ('preview', '360') for f in files):
+            print('  [iwara.tv] API quality list is incomplete — switching to browser')
+            return _download_iwara_browser(_driver, url, download_dir)
+
         # Pick the best quality within MAX_RESOLUTION.
-        # Names are e.g. "preview", "360", "720", "1080", "Source".
+        # Names are e.g. "preview", "360", "540", "720", "1080", "Source".
         max_res = int(os.getenv('MAX_RESOLUTION', '1080'))
-        print(f'  [iwara.tv] MAX_RESOLUTION={max_res}')
 
         def _iwara_res(entry: dict) -> int:
             name = (entry.get('name') or '').lower()
