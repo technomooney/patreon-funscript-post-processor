@@ -44,6 +44,7 @@ KNOWN_DOMAINS = [
     'iwara.tv',
     'pixeldrain.com',
     'rule34video.com',
+    'rule34.xxx',
 ]
 
 # Links to these domains are creator pages / social profiles — no file to download.
@@ -422,6 +423,33 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
         raise  # let find_and_download handle the retry prompt
     except Exception as e:
         print(f'  [hanime1.me] handler error: {e}')
+
+    return False
+
+
+def download_rule34xxx(driver, url: str, download_dir: str) -> bool:
+    """Navigate to a rule34.xxx post page and download the original file."""
+    driver.get(url)
+
+    try:
+        time.sleep(1)
+
+        # The original file link is an <a> whose visible text is "Original image".
+        link = driver.find_element(By.XPATH,
+            '//a[contains(normalize-space(.),"Original image")]'
+        )
+        video_url = link.get_attribute('href') or ''
+        if not video_url:
+            print('  [rule34.xxx] "Original image" link has no href')
+            return False
+
+        # Strip query string for a clean extension, but keep full URL for the request.
+        print(f'  [rule34.xxx] fetching original...')
+        return _direct_fetch(video_url, download_dir, '_r34xxx_temp',
+                             {'Referer': 'https://rule34.xxx/'})
+
+    except Exception as e:
+        print(f'  [rule34.xxx] handler error: {e}')
 
     return False
 
@@ -959,6 +987,7 @@ DOMAIN_HANDLERS = {
     'iwara.tv':        download_iwara,
     'pixeldrain.com':  download_pixeldrain,
     'rule34video.com': download_rule34video,
+    'rule34.xxx':      download_rule34xxx,
 }
 
 
