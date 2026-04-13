@@ -118,6 +118,21 @@ else
     echo ""
 fi
 
+# IWARA_SECRET
+if [ -f ".env" ]; then
+    existing_iwara_secret=$(grep -oP '(?<=IWARA_SECRET=).*' .env 2>/dev/null || echo "5nFp9kmbNnHdAFhaqMvt")
+else
+    existing_iwara_secret="5nFp9kmbNnHdAFhaqMvt"
+fi
+echo ""
+echo "  iwara.tv signing secret — only change this if downloads start"
+echo "  failing with 403 errors. To find the new value, open iwara.tv"
+echo "  in your browser, go to DevTools > Sources, press Ctrl+Shift+F,"
+echo "  and search for the old secret or 'X-Version' to find the new one."
+echo ""
+read -rp "iwara.tv signing secret [${existing_iwara_secret}]: " IWARA_SECRET
+IWARA_SECRET="${IWARA_SECRET:-$existing_iwara_secret}"
+
 # Write .env
 cat > .env <<EOF
 # Pixeldrain API key — found at https://pixeldrain.com/user/api
@@ -136,6 +151,11 @@ MAX_RESOLUTION=${MAX_RESOLUTION}
 # Leave both blank to skip iwara.tv downloads.
 IWARA_EMAIL=${IWARA_EMAIL}
 IWARA_PASSWORD=${IWARA_PASSWORD}
+
+# iwara.tv CDN signing secret — embedded in the iwara.tv frontend JS.
+# If downloads return 403, find the new value in DevTools > Sources,
+# search all files (Ctrl+Shift+F) for the old secret or 'X-Version'.
+IWARA_SECRET=${IWARA_SECRET}
 EOF
 
 echo ""

@@ -539,7 +539,8 @@ def download_hanimetv(driver, url: str, download_dir: str) -> bool:
 _iwara_token: str | None = None
 
 # Signing secret embedded in the iwara.tv frontend client.
-_IWARA_SECRET = '5nFp9kmbNnHdAFhaqMvt'
+# Can be overridden via IWARA_SECRET in .env if the site rotates it.
+_IWARA_SECRET = os.getenv('IWARA_SECRET', '5nFp9kmbNnHdAFhaqMvt')
 
 
 def _iwara_login() -> str | None:

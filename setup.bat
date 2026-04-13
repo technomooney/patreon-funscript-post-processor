@@ -42,6 +42,7 @@ set "EXISTING_HEADLESS=false"
 set "EXISTING_RES=1080"
 set "EXISTING_IWARA_EMAIL="
 set "EXISTING_IWARA_PASSWORD="
+set "EXISTING_IWARA_SECRET=5nFp9kmbNnHdAFhaqMvt"
 
 if exist ".env" (
     for /f "usebackq tokens=1,* delims==" %%A in (".env") do (
@@ -50,6 +51,7 @@ if exist ".env" (
         if "%%A"=="MAX_RESOLUTION"      set "EXISTING_RES=%%B"
         if "%%A"=="IWARA_EMAIL"         set "EXISTING_IWARA_EMAIL=%%B"
         if "%%A"=="IWARA_PASSWORD"      set "EXISTING_IWARA_PASSWORD=%%B"
+        if "%%A"=="IWARA_SECRET"        set "EXISTING_IWARA_SECRET=%%B"
     )
 )
 
@@ -110,6 +112,16 @@ if defined EXISTING_IWARA_PASSWORD (
     set /p "IWARA_PASSWORD=iwara.tv password (leave blank to skip iwara.tv downloads): "
 )
 
+:: IWARA_SECRET
+echo.
+echo   iwara.tv signing secret -- only change this if downloads start
+echo   failing with 403 errors. To find the new value, open iwara.tv
+echo   in your browser, go to DevTools ^> Sources, press Ctrl+Shift+F,
+echo   and search for the old secret or 'X-Version' to find the new one.
+echo.
+set "IWARA_SECRET=!EXISTING_IWARA_SECRET!"
+set /p "IWARA_SECRET=iwara.tv signing secret [!EXISTING_IWARA_SECRET!]: "
+
 :: --- Write .env -------------------------------------------------------------
 
 (
@@ -129,6 +141,11 @@ if defined EXISTING_IWARA_PASSWORD (
     echo # Leave both blank to skip iwara.tv downloads.
     echo IWARA_EMAIL=!IWARA_EMAIL!
     echo IWARA_PASSWORD=!IWARA_PASSWORD!
+    echo.
+    echo # iwara.tv CDN signing secret -- embedded in the iwara.tv frontend JS.
+    echo # If downloads return 403, find the new value in DevTools ^> Sources,
+    echo # search all files ^(Ctrl+Shift+F^) for the old secret or 'X-Version'.
+    echo IWARA_SECRET=!IWARA_SECRET!
 ) > .env
 
 echo.
