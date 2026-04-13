@@ -20,7 +20,7 @@ from selenium.common.exceptions import TimeoutException
 
 load_dotenv()
 
-_KEYRING_SERVICE = 'patreon-downloader'
+_KEYRING_SERVICE = 'patreon-funscript-video-downloader'
 
 
 def _get_secret(key: str, default: str = '') -> str:

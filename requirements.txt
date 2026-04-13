@@ -2,4 +2,5 @@ selenium==4.43.0
 undetected-chromedriver==3.5.5
 python-dotenv==1.2.2
 keyring==25.6.0
+secretstorage==3.3.3
 setuptools==82.0.1
