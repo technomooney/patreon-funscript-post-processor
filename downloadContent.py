@@ -143,10 +143,14 @@ def setup_driver(initial_download_dir: str):
 
     headless = os.getenv('BROWSER_HEADLESS', 'false').strip().lower() == 'true'
     if headless:
-        # --headless=new is Chrome's modern headless mode; much harder to detect
-        # than the legacy --headless flag.  Set BROWSER_HEADLESS=false in .env
-        # if a site starts blocking the automation.
         options.add_argument('--headless=new')
+        # Make headless Chrome look as close to a real browser as possible.
+        # Cloudflare and similar bot-detection systems fingerprint window size,
+        # the automation flag, and WebGL renderer strings.
+        options.add_argument('--window-size=1920,1080')
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--no-sandbox')
 
     browser = _find_browser()
     if browser is None:
@@ -155,6 +159,17 @@ def setup_driver(initial_download_dir: str):
 
     driver = uc.Chrome(options=options, browser_executable_path=browser)
     return driver
+
+
+def _is_cloudflare_blocked(driver) -> bool:
+    """Return True if the current page is a Cloudflare challenge/block page."""
+    title = driver.title or ''
+    return any(phrase in title for phrase in (
+        'Attention Required! | Cloudflare',
+        'Just a moment',
+        'Access denied',
+        'Checking your browser',
+    ))
 
 
 def set_download_dir(driver, download_dir: str):
@@ -323,16 +338,19 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
     driver.get(url)
 
     try:
-        wait = WebDriverWait(driver, 15)
+        wait = WebDriverWait(driver, 5)
 
         # Wait for the download anchor to be present — headless mode renders
         # slower so a fixed sleep is not reliable here.
         try:
             download_btn = wait.until(EC.presence_of_element_located((By.ID, 'downloadBtn')))
         except TimeoutException:
-            print(f'  [hanime1.me] timed out waiting for #downloadBtn')
-            print(f'  [hanime1.me] current URL : {driver.current_url}')
-            print(f'  [hanime1.me] page title  : {driver.title!r}')
+            if _is_cloudflare_blocked(driver):
+                print('  [hanime1.me] blocked by Cloudflare — set BROWSER_HEADLESS=false in .env and retry')
+            else:
+                print(f'  [hanime1.me] timed out waiting for #downloadBtn')
+                print(f'  [hanime1.me] current URL : {driver.current_url}')
+                print(f'  [hanime1.me] page title  : {driver.title!r}')
             return False
 
         download_page_url = download_btn.get_attribute('href')
