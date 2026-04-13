@@ -20,6 +20,20 @@ from selenium.common.exceptions import TimeoutException
 
 load_dotenv()
 
+_KEYRING_SERVICE = 'patreon-downloader'
+
+
+def _get_secret(key: str, default: str = '') -> str:
+    """Read a secret from the OS keyring, falling back to .env / environment variables."""
+    try:
+        import keyring
+        value = keyring.get_password(_KEYRING_SERVICE, key)
+        if value:
+            return value
+    except Exception:
+        pass
+    return os.getenv(key, default)
+
 
 # Add new domains here along with a handler function in DOMAIN_HANDLERS below.
 # If a URL's domain is not listed, the script will raise an error and skip it.
@@ -454,7 +468,7 @@ def download_pixeldrain(_driver, url: str, download_dir: str) -> bool:
         print(f'  [pixeldrain.com] fetching {file_id}...')
 
         headers: dict[str, str] = {'Referer': 'https://pixeldrain.com/'}
-        api_key = os.getenv('PIXELDRAIN_API_KEY', '').strip()
+        api_key = _get_secret('PIXELDRAIN_API_KEY').strip()
         if api_key:
             # Pixeldrain uses HTTP Basic Auth: empty username, API key as password.
             token = base64.b64encode(f':{api_key}'.encode()).decode()
@@ -568,8 +582,8 @@ def _iwara_update_secret(new_secret: str):
 
 def _iwara_login() -> str | None:
     """POST credentials to the iwara API and return a Bearer token, or None."""
-    email = os.getenv('IWARA_EMAIL', '').strip()
-    password = os.getenv('IWARA_PASSWORD', '').strip()
+    email = _get_secret('IWARA_EMAIL').strip()
+    password = _get_secret('IWARA_PASSWORD').strip()
     if not email or not password:
         return None
     data = json.dumps({'email': email, 'password': password}).encode()

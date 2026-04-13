@@ -42,26 +42,13 @@ echo "Installing dependencies..."
 .venv/bin/pip install --quiet -r requirements.txt
 echo "Dependencies installed."
 
-# --- .env configuration -----------------------------------------------------
+# --- .env configuration (non-sensitive settings only) -----------------------
 
 echo ""
 echo "========================================"
 echo "  Configure settings (press Enter to keep the default)"
 echo "========================================"
 echo ""
-
-# PIXELDRAIN_API_KEY
-if [ -f ".env" ]; then
-    existing_key=$(grep -oP '(?<=PIXELDRAIN_API_KEY=).*' .env 2>/dev/null || echo "")
-else
-    existing_key=""
-fi
-if [ -n "$existing_key" ]; then
-    read -rp "Pixeldrain API key [current: ${existing_key}]: " PIXELDRAIN_API_KEY
-    PIXELDRAIN_API_KEY="${PIXELDRAIN_API_KEY:-$existing_key}"
-else
-    read -rp "Pixeldrain API key (leave blank to download anonymously): " PIXELDRAIN_API_KEY
-fi
 
 # BROWSER_HEADLESS
 if [ -f ".env" ]; then
@@ -90,34 +77,6 @@ if ! [[ "$MAX_RESOLUTION" =~ ^[0-9]+$ ]]; then
     MAX_RESOLUTION="1080"
 fi
 
-# IWARA_EMAIL
-if [ -f ".env" ]; then
-    existing_iwara_email=$(grep -oP '(?<=IWARA_EMAIL=).*' .env 2>/dev/null || echo "")
-else
-    existing_iwara_email=""
-fi
-if [ -n "$existing_iwara_email" ]; then
-    read -rp "iwara.tv email [current: ${existing_iwara_email}]: " IWARA_EMAIL
-    IWARA_EMAIL="${IWARA_EMAIL:-$existing_iwara_email}"
-else
-    read -rp "iwara.tv email (leave blank to skip iwara.tv downloads): " IWARA_EMAIL
-fi
-
-# IWARA_PASSWORD
-if [ -f ".env" ]; then
-    existing_iwara_pass=$(grep -oP '(?<=IWARA_PASSWORD=).*' .env 2>/dev/null || echo "")
-else
-    existing_iwara_pass=""
-fi
-if [ -n "$existing_iwara_pass" ]; then
-    read -rsp "iwara.tv password [press Enter to keep current]: " IWARA_PASSWORD
-    echo ""
-    IWARA_PASSWORD="${IWARA_PASSWORD:-$existing_iwara_pass}"
-else
-    read -rsp "iwara.tv password (leave blank to skip iwara.tv downloads): " IWARA_PASSWORD
-    echo ""
-fi
-
 # IWARA_SECRET
 if [ -f ".env" ]; then
     existing_iwara_secret=$(grep -oP '(?<=IWARA_SECRET=).*' .env 2>/dev/null || echo "5nFp9kmbNnHdAFhaqMvt")
@@ -127,18 +86,14 @@ fi
 echo ""
 echo "  iwara.tv signing secret — only change this if downloads start"
 echo "  failing with 403 errors. To find the new value, open iwara.tv"
-echo "  in your browser, go to DevTools > Sources, press Ctrl+Shift+F,"
-echo "  and search for the old secret or 'X-Version' to find the new one."
+echo "  in your browser, go to DevTools > Network, watch the CDN download"
+echo "  request, and read the X-Version header from its request headers."
 echo ""
 read -rp "iwara.tv signing secret [${existing_iwara_secret}]: " IWARA_SECRET
 IWARA_SECRET="${IWARA_SECRET:-$existing_iwara_secret}"
 
-# Write .env
+# Write .env (credentials are stored in the OS keyring, not here)
 cat > .env <<EOF
-# Pixeldrain API key — found at https://pixeldrain.com/user/api
-# Leave blank to download as anonymous (public files only).
-PIXELDRAIN_API_KEY=${PIXELDRAIN_API_KEY}
-
 # Run the browser in headless mode (no visible window).
 # Set to false if sites start blocking the automation.
 BROWSER_HEADLESS=${BROWSER_HEADLESS}
@@ -147,20 +102,23 @@ BROWSER_HEADLESS=${BROWSER_HEADLESS}
 # Downloads the highest quality available up to this value.
 MAX_RESOLUTION=${MAX_RESOLUTION}
 
-# iwara.tv account credentials — required for 18+ content.
-# Leave both blank to skip iwara.tv downloads.
-IWARA_EMAIL=${IWARA_EMAIL}
-IWARA_PASSWORD=${IWARA_PASSWORD}
-
 # iwara.tv CDN signing secret — embedded in the iwara.tv frontend JS.
-# If downloads return 403, find the new value in DevTools > Sources,
-# search all files (Ctrl+Shift+F) for the old secret or 'X-Version'.
+# If downloads return 403, find the new value via DevTools Network tab:
+# watch the CDN download request and read the X-Version request header.
 IWARA_SECRET=${IWARA_SECRET}
 EOF
 
 echo ""
 echo ".env written."
+
+# --- Credentials (stored securely in the OS keyring) ------------------------
+
 echo ""
+echo "========================================"
+echo "  Credential Setup"
+echo "========================================"
+.venv/bin/python setup_credentials.py
+
 echo "========================================"
 echo "  Setup complete!"
 echo "  Run ./run.sh to start the downloader."
