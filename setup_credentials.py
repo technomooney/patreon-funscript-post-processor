@@ -7,7 +7,7 @@ or Linux Secret Service) so they are never written to disk as plain text.
 import getpass
 import sys
 
-SERVICE = 'patreon-downloader'
+SERVICE = 'patreon-funscript-video-downloader'
 
 try:
     import keyring
