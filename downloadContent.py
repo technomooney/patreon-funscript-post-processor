@@ -161,9 +161,19 @@ def set_download_dir(driver, download_dir: str):
     })
 
 
+def _switch_to_new_tab(driver, original_handles: set) -> bool:
+    """Switch to a newly opened tab if one exists. Returns True if a new tab was found."""
+    new_handles = set(driver.window_handles) - original_handles
+    if new_handles:
+        driver.switch_to.window(next(iter(new_handles)))
+        time.sleep(2)
+        return True
+    return False
+
+
 def wait_for_download(download_dir: str, before_files: set[str], timeout: int | None = None):
     """
-    Poll *download_dir* until a new fully-written file appears.
+    Poll *download_dir* until a new fully written file appears.
     Temporary browser download files (.part, .crdownload, .tmp) are ignored.
     Pass timeout (seconds) to give up after that duration; None waits indefinitely.
     Returns the full path of the downloaded file, or None if timed out.
@@ -187,17 +197,18 @@ def wait_for_download(download_dir: str, before_files: set[str], timeout: int | 
 # Shared download utilities
 # ---------------------------------------------------------------------------
 
-def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, referer: str) -> bool:
+def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: dict[str, str]) -> bool:
     """Download *video_url* straight to *download_dir* using urllib, no browser needed."""
     ext = os.path.splitext(urlparse(video_url).path)[1] or '.mp4'
     temp_path = os.path.join(download_dir, f'{temp_prefix}{ext}')
-    req = urllib.request.Request(video_url, headers={'Referer': referer})
+    req = urllib.request.Request(video_url, headers=headers)
     with urllib.request.urlopen(req) as response:
         size_mb = int(response.headers.get('Content-Length', 0)) / 1024 / 1024
         if size_mb:
             print(f'  file size: {size_mb:.1f} MB')
         with open(temp_path, 'wb') as f:
-            shutil.copyfileobj(response, f)
+            while chunk := response.read(65536):
+                f.write(chunk)
     return True
 
 
@@ -210,7 +221,7 @@ def _get_max_resolution() -> int:
 
 
 def _parse_resolution(text: str) -> int:
-    """Return the first resolution value (e.g. 1080) found in *text*, or 0."""
+    """Return the first resolution value (e.g., 1080) found in *text*, or 0."""
     for res in [2160, 1080, 720, 480, 360, 240]:
         if str(res) in text:
             return res
@@ -219,7 +230,7 @@ def _parse_resolution(text: str) -> int:
 
 def _pick_best(candidates: list, resolution_fn) -> tuple:
     """
-    Return (best_candidate, resolution) honouring MAX_RESOLUTION.
+    Return (best_candidate, resolution) honoring MAX_RESOLUTION.
     Picks the highest resolution <= MAX_RESOLUTION.
     Falls back to the lowest available if every option exceeds the cap.
     """
@@ -238,12 +249,12 @@ def _pick_best(candidates: list, resolution_fn) -> tuple:
 # placing a completed file in download_dir.  Returns True on success.
 # ---------------------------------------------------------------------------
 
-def download_gofile(driver, url: str, download_dir: str) -> bool:
+def download_gofile(driver, url: str, _download_dir: str) -> bool:
     """Navigate to a gofile.io share and click the download button."""
     driver.get(url)
 
     try:
-        time.sleep(3)  # let the JS-heavy page render
+        time.sleep(2)  # let the JS-heavy page render
 
         # gofile.io embeds its file-manager state in window.__NUXT__ (Vue/Nuxt app).
         # Check for an error status before attempting any clicks.
@@ -262,8 +273,8 @@ def download_gofile(driver, url: str, download_dir: str) -> bool:
             if status:
                 print(f'  [gofile.io] link is invalid — server returned status: {status}')
                 return False
-        except Exception:
-            pass  # JS execution failed; fall through to DOM-based checks
+        except Exception as e:
+            print(f'  [gofile.io] could not read page state: {e}')  # fall through to DOM checks
 
         # gofile.io renders file rows with a download icon/button per file.
         # Try the most common selectors; adjust if gofile changes their markup.
@@ -301,7 +312,7 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
     driver.get(url)
 
     try:
-        time.sleep(3)  # let the video player initialise
+        time.sleep(3)  # let the video player initialize
 
         # Click the download icon (id="video-download-btn") which opens a resolution page.
         download_btn = driver.find_element(By.ID, 'video-download-btn')
@@ -310,10 +321,7 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
         time.sleep(2)
 
         # Switch to the new tab if one was opened, otherwise stay on the current page.
-        new_handles = set(driver.window_handles) - original_handles
-        if new_handles:
-            driver.switch_to.window(new_handles.pop())
-            time.sleep(2)
+        switched = _switch_to_new_tab(driver, original_handles)
 
         # The resolution page has <a data-url="...1080p.mp4?token=..."> entries.
         links = driver.find_elements(By.XPATH, '//a[@data-url]')
@@ -331,14 +339,14 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
             return False
 
         # Close the download tab and return to the main window before the long fetch.
-        if new_handles and len(driver.window_handles) > 1:
+        if switched and len(driver.window_handles) > 1:
             driver.close()
             driver.switch_to.window(driver.window_handles[0])
 
-        # The data-url contains a self-contained token so no browser session is needed.
+        # The data-url contains a self-contained token, so no browser session is needed.
         # Downloading via urllib avoids the browser opening the mp4 inline.
         print(f'  [hanime] fetching {resolution}p...')
-        return _direct_fetch(video_url, download_dir, '_hanime_temp', 'https://hanime1.me/')
+        return _direct_fetch(video_url, download_dir, '_hanime_temp', {'Referer': 'https://hanime1.me/'})
 
     except Exception as e:
         print(f'  [hanime1.me] handler error: {e}')
@@ -380,7 +388,7 @@ def download_rule34video(driver, url: str, download_dir: str) -> bool:
             return False
 
         print(f'  [rule34video.com] fetching {resolution}p...')
-        return _direct_fetch(video_url, download_dir, '_r34v_temp', 'https://rule34video.com/')
+        return _direct_fetch(video_url, download_dir, '_r34v_temp', {'Referer': 'https://rule34video.com/'})
 
     except Exception as e:
         print(f'  [rule34video.com] handler error: {e}')
@@ -391,7 +399,7 @@ def download_rule34video(driver, url: str, download_dir: str) -> bool:
 def download_pixeldrain(_driver, url: str, download_dir: str) -> bool:
     """Download a pixeldrain.com file directly via its public API (no browser needed)."""
     try:
-        # Page URL: /u/<id>  →  API URL: /api/file/<id>
+        # Page URL: /u/<id> → API URL: /api/file/<id>
         file_id = urlparse(url).path.rstrip('/').split('/')[-1]
         video_url = f'https://pixeldrain.com/api/file/{file_id}'
         print(f'  [pixeldrain.com] fetching {file_id}...')
@@ -403,16 +411,7 @@ def download_pixeldrain(_driver, url: str, download_dir: str) -> bool:
             token = base64.b64encode(f':{api_key}'.encode()).decode()
             headers['Authorization'] = f'Basic {token}'
 
-        ext = os.path.splitext(urlparse(video_url).path)[1] or '.mp4'
-        temp_path = os.path.join(download_dir, f'_pixeldrain_temp{ext}')
-        req = urllib.request.Request(video_url, headers=headers)
-        with urllib.request.urlopen(req) as response:
-            size_mb = int(response.headers.get('Content-Length', 0)) / 1024 / 1024
-            if size_mb:
-                print(f'  file size: {size_mb:.1f} MB')
-            with open(temp_path, 'wb') as f:
-                shutil.copyfileobj(response, f)
-        return True
+        return _direct_fetch(video_url, download_dir, '_pixeldrain_temp', headers)
 
     except Exception as e:
         print(f'  [pixeldrain.com] handler error: {e}')
@@ -438,10 +437,7 @@ def download_hanimetv(driver, url: str, download_dir: str) -> bool:
         time.sleep(2)
 
         # Switch to the new tab if one was opened.
-        new_handles = set(driver.window_handles) - original_handles
-        if new_handles:
-            driver.switch_to.window(new_handles.pop())
-            time.sleep(2)
+        _switch_to_new_tab(driver, original_handles)
 
         # Step 2: click "Get Download Links" to reveal the quality buttons.
         get_links_btn = driver.find_element(
@@ -517,7 +513,7 @@ def _cleanup_temp_files(folder: str):
 
 def _video_exists(folder: str, basename: str) -> str | None:
     """Return the path of an existing video for *basename* in *folder*, or None.
-    Uses MIME type detection so any video format is recognised, not just a fixed list.
+    Uses MIME type detection so any video format is recognized, not just a fixed list.
     """
     for f in os.listdir(folder):
         stem, _ = os.path.splitext(f)
