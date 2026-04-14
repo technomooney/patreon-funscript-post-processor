@@ -1701,17 +1701,29 @@ def _dedup_existing(base_path: str) -> int:
     Set DEDUP_EXISTING=false in .env to skip this scan.
     """
     print('\n[dedup] Scanning for duplicates (set DEDUP_EXISTING=false to skip)...')
-    hash_to_paths: dict[str, list[str]] = {}
+
+    # Collect all candidate files first so we can show a total count.
+    candidates: list[str] = []
     for root, dirs, files in os.walk(base_path):
         dirs.sort()
         for f in sorted(files):
             if _is_temp_file(f):
                 continue
             full = os.path.join(root, f)
-            if not os.path.isfile(full):
-                continue
-            h = _file_hash(full)
-            hash_to_paths.setdefault(h, []).append(full)
+            if os.path.isfile(full):
+                candidates.append(full)
+
+    total = len(candidates)
+    hash_to_paths: dict[str, list[str]] = {}
+    for idx, full in enumerate(candidates, start=1):
+        # Overwrite the same line so large libraries don't flood the terminal.
+        print(f'  hashing {idx}/{total}: {_safe(os.path.basename(full))}' + ' ' * 10,
+              end='\r', flush=True)
+        h = _file_hash(full)
+        hash_to_paths.setdefault(h, []).append(full)
+
+    # Clear the progress line before printing results.
+    print(' ' * 80, end='\r')
 
     removed = 0
     for paths in hash_to_paths.values():
@@ -1720,17 +1732,18 @@ def _dedup_existing(base_path: str) -> int:
         paths.sort(key=os.path.getmtime)   # oldest first
         keeper = paths[0]
         for dup in paths[1:]:
-            print(f'  [dedup] duplicate of {_safe(os.path.basename(keeper))}: removing {_safe(dup)}')
+            print(f'  [dedup] keeping  {_safe(os.path.basename(keeper))}')
+            print(f'  [dedup] removing {_safe(os.path.basename(dup))}  ({_safe(os.path.dirname(dup))})')
             try:
                 os.remove(dup)
                 removed += 1
             except OSError as e:
-                print(f'  [dedup] could not remove {_safe(dup)}: {e}')
+                print(f'  [dedup] could not remove: {e}')
 
     if removed:
-        print(f'[dedup] removed {removed} duplicate video(s)')
+        print(f'[dedup] done — removed {removed} duplicate(s) from {total} files scanned')
     else:
-        print('[dedup] no duplicates found')
+        print(f'[dedup] done — no duplicates found ({total} files scanned)')
     return removed
 
 
