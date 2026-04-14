@@ -1955,20 +1955,50 @@ def _write_failures_csv(base_path: str, failures: list):
     print(f"\nFailed downloads ({len(failures)}) written to: {csv_path}")
 
 
+def _find_existing_by_hash(folder: str, file_hash: str, exclude: str) -> str | None:
+    """Return the path of any file in *folder* whose SHA-256 matches *file_hash*.
+
+    *exclude* is the path of the newly-downloaded temp file so it is not
+    compared against itself.
+    """
+    for f in os.listdir(folder):
+        full = os.path.join(folder, f)
+        if full == exclude or not os.path.isfile(full) or _is_temp_file(f):
+            continue
+        if _file_hash(full) == file_hash:
+            return full
+    return None
+
+
 def _save_downloaded(downloaded: str, folder: str, basename: str, link_idx: int,
                      newly_downloaded: list[str]) -> bool:
     """Hash *downloaded*, check for session/disk duplicates, then rename into place.
+
+    Checks (in order):
+      1. Session hashes — same content already saved this run.
+      2. Any file in *folder* with the same hash — catches duplicates saved
+         under a different name (e.g. multiple funscripts from a Yandex link).
+      3. Name collision at the exact dest_path with different content — saved
+         as [alt2], [alt3], etc.
 
     Returns True if the file was kept (and added to *newly_downloaded*).
     Always removes *downloaded* if the content is a duplicate.
     """
     new_hash = _file_hash(downloaded)
 
-    # --- session-level dedup: same content already saved this run ---
+    # --- 1. session-level dedup: same content already saved this run ---
     if new_hash in _session_hashes:
         prior = _session_hashes[new_hash]
         print(f'  [SKIP] identical to already-downloaded file: {_safe(os.path.basename(prior))}')
         os.remove(downloaded)
+        return False
+
+    # --- 2. folder-level dedup: same content exists under any name ---
+    existing_match = _find_existing_by_hash(folder, new_hash, exclude=downloaded)
+    if existing_match:
+        print(f'  [SKIP] identical file already on disk: {_safe(os.path.basename(existing_match))}')
+        os.remove(downloaded)
+        _session_hashes[new_hash] = existing_match
         return False
 
     ext = os.path.splitext(downloaded)[1]
@@ -1978,15 +2008,8 @@ def _save_downloaded(downloaded: str, folder: str, basename: str, link_idx: int,
         dest_name = f"{basename} ({link_idx + 1}){ext}"
     dest_path = os.path.join(folder, dest_name)
 
+    # --- 3. name collision with different content — keep both ---
     if os.path.exists(dest_path):
-        existing_hash = _file_hash(dest_path)
-        if existing_hash == new_hash:
-            print(f'  [SKIP] identical file already on disk: {_safe(dest_name)}')
-            os.remove(downloaded)
-            # Register so later links in this session don't re-download.
-            _session_hashes[new_hash] = dest_path
-            return False
-        # Different content with the same name — keep both, append a counter.
         counter = 2
         stem_base, ext2 = os.path.splitext(dest_name)
         while True:
