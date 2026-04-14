@@ -76,6 +76,7 @@ KNOWN_DOMAINS = [
     'rule34video.party',
     'spankbang.com',
     'faptap.net',
+    'e621.net',
 ]
 
 # Links to these domains are creator pages / social profiles — no file to download.
@@ -1425,6 +1426,51 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
     return False
 
 
+def download_e621(driver, url: str, download_dir: str) -> bool:
+    """Download the original video from an e621.net post page.
+
+    e621 embeds videos in a <video> element whose data-file-url attribute
+    points directly to the original CDN file — no quality-selector interaction
+    needed.  Falls back to the <source src> child if data-file-url is absent.
+    """
+    driver.get(url)
+    time.sleep(2)
+
+    try:
+        try:
+            video_el = driver.find_element(By.CSS_SELECTOR, '#webm-video, video')
+        except Exception:
+            print('  [e621.net] no video element found — post may be an image, not a video')
+            return False
+
+        # data-file-url is the cleanest path to the original file.
+        video_url = video_el.get_attribute('data-file-url') or ''
+
+        if not video_url:
+            # Fall back to the <source> child element.
+            try:
+                source_el = video_el.find_element(By.TAG_NAME, 'source')
+                video_url = source_el.get_attribute('src') or ''
+            except Exception:
+                pass
+
+        if not video_url:
+            video_url = video_el.get_attribute('src') or ''
+
+        if not video_url:
+            print('  [e621.net] could not find video URL in page')
+            return False
+
+        print('  [e621.net] fetching original...')
+        return _direct_fetch(video_url, download_dir, '_e621_temp',
+                             {'Referer': 'https://e621.net/'})
+
+    except Exception as e:
+        print(f'  [e621.net] handler error: {e}')
+
+    return False
+
+
 def download_faptap(driver, url: str, download_dir: str) -> bool:
     """Follow the original-source link on a faptap.net video page and dispatch
     to the handler for that source domain.
@@ -1507,6 +1553,7 @@ DOMAIN_HANDLERS = {
     'rule34video.party': download_rule34video,
     'spankbang.com':     download_spankbang,
     'faptap.net':        download_faptap,
+    'e621.net':          download_e621,
 }
 
 
