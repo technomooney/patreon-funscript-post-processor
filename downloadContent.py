@@ -75,6 +75,7 @@ KNOWN_DOMAINS = [
     'mega.co.nz',
     'rule34video.party',
     'spankbang.com',
+    'faptap.net',
 ]
 
 # Links to these domains are creator pages / social profiles — no file to download.
@@ -1424,6 +1425,64 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
     return False
 
 
+def download_faptap(driver, url: str, download_dir: str) -> bool:
+    """Follow the original-source link on a faptap.net video page and dispatch
+    to the handler for that source domain.
+
+    faptap.net is a video aggregator; each video page links back to the host
+    site (e.g. spankbang.com, rule34video.com).  This handler finds that link
+    and re-uses the existing per-domain handler so all quality selection,
+    login, and download logic is inherited automatically.
+    """
+    driver.get(url)
+    time.sleep(2)
+
+    try:
+        # Look for an external "source" / "original" anchor.  faptap renders
+        # it as a link whose href points to a different domain.
+        candidates = driver.find_elements(By.XPATH,
+            '//a[@href and ('
+            '  contains(translate(normalize-space(.),"SOURCE ORIGINAL","source original"),"source") or '
+            '  contains(translate(normalize-space(.),"SOURCE ORIGINAL","source original"),"original") or '
+            '  contains(@class,"source") or contains(@class,"original") or '
+            '  contains(@title,"source") or contains(@title,"original")'
+            ')]'
+        )
+
+        source_url = None
+        for el in candidates:
+            href = el.get_attribute('href') or ''
+            if href.startswith('http') and 'faptap.net' not in href:
+                source_url = href
+                break
+
+        if not source_url:
+            print('  [faptap.net] no external source link found on page')
+            all_external = [
+                el.get_attribute('href') for el in driver.find_elements(By.XPATH, '//a[@href]')
+                if (el.get_attribute('href') or '').startswith('http')
+                and 'faptap.net' not in (el.get_attribute('href') or '')
+            ]
+            print(f'  [faptap.net] external hrefs on page: {all_external[:10]}')
+            return False
+
+        print(f'  [faptap.net] source link → {source_url}')
+
+        try:
+            source_domain = check_domain(source_url)
+        except UnknownDomainError as e:
+            print(f'  [faptap.net] {e}')
+            return False
+
+        handler = DOMAIN_HANDLERS[source_domain]
+        return handler(driver, source_url, download_dir)
+
+    except Exception as e:
+        print(f'  [faptap.net] handler error: {e}')
+
+    return False
+
+
 # Map each KNOWN_DOMAINS entry to its handler.
 # When adding a new domain, add it to KNOWN_DOMAINS above AND here.
 DOMAIN_HANDLERS = {
@@ -1442,6 +1501,7 @@ DOMAIN_HANDLERS = {
     'mega.co.nz':        download_mega,
     'rule34video.party': download_rule34video,
     'spankbang.com':     download_spankbang,
+    'faptap.net':        download_faptap,
 }
 
 
