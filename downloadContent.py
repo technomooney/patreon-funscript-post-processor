@@ -19,7 +19,7 @@ import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException, WebDriverException
 
 load_dotenv()
 
@@ -2494,40 +2494,71 @@ def find_and_download(base_path: str):
                 # Health-check the browser before navigating; restart if dead.
                 driver = _ensure_driver_alive(driver, folder)
 
-                try:
-                    triggered = handler(driver, link, folder)
-                except CloudflareBlockedError as cf_err:
-                    print(f'  [cloudflare] {cf_err}')
-                    answer = input('  Switch to windowed mode and retry? (y/n): ').strip().lower()
-                    if answer != 'y':
-                        failures.append({
-                            'link': link,
-                            'funscript_name': basename,
-                            'save_directory': folder,
-                            'domain': domain,
-                        })
-                        continue
-                    # Restart the driver in windowed mode for this run only.
-                    try:
-                        driver.quit()
-                    except Exception:
-                        pass
-                    os.environ['BROWSER_HEADLESS'] = 'false'
-                    print('  Restarting browser in windowed mode...')
-                    driver = setup_driver(folder)
-                    set_download_dir(driver, folder)
-                    before_files = set(os.listdir(str(folder)))
+                triggered = False
+                _link_failed = False
+                for _browser_attempt in range(2):
                     try:
                         triggered = handler(driver, link, folder)
-                    except CloudflareBlockedError:
-                        print('  Still blocked after switching to windowed mode.')
-                        failures.append({
-                            'link': link,
-                            'funscript_name': basename,
-                            'save_directory': folder,
-                            'domain': domain,
-                        })
-                        continue
+                        break  # success — exit retry loop
+                    except CloudflareBlockedError as cf_err:
+                        print(f'  [cloudflare] {cf_err}')
+                        answer = input('  Switch to windowed mode and retry? (y/n): ').strip().lower()
+                        if answer != 'y':
+                            failures.append({
+                                'link': link,
+                                'funscript_name': basename,
+                                'save_directory': folder,
+                                'domain': domain,
+                            })
+                            _link_failed = True
+                            break
+                        # Restart the driver in windowed mode for this run only.
+                        try:
+                            driver.quit()
+                        except Exception:
+                            pass
+                        os.environ['BROWSER_HEADLESS'] = 'false'
+                        print('  Restarting browser in windowed mode...')
+                        driver = setup_driver(folder)
+                        set_download_dir(driver, folder)
+                        before_files = set(os.listdir(str(folder)))
+                        try:
+                            triggered = handler(driver, link, folder)
+                        except CloudflareBlockedError:
+                            print('  Still blocked after switching to windowed mode.')
+                            failures.append({
+                                'link': link,
+                                'funscript_name': basename,
+                                'save_directory': folder,
+                                'domain': domain,
+                            })
+                            _link_failed = True
+                        break
+                    except WebDriverException as wd_err:
+                        if _browser_attempt == 0:
+                            print(f'  [browser] frozen during navigation ({wd_err.__class__.__name__}) — killing and restarting...')
+                            try:
+                                driver.quit()
+                            except Exception:
+                                pass
+                            driver = setup_driver(folder)
+                            set_download_dir(driver, folder)
+                            before_files = set(os.listdir(str(folder)))
+                            current_before_files = before_files
+                            # loop continues → second attempt with fresh driver
+                        else:
+                            print(f'  [browser] retry also failed: {wd_err.__class__.__name__}')
+                            failures.append({
+                                'link': link,
+                                'funscript_name': basename,
+                                'save_directory': folder,
+                                'domain': domain,
+                            })
+                            _link_failed = True
+                            break
+
+                if _link_failed:
+                    continue
 
                 if not triggered:
                     print("  Could not trigger download — check the handler for this domain.")
