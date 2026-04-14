@@ -1380,29 +1380,40 @@ def download_yandex_disk(_driver, url: str, download_dir: str) -> bool:
 _mega_logged_in: bool = False
 
 
+def _mega_server_responding() -> bool:
+    """Return True if the MEGAcmd server is responding to mega-whoami.
+
+    Any exit code counts as responsive — the server runs but is not logged in
+    returns non-zero, which is still proof the server is up.  Only a timeout
+    or missing binary means the server is not ready.
+    """
+    mega_whoami = shutil.which('mega-whoami')
+    if mega_whoami is None:
+        return False
+    try:
+        subprocess.run([mega_whoami], capture_output=True, text=True, timeout=5)
+        return True   # completed = server is up, regardless of exit code
+    except subprocess.TimeoutExpired:
+        return False
+
+
 def _mega_ensure_server() -> bool:
     """Start the MEGAcmd background server if needed and wait until it responds.
 
-    Polls mega-whoami every second for up to 30 seconds after launching the
-    server so that mega-login always finds a ready server and its full timeout
-    budget is spent on the actual login, not on server startup.
+    Polls _mega_server_responding() every second for up to 30 seconds after
+    launching the server so that mega-login always finds a ready server and
+    its full timeout budget is spent on the actual login, not server startup.
 
     Returns True if the server is ready (or already was), False if it never
     became ready within the wait window.
     """
+    if _mega_server_responding():
+        return True  # already up
+
     mega_cmd_server = shutil.which('mega-cmd-server')
-    mega_whoami     = shutil.which('mega-whoami')
-
-    if mega_whoami:
-        try:
-            r = subprocess.run([mega_whoami], capture_output=True, text=True, timeout=5)
-            if r.returncode == 0:
-                return True  # server already up
-        except subprocess.TimeoutExpired:
-            pass
-
     if mega_cmd_server is None:
-        return True  # no server binary — commands will start it themselves
+        # No server binary — individual commands will try to start it themselves.
+        return True
 
     print('  [mega.nz] starting MEGAcmd server...')
     subprocess.Popen(
@@ -1411,21 +1422,14 @@ def _mega_ensure_server() -> bool:
         stderr=subprocess.DEVNULL,
     )
 
-    if mega_whoami:
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            time.sleep(1)
-            try:
-                r = subprocess.run([mega_whoami], capture_output=True, text=True, timeout=5)
-                if r.returncode == 0:
-                    return True
-            except subprocess.TimeoutExpired:
-                pass
-        print('  [mega.nz] server did not become ready in time')
-        return False
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        time.sleep(1)
+        if _mega_server_responding():
+            return True
 
-    time.sleep(5)  # mega-whoami not available — best-effort wait
-    return True
+    print('  [mega.nz] server did not become ready in time')
+    return False
 
 
 def _mega_ensure_login() -> bool:
