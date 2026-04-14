@@ -2267,6 +2267,7 @@ def find_and_download(base_path: str):
                 print(f"  [SKIP] video already exists: {_safe(os.path.basename(existing))}")
                 continue
 
+            saved_for_folder = 0
             for link_idx, link in enumerate(links):
                 try:
                     domain  = check_domain(link)
@@ -2341,7 +2342,9 @@ def find_and_download(base_path: str):
                     })
                     continue
 
-                _save_downloaded(downloaded, folder, basename, link_idx, newly_downloaded)
+                kept = _save_downloaded(downloaded, folder, basename, saved_for_folder, newly_downloaded)
+                if kept:
+                    saved_for_folder += 1
 
                 # Stop trying further links for this folder once a video is saved.
                 if _any_video_in_folder(folder):
