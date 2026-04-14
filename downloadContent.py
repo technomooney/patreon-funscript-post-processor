@@ -11,7 +11,7 @@ import glob
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 from dotenv import load_dotenv
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
@@ -68,6 +68,8 @@ KNOWN_DOMAINS = [
     'rule34.xxx',
     'fap-nation.org',
     'eporner.com',
+    'disk.yandex.com',
+    'disk.yandex.ru',
 ]
 
 # Links to these domains are creator pages / social profiles — no file to download.
@@ -1147,6 +1149,42 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
     return False
 
 
+def download_yandex_disk(_driver, url: str, download_dir: str) -> bool:
+    """Download a public Yandex Disk file via the public resources API (no browser needed).
+
+    Works for both disk.yandex.com and disk.yandex.ru share links.
+    The API accepts the full share URL as the public_key parameter and returns
+    a pre-signed direct download URL.
+    """
+    try:
+        api_url = (
+            'https://cloud-api.yandex.net/v1/disk/public/resources/download'
+            f'?public_key={quote(url, safe="")}'
+        )
+        req = urllib.request.Request(api_url, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        })
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read())
+
+        download_url = data.get('href')
+        if not download_url:
+            print(f'  [disk.yandex] API returned no href: {data}')
+            return False
+
+        print(f'  [disk.yandex] fetching...')
+        return _direct_fetch(download_url, download_dir, '_yandex_temp',
+                             {'Referer': 'https://disk.yandex.com/'})
+
+    except urllib.error.HTTPError as e:
+        body = e.read().decode('utf-8', errors='replace')
+        print(f'  [disk.yandex] HTTP {e.code}: {body}')
+    except Exception as e:
+        print(f'  [disk.yandex] handler error: {e}')
+
+    return False
+
+
 # Map each KNOWN_DOMAINS entry to its handler.
 # When adding a new domain, add it to KNOWN_DOMAINS above AND here.
 DOMAIN_HANDLERS = {
@@ -1159,6 +1197,8 @@ DOMAIN_HANDLERS = {
     'rule34.xxx':      download_rule34xxx,
     'fap-nation.org':  download_fapnation,
     'eporner.com':     download_eporner,
+    'disk.yandex.com': download_yandex_disk,
+    'disk.yandex.ru':  download_yandex_disk,
 }
 
 
