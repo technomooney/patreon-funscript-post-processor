@@ -1426,15 +1426,53 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
     return False
 
 
+def _e621_dismiss_tos(driver) -> None:
+    """Check both ToS checkboxes and submit if the first-visit modal is present.
+
+    Checkbox IDs are fixed in the e621 markup:
+      #tos-age-checkbox   — "I am 18 years of age or older."
+      #tos-terms-checkbox — "I have read and accept the Terms of Use."
+    The submit button is scoped to .tos-modal-content so we don't accidentally
+    click something else on the page.
+    This is a no-op on subsequent visits once the cookie is set.
+    """
+    try:
+        WebDriverWait(driver, 4).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, '.tos-modal-checkboxes'))
+        )
+    except TimeoutException:
+        return  # modal not present
+
+    try:
+        for cb_id in ('tos-age-checkbox', 'tos-terms-checkbox'):
+            cb = driver.find_element(By.ID, cb_id)
+            if not cb.is_selected():
+                driver.execute_script('arguments[0].click()', cb)
+                time.sleep(0.2)
+
+        # Click Accept specifically — Decline has id="tos-warning-decline" and
+        # comes first in the DOM, so a generic button selector would click it.
+        confirm = driver.find_element(By.ID, 'tos-warning-accept')
+        driver.execute_script('arguments[0].click()', confirm)
+        time.sleep(1)
+        print('  [e621.net] ToS modal accepted')
+    except Exception as e:
+        print(f'  [e621.net] could not dismiss ToS modal: {e}')
+
+
 def download_e621(driver, url: str, download_dir: str) -> bool:
     """Download the original video from an e621.net post page.
 
     e621 embeds videos in a <video> element whose data-file-url attribute
     points directly to the original CDN file — no quality-selector interaction
     needed.  Falls back to the <source src> child if data-file-url is absent.
+    On first visit the site shows a ToS + age-verification modal; it is
+    dismissed automatically before attempting to read the video element.
     """
     driver.get(url)
     time.sleep(2)
+
+    _e621_dismiss_tos(driver)
 
     try:
         try:
