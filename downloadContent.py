@@ -1673,15 +1673,61 @@ def download_faptap(driver, url: str, download_dir: str) -> bool:
 
         try:
             source_domain = check_domain(source_url)
-        except UnknownDomainError as e:
-            print(f'  [faptap.net] {e}')
-            return False
-
-        handler = DOMAIN_HANDLERS[source_domain]
+            handler = DOMAIN_HANDLERS[source_domain]
+        except UnknownDomainError:
+            handler = download_ytdlp
         return handler(driver, source_url, download_dir)
 
     except Exception as e:
         print(f'  [faptap.net] handler error: {e}')
+
+    return False
+
+
+def download_ytdlp(_driver, url: str, download_dir: str) -> bool:
+    """Generic video extractor using yt-dlp for sites without a dedicated handler.
+
+    Selects the best available quality up to MAX_RESOLUTION and saves the
+    result as _ytdlp_temp.<ext> so wait_for_download can find it and
+    _save_downloaded can rename it to the correct basename.
+
+    Install yt-dlp with:  pip install yt-dlp  or  pipx install yt-dlp
+    """
+    ytdlp = shutil.which('yt-dlp')
+    if ytdlp is None:
+        print('  [yt-dlp] not found — install with: pip install yt-dlp')
+        return False
+
+    max_res = _get_max_resolution()
+    output_tmpl = os.path.join(download_dir, '_ytdlp_temp.%(ext)s')
+
+    cmd = [
+        ytdlp,
+        '--no-playlist',
+        '--no-write-subs',
+        '--no-write-auto-subs',
+        '--no-keep-fragments',
+        '--merge-output-format', 'mp4',
+        '-f', (
+            f'bestvideo[height<={max_res}][ext=mp4]+bestaudio[ext=m4a]'
+            f'/bestvideo[height<={max_res}]+bestaudio'
+            f'/best[height<={max_res}]/best'
+        ),
+        '-o', output_tmpl,
+        url,
+    ]
+
+    print('  [yt-dlp] extracting video...')
+    try:
+        result = subprocess.run(cmd, timeout=3600)
+        if result.returncode != 0:
+            print(f'  [yt-dlp] failed (exit {result.returncode})')
+            return False
+        return True
+    except subprocess.TimeoutExpired:
+        print('  [yt-dlp] timed out after 1 hour')
+    except Exception as e:
+        print(f'  [yt-dlp] error: {e}')
 
     return False
 
@@ -1921,16 +1967,19 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
                 continue  # reference/social link — nothing to download
             try:
                 check_domain(link)
-            except UnknownDomainError as e:
-                print(f"[ERROR] {e}")
-                print(f"        Skipping link: {link}  (in {_safe(root)})")
-                failures.append({
-                    'link': link,
-                    'funscript_name': funscript_basename,
-                    'save_directory': root,
-                    'domain': domain,
-                })
-                continue
+            except UnknownDomainError:
+                if shutil.which('yt-dlp'):
+                    print(f"  [yt-dlp] no dedicated handler for '{domain}' — will attempt generic extraction")
+                else:
+                    print(f"[ERROR] unsupported domain '{domain}': {link}")
+                    print(f"        Install yt-dlp (pip install yt-dlp) to attempt generic extraction.")
+                    failures.append({
+                        'link': link,
+                        'funscript_name': funscript_basename,
+                        'save_directory': root,
+                        'domain': domain,
+                    })
+                    continue
 
             # Expand pixeldrain list URLs into individual file URLs.
             if domain == 'pixeldrain.com' and '/l/' in urlparse(link).path:
@@ -2158,8 +2207,12 @@ def find_and_download(base_path: str):
                 continue
 
             for link_idx, link in enumerate(links):
-                domain  = check_domain(link)
-                handler = DOMAIN_HANDLERS[domain]
+                try:
+                    domain  = check_domain(link)
+                    handler = DOMAIN_HANDLERS[domain]
+                except UnknownDomainError:
+                    domain  = get_domain(link)
+                    handler = download_ytdlp
 
                 before_files: set[str] = set(os.listdir(str(folder)))
                 current_before_files = before_files
