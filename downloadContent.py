@@ -2316,12 +2316,17 @@ def find_and_download(base_path: str):
 
     except KeyboardInterrupt:
         print('\n\nInterrupted — waiting up to 120 s for the active download to finish...')
-        downloaded = wait_for_download(current_folder, current_before_files, timeout=120)
-        if downloaded:
-            _save_downloaded(downloaded, current_folder, current_basename,
-                             current_link_idx, newly_downloaded)
-        else:
-            print('  Download did not complete in time — removing temp files.')
+        print('  Press Ctrl+C again to cancel immediately and discard the partial download.')
+        try:
+            downloaded = wait_for_download(current_folder, current_before_files, timeout=120)
+            if downloaded:
+                _save_downloaded(downloaded, current_folder, current_basename,
+                                 current_link_idx, newly_downloaded)
+            else:
+                print('  Download did not complete in time — removing temp files.')
+                _cleanup_temp_files(current_folder)
+        except KeyboardInterrupt:
+            print('\n  Cancelled — removing temp files.')
             _cleanup_temp_files(current_folder)
 
     finally:
