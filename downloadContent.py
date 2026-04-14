@@ -1438,14 +1438,19 @@ def download_faptap(driver, url: str, download_dir: str) -> bool:
     time.sleep(2)
 
     try:
-        # Look for an external "source" / "original" anchor.  faptap renders
-        # it as a link whose href points to a different domain.
+        # faptap renders the source link as:
+        #   <a href="https://..." target="_blank"><span>Source</span></a>
+        # Primary selector targets the <span>Source</span> pattern; the broader
+        # fallback catches any external anchor whose visible text or attributes
+        # suggest it is the original source.
         candidates = driver.find_elements(By.XPATH,
+            '//a[@href and .//span['
+            '  contains(translate(normalize-space(.),"SOURCE","source"),"source")'
+            ']]'
+            ' | '
             '//a[@href and ('
             '  contains(translate(normalize-space(.),"SOURCE ORIGINAL","source original"),"source") or '
-            '  contains(translate(normalize-space(.),"SOURCE ORIGINAL","source original"),"original") or '
-            '  contains(@class,"source") or contains(@class,"original") or '
-            '  contains(@title,"source") or contains(@title,"original")'
+            '  contains(translate(normalize-space(.),"SOURCE ORIGINAL","source original"),"original")'
             ')]'
         )
 
