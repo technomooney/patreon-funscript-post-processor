@@ -5,6 +5,7 @@ import json
 import mimetypes
 import os
 import shutil
+import sys
 import time
 import glob
 import urllib.error
@@ -19,6 +20,26 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 
 load_dotenv()
+
+# Ensure stdout is UTF-8 on all platforms so Unicode filenames print cleanly.
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
+# Matches any ANSI/VT escape sequence (e.g. ESC[8m makes text invisible).
+_ANSI_ESCAPE_RE = re.compile(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+
+def _safe(s: str) -> str:
+    """Strip ANSI escape sequences and C0/C1 control characters from *s*.
+
+    Strips C0 (U+0000-U+001F), DEL (U+007F), and C1 (U+0080-U+009F).
+    C1 characters are particularly dangerous: U+0090 (DCS) and U+009D (ST)
+    appear in mojibake filenames and put the terminal into a hidden-input state,
+    making all subsequent output invisible.
+    Printable Unicode (CJK, emoji, etc.) is preserved.
+    """
+    s = _ANSI_ESCAPE_RE.sub('', s)
+    return ''.join(c for c in s if not (ord(c) < 0x20 or 0x7f <= ord(c) <= 0x9f) or c in '\n\t')
 
 _KEYRING_SERVICE = 'patreon-funscript-video-downloader'
 
@@ -250,24 +271,59 @@ def wait_for_download(download_dir: str, before_files: set[str], timeout: int | 
 # Shared download utilities
 # ---------------------------------------------------------------------------
 
+def _ext_from_response(response, url: str) -> str:
+    """Determine the file extension from response headers or URL, defaulting to .mp4.
+
+    Priority:
+    1. Content-Disposition filename (has the original name the server chose)
+    2. Extension present in the URL path
+    3. mimetypes guess from Content-Type
+    4. Fall back to .mp4
+    """
+    cd = response.headers.get('Content-Disposition', '')
+    if cd:
+        # RFC 5987 encoded form: filename*=UTF-8''name.ext
+        m = re.search(r"filename\*=[^']*''([^\s;]+)", cd, re.IGNORECASE)
+        if not m:
+            m = re.search(r'filename=["\']?([^"\';\r\n]+)["\']?', cd, re.IGNORECASE)
+        if m:
+            ext = os.path.splitext(m.group(1).strip())[1]
+            if ext:
+                return ext
+
+    ext = os.path.splitext(urlparse(url).path)[1]
+    if ext:
+        return ext
+
+    ct = response.headers.get('Content-Type', '').split(';')[0].strip()
+    if ct:
+        guessed = mimetypes.guess_extension(ct)
+        if guessed:
+            return guessed
+
+    return '.mp4'
+
+
 def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: dict[str, str]) -> bool:
     """Download *video_url* straight to *download_dir* using urllib, no browser needed.
 
     Writes to a .part file while in progress so that wait_for_download ignores
     it until the download is complete, then renames to the final temp name.
     This ensures an interrupted download is never mistaken for a finished one.
+    The file extension is taken from the Content-Disposition header when present
+    so that non-video files (e.g. .funscript, .zip) keep their original extension.
     """
-    ext = os.path.splitext(urlparse(video_url).path)[1] or '.mp4'
-    final_temp = os.path.join(download_dir, f'{temp_prefix}{ext}')
-    writing_path = final_temp + '.part'
+    writing_path = os.path.join(download_dir, f'{temp_prefix}.part')
     req = urllib.request.Request(video_url, headers=headers)
     with urllib.request.urlopen(req) as response:
+        ext = _ext_from_response(response, video_url)
         size_mb = int(response.headers.get('Content-Length', 0)) / 1024 / 1024
         if size_mb:
             print(f'  file size: {size_mb:.1f} MB')
         with open(writing_path, 'wb') as f:
             while chunk := response.read(65536):
                 f.write(chunk)
+    final_temp = os.path.join(download_dir, f'{temp_prefix}{ext}')
     os.rename(writing_path, final_temp)
     return True
 
@@ -579,6 +635,44 @@ def download_rule34video(driver, url: str, download_dir: str) -> bool:
     return False
 
 
+def _pixeldrain_headers() -> dict[str, str]:
+    """Build request headers for the pixeldrain API, adding auth if a key is configured."""
+    headers: dict[str, str] = {'Referer': 'https://pixeldrain.com/'}
+    api_key = _get_secret('PIXELDRAIN_API_KEY').strip()
+    if api_key:
+        token = base64.b64encode(f':{api_key}'.encode()).decode()
+        headers['Authorization'] = f'Basic {token}'
+    return headers
+
+
+def _expand_pixeldrain_list(url: str) -> list[str]:
+    """
+    If *url* is a pixeldrain list page (/l/<id>), fetch the list API and return
+    individual single-file URLs (/u/<file_id>) for every item in the list.
+    For single-file URLs (/u/<id>), return [url] unchanged.
+    """
+    path_parts = urlparse(url).path.strip('/').split('/')
+    if not path_parts or path_parts[0] != 'l' or len(path_parts) < 2:
+        return [url]
+
+    list_id = path_parts[1]
+    try:
+        api_url = f'https://pixeldrain.com/api/list/{list_id}'
+        req = urllib.request.Request(api_url, headers=_pixeldrain_headers())
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read())
+        files = data.get('files', [])
+        if files:
+            expanded = [f'https://pixeldrain.com/u/{f["id"]}' for f in files if f.get('id')]
+            print(f'  [pixeldrain.com] list {list_id} expanded to {len(expanded)} file(s)')
+            return expanded
+        print(f'  [pixeldrain.com] list {list_id} is empty')
+    except Exception as e:
+        print(f'  [pixeldrain.com] could not expand list {list_id}: {e}')
+
+    return [url]
+
+
 def download_pixeldrain(_driver, url: str, download_dir: str) -> bool:
     """Download a pixeldrain.com file directly via its public API (no browser needed)."""
     try:
@@ -586,15 +680,7 @@ def download_pixeldrain(_driver, url: str, download_dir: str) -> bool:
         file_id = urlparse(url).path.rstrip('/').split('/')[-1]
         video_url = f'https://pixeldrain.com/api/file/{file_id}'
         print(f'  [pixeldrain.com] fetching {file_id}...')
-
-        headers: dict[str, str] = {'Referer': 'https://pixeldrain.com/'}
-        api_key = _get_secret('PIXELDRAIN_API_KEY').strip()
-        if api_key:
-            # Pixeldrain uses HTTP Basic Auth: empty username, API key as password.
-            token = base64.b64encode(f':{api_key}'.encode()).decode()
-            headers['Authorization'] = f'Basic {token}'
-
-        return _direct_fetch(video_url, download_dir, '_pixeldrain_temp', headers)
+        return _direct_fetch(video_url, download_dir, '_pixeldrain_temp', _pixeldrain_headers())
 
     except Exception as e:
         print(f'  [pixeldrain.com] handler error: {e}')
@@ -1162,11 +1248,19 @@ def _match_links_to_funscripts(links: list[str], funscript_paths: list[str]) -> 
     return result
 
 
-def collect_tasks(base_path: str) -> tuple[list, list]:
+def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list, list]:
     """
-    Walk *base_path* looking for folders that contain both a description.json
-    and at least one .funscript.  Returns (tasks, failures).
-    Unsupported domains are added to failures instead of aborting the run.
+    Walk *base_path* looking for folders that contain a description.json and,
+    when *require_funscript* is True, at least one .funscript.
+
+    When *require_funscript* is False, folders without a funscript are still
+    processed; the folder name is used as the download basename.
+
+    Pixeldrain list URLs (/l/<id>) are automatically expanded into individual
+    file URLs (/u/<file_id>) before tasks are created.
+
+    Returns (tasks, failures).  Unsupported domains are added to failures
+    instead of aborting the run.
     """
     tasks = []
     failures = []
@@ -1174,18 +1268,23 @@ def collect_tasks(base_path: str) -> tuple[list, list]:
     axis_suffixes = ('.surge', '.pitch', '.roll', '.twist', '.sway')
 
     for root, dirs, files in os.walk(base_path):
+        dirs.sort()  # visit subdirectories in alphabetical order
         if 'description.json' not in files:
             continue
 
         all_funscripts = glob.glob(os.path.join(glob.escape(root), '*.funscript'))
-        if not all_funscripts:
-            print(f"[SKIP] No .funscript in: {root}")
+        if all_funscripts:
+            main_scripts = [fs for fs in all_funscripts
+                            if not any(Path(fs).stem.endswith(s) for s in axis_suffixes)]
+            if not main_scripts:
+                main_scripts = all_funscripts
+            funscript_basename = Path(main_scripts[0]).stem
+        elif require_funscript:
+            print(f"[SKIP] No .funscript in: {_safe(root)}")
             continue
-        main_scripts = [fs for fs in all_funscripts
-                        if not any(Path(fs).stem.endswith(s) for s in axis_suffixes)]
-        if not main_scripts:
-            main_scripts = all_funscripts
-        funscript_basename = Path(main_scripts[0]).stem
+        else:
+            main_scripts = []
+            funscript_basename = os.path.basename(root)
 
         desc_path = os.path.join(root, 'description.json')
         links = extract_links_from_description(desc_path)
@@ -1201,29 +1300,35 @@ def collect_tasks(base_path: str) -> tuple[list, list]:
                 continue  # reference/social link — nothing to download
             try:
                 check_domain(link)
-                validated_links.append(link)
             except UnknownDomainError as e:
                 print(f"[ERROR] {e}")
-                print(f"        Skipping link: {link}  (in {root})")
+                print(f"        Skipping link: {link}  (in {_safe(root)})")
                 failures.append({
                     'link': link,
                     'funscript_name': funscript_basename,
                     'save_directory': root,
                     'domain': domain,
                 })
+                continue
+
+            # Expand pixeldrain list URLs into individual file URLs.
+            if domain == 'pixeldrain.com' and '/l/' in urlparse(link).path:
+                validated_links.extend(_expand_pixeldrain_list(link))
+            else:
+                validated_links.append(link)
 
         if not validated_links:
             continue
 
         # When there are multiple funscripts AND multiple links, fuzzy-match
         # each link to the funscript whose name shares the most URL tokens.
-        if len(main_scripts) > 1 and len(validated_links) > 1:
+        if main_scripts and len(main_scripts) > 1 and len(validated_links) > 1:
             link_to_stem = _match_links_to_funscripts(validated_links, main_scripts)
             stem_to_links: dict[str, list[str]] = {}
             for link, stem in link_to_stem.items():
                 stem_to_links.setdefault(stem, []).append(link)
             for stem, stem_links in stem_to_links.items():
-                print(f"  [fuzzy] '{stem}' matched {len(stem_links)} link(s)")
+                print(f"  [fuzzy] '{_safe(stem)}' matched {len(stem_links)} link(s)")
                 tasks.append({'folder': root, 'basename': stem, 'links': stem_links})
         else:
             tasks.append({
@@ -1300,7 +1405,9 @@ def _write_failures_csv(base_path: str, failures: list):
 
 
 def find_and_download(base_path: str):
-    tasks, failures = collect_tasks(base_path)
+    ans = input("Download even without a funscript file? (y/n, default n): ").strip().lower()
+    require_funscript = ans != 'y'
+    tasks, failures = collect_tasks(base_path, require_funscript=require_funscript)
 
     if not tasks:
         print("No valid download tasks found.")
@@ -1309,7 +1416,7 @@ def find_and_download(base_path: str):
 
     print(f"\nFound {len(tasks)} folder(s) to process:")
     for t in tasks:
-        print(f"  {t['basename']}")
+        print(f"  {_safe(t['basename'])}")
         for link in t['links']:
             print(f"    -> {link}")
 
@@ -1337,13 +1444,13 @@ def find_and_download(base_path: str):
             current_folder = folder
             current_basename = basename
 
-            print(f"\n[{task_idx}/{total}] {basename}")
+            print(f"\n[{task_idx}/{total}] {_safe(basename)}")
             _cleanup_temp_files(folder)
             set_download_dir(driver, folder)
 
             existing = _video_exists(folder, basename)
             if existing:
-                print(f"  [SKIP] video already exists: {os.path.basename(existing)}")
+                print(f"  [SKIP] video already exists: {_safe(os.path.basename(existing))}")
                 continue
 
             for link_idx, link in enumerate(links):
