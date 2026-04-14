@@ -4,3 +4,4 @@ python-dotenv==1.2.2
 keyring==25.6.0
 secretstorage==3.3.3
 setuptools==82.0.1
+yt-dlp
