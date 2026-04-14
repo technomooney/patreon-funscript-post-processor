@@ -74,6 +74,7 @@ KNOWN_DOMAINS = [
     'mega.nz',
     'mega.co.nz',
     'rule34video.party',
+    'spankbang.com',
 ]
 
 # Links to these domains are creator pages / social profiles — no file to download.
@@ -1153,6 +1154,146 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# spankbang.com handler
+# ---------------------------------------------------------------------------
+
+_spankbang_logged_in: bool = False
+
+
+def _spankbang_normalize_url(url: str) -> str:
+    """Replace any regional subdomain (ru., fr., de., …) with the main domain."""
+    parsed = urlparse(url)
+    netloc = parsed.netloc
+    if netloc != 'spankbang.com' and netloc.endswith('.spankbang.com'):
+        netloc = 'spankbang.com'
+    return parsed._replace(netloc=netloc).geturl()
+
+
+def _spankbang_login(driver) -> bool:
+    """Log into spankbang.com via the browser UI. Returns True if successful."""
+    global _spankbang_logged_in
+    if _spankbang_logged_in:
+        return True
+
+    username = _get_secret('SPANKBANG_USERNAME').strip()
+    password = _get_secret('SPANKBANG_PASSWORD').strip()
+    if not username or not password:
+        print('  [spankbang.com] no credentials — set SPANKBANG_USERNAME and SPANKBANG_PASSWORD via setup_credentials.py')
+        return False
+
+    driver.get('https://spankbang.com/login/')
+    time.sleep(2)
+
+    try:
+        wait = WebDriverWait(driver, 10)
+
+        user_field = wait.until(EC.presence_of_element_located(
+            (By.XPATH, '//input[@name="username" or @autocomplete="username" or @id="username"]')
+        ))
+        user_field.click()
+        time.sleep(0.2)
+        user_field.clear()
+        for char in username:
+            user_field.send_keys(char)
+            time.sleep(0.05)
+
+        pw_field = driver.find_element(By.XPATH, '//input[@type="password"]')
+        pw_field.click()
+        time.sleep(0.2)
+        for char in password:
+            pw_field.send_keys(char)
+            time.sleep(0.05)
+
+        time.sleep(0.3)
+        try:
+            login_form = pw_field.find_element(By.XPATH, './ancestor::form')
+            submit = login_form.find_element(By.XPATH, './/button[@type="submit"]')
+        except Exception:
+            submits = driver.find_elements(By.XPATH, '//button[@type="submit"]')
+            submit = submits[-1] if submits else driver.find_element(By.XPATH, '//button[@type="submit"]')
+
+        driver.execute_script('arguments[0].click()', submit)
+
+        try:
+            WebDriverWait(driver, 10).until(lambda d: 'login' not in d.current_url)
+        except Exception:
+            pass
+
+        if 'login' in driver.current_url:
+            print(f'  [spankbang.com] login failed — still on: {driver.current_url}')
+            return False
+
+        print('  [spankbang.com] login successful')
+        _spankbang_logged_in = True
+        return True
+
+    except Exception as e:
+        print(f'  [spankbang.com] login error: {e}')
+        return False
+
+
+def download_spankbang(driver, url: str, download_dir: str) -> bool:
+    """Download a spankbang.com video. Regional subdomains are normalised to
+    spankbang.com automatically. Login is required and handled via keyring
+    credentials (SPANKBANG_USERNAME / SPANKBANG_PASSWORD).
+    """
+    url = _spankbang_normalize_url(url)
+
+    if not _spankbang_login(driver):
+        return False
+
+    driver.get(url)
+    time.sleep(3)
+
+    try:
+        # SpankBang renders quality download links inside a .download section.
+        # Clicking the download toggle reveals anchor elements with resolution
+        # labels in their text and direct CDN .mp4 hrefs.
+        try:
+            toggle = driver.find_element(By.XPATH,
+                '//*[contains(@class,"download") and '
+                '(self::button or self::a or self::div) and '
+                'not(contains(@href,".mp4"))]'
+            )
+            driver.execute_script('arguments[0].click()', toggle)
+            time.sleep(1)
+        except Exception:
+            pass
+
+        # Collect all anchors that look like quality download links.
+        links = driver.find_elements(By.XPATH,
+            '//a[contains(@href,".mp4") or '
+            '(contains(@class,"download") and @href and @href != "#")]'
+        )
+
+        if not links:
+            print('  [spankbang.com] no download links found')
+            return False
+
+        best, resolution = _pick_best(
+            links,
+            lambda el: _parse_resolution((el.get_attribute('href') or '') + (el.text or '')),
+        )
+        video_url = best.get_attribute('href') or ''
+        if not video_url or video_url == '#':
+            print('  [spankbang.com] best link has no usable href')
+            return False
+
+        print(f'  [spankbang.com] fetching {resolution}p...')
+        return _direct_fetch(video_url, download_dir, '_spankbang_temp',
+                             {'Referer': 'https://spankbang.com/'})
+
+    except Exception as e:
+        print(f'  [spankbang.com] handler error: {e}')
+
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Yandex Disk handler
+# ---------------------------------------------------------------------------
+
 def download_yandex_disk(_driver, url: str, download_dir: str) -> bool:
     """Download a public Yandex Disk file via the public resources API (no browser needed).
 
@@ -1300,6 +1441,7 @@ DOMAIN_HANDLERS = {
     'mega.nz':           download_mega,
     'mega.co.nz':        download_mega,
     'rule34video.party': download_rule34video,
+    'spankbang.com':     download_spankbang,
 }
 
 

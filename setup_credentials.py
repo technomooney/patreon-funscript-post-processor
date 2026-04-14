@@ -97,6 +97,27 @@ def main():
     else:
         print('  Skipping mega.nz credentials.')
 
+    # --- spankbang.com ------------------------------------------------------
+    print()
+    print('spankbang.com  (required for all downloads; leave blank to skip)')
+    sb_username = _prompt('Username:', 'SPANKBANG_USERNAME')
+    if sb_username:
+        try:
+            keyring.set_password(SERVICE, 'SPANKBANG_USERNAME', sb_username)
+        except Exception as e:
+            print(f'  WARNING: could not save to keyring: {e}')
+            print('  Set SPANKBANG_USERNAME in .env as a fallback.')
+
+        sb_password = _prompt('Password:', 'SPANKBANG_PASSWORD', secret=True)
+        if sb_password:
+            try:
+                keyring.set_password(SERVICE, 'SPANKBANG_PASSWORD', sb_password)
+            except Exception as e:
+                print(f'  WARNING: could not save to keyring: {e}')
+                print('  Set SPANKBANG_PASSWORD in .env as a fallback.')
+    else:
+        print('  Skipping spankbang.com credentials.')
+
     print()
     print('Credentials saved.')
     print()
