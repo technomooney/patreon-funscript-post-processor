@@ -1380,30 +1380,29 @@ def download_yandex_disk(_driver, url: str, download_dir: str) -> bool:
 _mega_logged_in: bool = False
 
 
-def _mega_ensure_server() -> None:
-    """Start the MEGAcmd background server if it is not already running.
+def _mega_ensure_server() -> bool:
+    """Start the MEGAcmd background server if needed and wait until it responds.
 
-    mega-login (and all other mega-* commands) communicate with mega-cmd-server.
-    If the server is not running the first command that tries to contact it will
-    block while it starts up, often exceeding short timeouts.  Starting it
-    explicitly first and waiting for it to be ready avoids that race.
+    Polls mega-whoami every second for up to 30 seconds after launching the
+    server so that mega-login always finds a ready server and its full timeout
+    budget is spent on the actual login, not on server startup.
+
+    Returns True if the server is ready (or already was), False if it never
+    became ready within the wait window.
     """
     mega_cmd_server = shutil.which('mega-cmd-server')
     mega_whoami     = shutil.which('mega-whoami')
 
-    if mega_cmd_server is None:
-        return  # not installed — nothing to start
-
-    # Use mega-whoami as a cheap liveness probe for the server.
     if mega_whoami:
         try:
-            result = subprocess.run(
-                [mega_whoami], capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode == 0:
-                return  # server is already up
+            r = subprocess.run([mega_whoami], capture_output=True, text=True, timeout=5)
+            if r.returncode == 0:
+                return True  # server already up
         except subprocess.TimeoutExpired:
-            pass  # server not responding — fall through to start it
+            pass
+
+    if mega_cmd_server is None:
+        return True  # no server binary — commands will start it themselves
 
     print('  [mega.nz] starting MEGAcmd server...')
     subprocess.Popen(
@@ -1411,8 +1410,22 @@ def _mega_ensure_server() -> None:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    # Give the server a moment to become ready before the next command.
-    time.sleep(3)
+
+    if mega_whoami:
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            time.sleep(1)
+            try:
+                r = subprocess.run([mega_whoami], capture_output=True, text=True, timeout=5)
+                if r.returncode == 0:
+                    return True
+            except subprocess.TimeoutExpired:
+                pass
+        print('  [mega.nz] server did not become ready in time')
+        return False
+
+    time.sleep(5)  # mega-whoami not available — best-effort wait
+    return True
 
 
 def _mega_ensure_login() -> bool:
@@ -1422,12 +1435,16 @@ def _mega_ensure_login() -> bool:
     session with mega-whoami so we never re-login unnecessarily.
     If no credentials are stored the function returns True so that
     public-link downloads can still proceed without an account.
+
+    On any login failure the user is asked whether to retry with an MFA code,
+    which avoids relying on fragile keyword matching against MEGAcmd output.
     """
     global _mega_logged_in
     if _mega_logged_in:
         return True
 
-    _mega_ensure_server()
+    if not _mega_ensure_server():
+        return False
 
     mega_whoami = shutil.which('mega-whoami')
     mega_login  = shutil.which('mega-login')
@@ -1436,63 +1453,54 @@ def _mega_ensure_login() -> bool:
     if mega_whoami:
         try:
             result = subprocess.run(
-                [mega_whoami], capture_output=True, text=True, timeout=15,
+                [mega_whoami], capture_output=True, text=True, timeout=10,
             )
             if result.returncode == 0 and 'not logged in' not in result.stdout.lower():
                 _mega_logged_in = True
                 return True
         except subprocess.TimeoutExpired:
-            print('  [mega.nz] mega-whoami timed out — server may still be starting')
+            pass
 
     email    = _get_secret('MEGA_EMAIL').strip()
     password = _get_secret('MEGA_PASSWORD').strip()
 
     if not email or not password:
-        # No credentials stored — proceed as anonymous (public links only).
-        return True
+        return True  # no credentials — proceed as anonymous (public links only)
 
     if mega_login is None:
         print('  [mega.nz] mega-login not found — cannot log in automatically')
         return True
 
-    print(f'  [mega.nz] logging in as {email}...')
-    try:
-        result = subprocess.run(
-            [mega_login, email, password],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except subprocess.TimeoutExpired:
-        print('  [mega.nz] login timed out')
-        return False
-
-    # MEGAcmd reports MFA requirement in stdout or stderr.
-    combined = (result.stdout + result.stderr).lower()
-    mfa_needed = result.returncode != 0 and any(
-        phrase in combined for phrase in ('two-factor', '2fa', 'multi-factor', 'auth code', 'authcode')
-    )
-
-    if mfa_needed:
-        code = input('  [mega.nz] MFA code from your authenticator app: ').strip()
-        if not code:
-            print('  [mega.nz] no code entered — login aborted')
-            return False
+    def _run_login(extra_args: list) -> 'subprocess.CompletedProcess[str] | None':
         try:
-            result = subprocess.run(
-                [mega_login, email, password, f'--auth-code={code}'],
-                capture_output=True,
-                text=True,
-                timeout=30,
+            return subprocess.run(
+                [mega_login, email, password] + extra_args,
+                capture_output=True, text=True, timeout=15,
             )
         except subprocess.TimeoutExpired:
             print('  [mega.nz] login timed out')
-            return False
+            return None
+
+    print(f'  [mega.nz] logging in as {email}...')
+    result = _run_login([])
+
+    if result is None:
+        return False
 
     if result.returncode != 0:
+        # Rather than guessing from error text, ask the user directly.
         err = _safe((result.stderr or result.stdout).strip()) or '(no output)'
         print(f'  [mega.nz] login failed: {err}')
-        return False
+        code = input('  [mega.nz] Enter MFA code if required, or press Enter to abort: ').strip()
+        if not code:
+            return False
+        result = _run_login([f'--auth-code={code}'])
+        if result is None:
+            return False
+        if result.returncode != 0:
+            err = _safe((result.stderr or result.stdout).strip()) or '(no output)'
+            print(f'  [mega.nz] login failed: {err}')
+            return False
 
     print('  [mega.nz] login successful')
     _mega_logged_in = True
