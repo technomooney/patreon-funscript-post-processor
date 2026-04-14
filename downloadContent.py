@@ -237,6 +237,31 @@ def setup_driver(initial_download_dir: str):
     return driver
 
 
+def _ensure_driver_alive(driver, folder: str):
+    """Probe the driver; if it is not responding, quit and return a fresh instance.
+
+    Uses driver.current_url as a lightweight liveness check — it exercises the
+    WebDriver wire protocol without causing any navigation.  Any exception
+    (WebDriverException, connection refused, process dead, etc.) triggers a
+    restart.
+
+    The new driver has its download directory set to *folder* via CDP so the
+    caller does not need to call set_download_dir() again for that task.
+    """
+    try:
+        _ = driver.current_url   # lightweight probe — no navigation
+        return driver
+    except Exception:
+        print('  [browser] driver not responding — restarting...')
+        try:
+            driver.quit()
+        except Exception:
+            pass
+        new_driver = setup_driver(folder)
+        set_download_dir(new_driver, folder)
+        return new_driver
+
+
 def _is_cloudflare_blocked(driver) -> bool:
     """Return True if the current page is a Cloudflare challenge/block page."""
     title = driver.title or ''
@@ -2039,6 +2064,9 @@ def find_and_download(base_path: str):
                 print(f"  [{domain}] {link}")
                 print("  Downloading...")
 
+                # Health-check the browser before navigating; restart if dead.
+                driver = _ensure_driver_alive(driver, folder)
+
                 try:
                     triggered = handler(driver, link, folder)
                 except CloudflareBlockedError as cf_err:
@@ -2053,7 +2081,10 @@ def find_and_download(base_path: str):
                         })
                         continue
                     # Restart the driver in windowed mode for this run only.
-                    driver.quit()
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
                     os.environ['BROWSER_HEADLESS'] = 'false'
                     print('  Restarting browser in windowed mode...')
                     driver = setup_driver(folder)
