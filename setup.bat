@@ -33,6 +33,8 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+echo Updating yt-dlp to latest version...
+.venv\Scripts\pip install --quiet --upgrade yt-dlp
 echo Dependencies installed.
 
 :: --- Settings and credentials ------------------------------------------------

@@ -40,6 +40,8 @@ fi
 echo "Installing dependencies..."
 .venv/bin/pip install --quiet --upgrade pip
 .venv/bin/pip install --quiet -r requirements.txt
+echo "Updating yt-dlp to latest version..."
+.venv/bin/pip install --quiet --upgrade yt-dlp
 echo "Dependencies installed."
 
 # --- Settings and credentials ------------------------------------------------
