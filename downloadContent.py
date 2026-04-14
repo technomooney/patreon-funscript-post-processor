@@ -1187,12 +1187,65 @@ def download_yandex_disk(_driver, url: str, download_dir: str) -> bool:
     return False
 
 
+# Whether MEGAcmd is already logged in for this session.
+_mega_logged_in: bool = False
+
+
+def _mega_ensure_login() -> bool:
+    """Log into MEGAcmd with keyring credentials if not already logged in.
+
+    Checks the current session with mega-whoami first so we never re-login
+    unnecessarily.  If no credentials are stored the function returns True
+    so that public-link downloads can still proceed without an account.
+    """
+    global _mega_logged_in
+    if _mega_logged_in:
+        return True
+
+    mega_whoami = shutil.which('mega-whoami')
+    mega_login  = shutil.which('mega-login')
+
+    # Check whether MEGAcmd already has an active session.
+    if mega_whoami:
+        result = subprocess.run([mega_whoami], capture_output=True, text=True, timeout=10)
+        if result.returncode == 0 and 'not logged in' not in result.stdout.lower():
+            _mega_logged_in = True
+            return True
+
+    email    = _get_secret('MEGA_EMAIL').strip()
+    password = _get_secret('MEGA_PASSWORD').strip()
+
+    if not email or not password:
+        # No credentials stored — proceed as anonymous (public links only).
+        return True
+
+    if mega_login is None:
+        print('  [mega.nz] mega-login not found — cannot log in automatically')
+        return True
+
+    print(f'  [mega.nz] logging in as {email}...')
+    result = subprocess.run(
+        [mega_login, email, password],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        err = _safe(result.stderr.strip()) if result.stderr else '(no output)'
+        print(f'  [mega.nz] login failed: {err}')
+        return False
+
+    print('  [mega.nz] login successful')
+    _mega_logged_in = True
+    return True
+
+
 def download_mega(_driver, url: str, download_dir: str) -> bool:
     """Download a mega.nz file using the MEGAcmd mega-get CLI tool.
 
     Requires MEGAcmd to be installed (https://mega.nz/cmd).
-    For public links no login is needed.  For private links run
-    `mega-login <email> <password>` once before starting the script.
+    Logs in automatically using MEGA_EMAIL / MEGA_PASSWORD from the keyring
+    if credentials are stored; otherwise proceeds as anonymous (public links).
     mega-get is synchronous — the file is fully written before this returns.
     """
     mega_get = shutil.which('mega-get')
@@ -1200,8 +1253,11 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
         print('  [mega.nz] mega-get not found — install MEGAcmd: https://mega.nz/cmd')
         return False
 
+    if not _mega_ensure_login():
+        return False
+
     try:
-        print(f'  [mega.nz] running mega-get...')
+        print('  [mega.nz] running mega-get...')
         result = subprocess.run(
             [mega_get, url, download_dir],
             capture_output=True,

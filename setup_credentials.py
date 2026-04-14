@@ -76,6 +76,27 @@ def main():
     else:
         print('  Skipping iwara.tv credentials.')
 
+    # --- mega.nz ------------------------------------------------------------
+    print()
+    print('mega.nz  (only needed for private/account links; leave blank to skip)')
+    mega_email = _prompt('Email:', 'MEGA_EMAIL')
+    if mega_email:
+        try:
+            keyring.set_password(SERVICE, 'MEGA_EMAIL', mega_email)
+        except Exception as e:
+            print(f'  WARNING: could not save to keyring: {e}')
+            print('  Set MEGA_EMAIL in .env as a fallback.')
+
+        mega_password = _prompt('Password:', 'MEGA_PASSWORD', secret=True)
+        if mega_password:
+            try:
+                keyring.set_password(SERVICE, 'MEGA_PASSWORD', mega_password)
+            except Exception as e:
+                print(f'  WARNING: could not save to keyring: {e}')
+                print('  Set MEGA_PASSWORD in .env as a fallback.')
+    else:
+        print('  Skipping mega.nz credentials.')
+
     print()
     print('Credentials saved.')
     print()
