@@ -1722,6 +1722,7 @@ def download_ytdlp(_driver, url: str, download_dir: str) -> bool:
         result = subprocess.run(cmd, timeout=3600)
         if result.returncode != 0:
             print(f'  [yt-dlp] failed (exit {result.returncode})')
+            print('  [yt-dlp] if this site was previously working, try updating: pip install -U yt-dlp')
             return False
         return True
     except subprocess.TimeoutExpired:
