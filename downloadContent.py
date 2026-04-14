@@ -1692,7 +1692,7 @@ def _any_video_in_folder(folder: str) -> str | None:
 
 
 def _dedup_existing(base_path: str) -> int:
-    """Hash every video file under *base_path* and remove exact duplicates.
+    """Hash every file under *base_path* and remove exact duplicates.
 
     For each set of identical files the oldest (earliest mtime) is kept;
     all others are deleted.  Returns the number of files removed.
@@ -1700,7 +1700,7 @@ def _dedup_existing(base_path: str) -> int:
     Controlled by the DEDUP_EXISTING env var (default 'true').
     Set DEDUP_EXISTING=false in .env to skip this scan.
     """
-    print('\n[dedup] Scanning for duplicate videos (set DEDUP_EXISTING=false to skip)...')
+    print('\n[dedup] Scanning for duplicates (set DEDUP_EXISTING=false to skip)...')
     hash_to_paths: dict[str, list[str]] = {}
     for root, dirs, files in os.walk(base_path):
         dirs.sort()
@@ -1709,9 +1709,6 @@ def _dedup_existing(base_path: str) -> int:
                 continue
             full = os.path.join(root, f)
             if not os.path.isfile(full):
-                continue
-            mime, _ = mimetypes.guess_type(f)
-            if not (mime and mime.startswith('video/')):
                 continue
             h = _file_hash(full)
             hash_to_paths.setdefault(h, []).append(full)
