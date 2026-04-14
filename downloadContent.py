@@ -1111,7 +1111,7 @@ def _iwara_browser_login(driver) -> bool:
             # Wait up to 10 s for the URL to change away from the login page.
             try:
                 WebDriverWait(driver, 10).until(
-                    lambda d: 'login' not in d.current_url
+                    lambda _: 'login' not in driver.current_url
                 )
             except Exception:
                 pass
@@ -1191,8 +1191,8 @@ def _download_iwara_browser(driver, url: str, download_dir: str) -> bool:
         # Print all hrefs to help diagnose the correct selector.
         all_hrefs = [el.get_attribute('href') for el in driver.find_elements(By.XPATH, '//a[@href]')]
         print('  [iwara.tv] no CDN links found — all hrefs on page:')
-        for href in all_hrefs:
-            print(f'    {href}')
+        for _href in all_hrefs:
+            print(f'    {_href}')
         return False
 
     max_res = int(os.getenv('MAX_RESOLUTION', '1080'))
@@ -1201,8 +1201,8 @@ def _download_iwara_browser(driver, url: str, download_dir: str) -> bool:
         href_lower = href.lower()
         if 'preview' in href_lower:
             return 0
-        for label in ('source',):
-            if label in href_lower:
+        for _kw in ('source',):
+            if _kw in href_lower:
                 return 9999
         # filename pattern: ..._1080.mp4, ..._540.mp4, ..._360.mp4
         m = re.search(r'_(\d+)\.mp4', href_lower)
@@ -1481,7 +1481,7 @@ def _spankbang_login(driver) -> bool:
         driver.execute_script('arguments[0].click()', submit)
 
         try:
-            WebDriverWait(driver, 10).until(lambda d: 'login' not in d.current_url)
+            WebDriverWait(driver, 10).until(lambda _: 'login' not in driver.current_url)
         except Exception:
             pass
 
@@ -1702,7 +1702,7 @@ def _mega_ensure_login() -> bool:
         print('  [mega.nz] mega-login not found — cannot log in automatically')
         return True
 
-    def _run_login(extra_args: list) -> 'subprocess.CompletedProcess[str] | None':
+    def _run_login(extra_args: list[str]) -> 'subprocess.CompletedProcess[str] | None':
         try:
             return subprocess.run(
                 [mega_login, email, password] + extra_args,
@@ -2475,13 +2475,13 @@ def _write_playlist(base_path: str, newly_downloaded: list[str] | None = None):
     only those files (in the same newest-first order).
     """
     def _write_m3u8(path: str, video_paths: list[str]):
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write('#EXTM3U\n')
+        with open(path, 'w', encoding='utf-8') as fp:
+            fp.write('#EXTM3U\n')
             for video_path in video_paths:
                 title = Path(video_path).stem
                 rel_path = os.path.relpath(video_path, base_path).replace('\\', '/')
-                f.write(f'#EXTINF:-1,{title}\n')
-                f.write(f'{rel_path}\n')
+                fp.write(f'#EXTINF:-1,{title}\n')
+                fp.write(f'{rel_path}\n')
 
     video_files = []
     for root, dirs, files in os.walk(base_path):
