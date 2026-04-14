@@ -79,6 +79,10 @@ _session_hashes: dict[str, str] = {}
 # Reset before each download attempt; read by find_and_download after the handler returns.
 _last_fetch_original_name: str | None = None
 
+# Set True by _direct_fetch when a pre-download check determines the file already exists.
+# find_and_download reads this to distinguish "skipped duplicate" from "download failed".
+_last_download_skipped: bool = False
+
 
 # Add new domains here along with a handler function in DOMAIN_HANDLERS below.
 # If a URL's domain is not listed, the script will raise an error and skip it.
@@ -380,6 +384,85 @@ def _name_from_response(response, url: str) -> str | None:
     return None
 
 
+def _remote_video_duration(url: str, headers: dict[str, str]) -> float | None:
+    """Probe a remote URL with ffprobe to get its duration without downloading the file.
+
+    ffprobe streams only the first few KB needed to identify the container and
+    read the duration field from the header — far cheaper than a full download.
+    Returns None if ffprobe is unavailable or the probe fails.
+    """
+    ffprobe = shutil.which('ffprobe')
+    if ffprobe is None:
+        return None
+    cmd = [ffprobe, '-v', 'error']
+    if headers:
+        # ffprobe -headers expects "Key: Value\r\n" pairs in one string.
+        cmd += ['-headers', ''.join(f'{k}: {v}\r\n' for k, v in headers.items())]
+    cmd += ['-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1', url]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        text = result.stdout.strip()
+        return float(text) if text else None
+    except Exception:
+        return None
+
+
+def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str | None:
+    """Check whether *url* appears to point to content already in *download_dir*.
+
+    Returns a human-readable reason string if the download should be skipped,
+    or None if it should proceed.
+
+    Checks in order of increasing cost:
+      1. HEAD request → filename match, exact byte-size match.
+      2. ffprobe on the remote URL → duration match against existing videos
+         (only a few KB of the file are fetched to read the container header).
+    """
+    # --- 1. HEAD request: filename and size ---
+    content_length = 0
+    head_name: str | None = None
+    try:
+        req = urllib.request.Request(url, headers=headers, method='HEAD')
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            content_length = int(resp.headers.get('Content-Length', 0))
+            head_name = _name_from_response(resp, url)
+    except Exception:
+        pass  # HEAD not supported by all servers — continue to other checks
+
+    if head_name:
+        name_path = os.path.join(download_dir, head_name)
+        if os.path.isfile(name_path) and not _is_temp_file(head_name):
+            return f'already exists: {head_name}'
+
+    if content_length > 0:
+        for entry in os.listdir(download_dir):
+            if _is_temp_file(entry):
+                continue
+            full = os.path.join(download_dir, entry)
+            if os.path.isfile(full) and os.path.getsize(full) == content_length:
+                return f'same file size as existing: {entry}'
+
+    # --- 2. ffprobe remote duration ---
+    url_dur = _remote_video_duration(url, headers)
+    if url_dur is not None:
+        for entry in os.listdir(download_dir):
+            if _is_temp_file(entry):
+                continue
+            full = os.path.join(download_dir, entry)
+            if not os.path.isfile(full):
+                continue
+            mime, _ = mimetypes.guess_type(entry)
+            if not (mime and mime.startswith('video/')):
+                continue
+            existing_dur = _video_duration(full)
+            if existing_dur is not None and abs(url_dur - existing_dur) <= 3.0:
+                return (f'duration matches existing video: {entry} '
+                        f'({url_dur:.1f}s ≈ {existing_dur:.1f}s)')
+
+    return None  # no match found — proceed with download
+
+
 def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: dict[str, str]) -> bool:
     """Download *video_url* straight to *download_dir* using urllib, no browser needed.
 
@@ -389,7 +472,18 @@ def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: 
     The file extension is taken from the Content-Disposition header when present
     so that non-video files (e.g. .funscript, .zip) keep their original extension.
     """
-    global _last_fetch_original_name
+    global _last_fetch_original_name, _last_download_skipped
+    _last_download_skipped = False
+
+    # Pre-download duplicate check: HEAD + ffprobe remote duration.
+    # Zero bandwidth cost — we only proceed with the full download if nothing
+    # similar already exists in download_dir.
+    skip_reason = _precheck_url(video_url, headers, download_dir)
+    if skip_reason:
+        print(f'  [pre-check] skipping — {skip_reason}')
+        _last_download_skipped = True
+        return False
+
     writing_path = os.path.join(download_dir, f'{temp_prefix}.part')
     req = urllib.request.Request(video_url, headers=headers)
     with urllib.request.urlopen(req) as response:
@@ -2476,7 +2570,8 @@ def find_and_download(base_path: str):
             link_no_match: set[str] = task.get('link_no_match', set())
             saved_for_folder = 0
             for link_idx, link in enumerate(links):
-                _last_fetch_original_name = None  # reset before each attempt
+                _last_fetch_original_name = None   # reset before each attempt
+                _last_download_skipped = False
 
                 try:
                     domain  = check_domain(link)
@@ -2559,6 +2654,9 @@ def find_and_download(base_path: str):
 
                 if _link_failed:
                     continue
+
+                if _last_download_skipped:
+                    continue  # pre-download check found a duplicate — not a failure
 
                 if not triggered:
                     print("  Could not trigger download — check the handler for this domain.")
