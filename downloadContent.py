@@ -13,7 +13,7 @@ import glob
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import urlparse, quote
+from urllib.parse import urlparse, quote, unquote
 from dotenv import load_dotenv
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
@@ -369,6 +369,7 @@ def _name_from_response(response, url: str) -> str | None:
     """Extract the original filename from Content-Disposition, falling back to the URL path.
 
     Returns None if no meaningful name can be found.
+    Percent-encoding (e.g. RFC 5987 filename*= or encoded URL paths) is decoded.
     """
     cd = response.headers.get('Content-Disposition', '')
     if cd:
@@ -376,12 +377,27 @@ def _name_from_response(response, url: str) -> str | None:
         if not m:
             m = re.search(r'filename=["\']?([^"\';\r\n]+)["\']?', cd, re.IGNORECASE)
         if m:
-            return m.group(1).strip()
+            return unquote(m.group(1).strip())
     # Fall back to the last path component of the URL when it has an extension.
     url_basename = urlparse(url).path.rstrip('/').split('/')[-1]
     if url_basename and '.' in url_basename:
-        return url_basename
+        return unquote(url_basename)
     return None
+
+
+def _truncate_filename(name: str, max_bytes: int = 255) -> str:
+    """Shorten *name* so the UTF-8-encoded form fits within *max_bytes*.
+
+    The file extension is preserved; only the stem is cut.
+    Avoids splitting mid-codepoint by decoding with errors='ignore'.
+    """
+    if len(name.encode('utf-8')) <= max_bytes:
+        return name
+    stem, ext = os.path.splitext(name)
+    ext_bytes = ext.encode('utf-8')
+    allowed = max_bytes - len(ext_bytes)
+    truncated_stem = stem.encode('utf-8')[:allowed].decode('utf-8', errors='ignore')
+    return truncated_stem + ext
 
 
 def _remote_video_duration(url: str, headers: dict[str, str]) -> float | None:
@@ -1697,10 +1713,11 @@ def _mega_ensure_login() -> bool:
     if not email or not password:
         return True  # no credentials — proceed as anonymous (public links only)
 
-    mega_login = shutil.which('mega-login')
-    if mega_login is None:
+    _mega_login_bin = shutil.which('mega-login')
+    if _mega_login_bin is None:
         print('  [mega.nz] mega-login not found — cannot log in automatically')
         return True
+    mega_login: str = _mega_login_bin  # definite str for closure capture
 
     def _run_login(extra_args: list[str]) -> 'subprocess.CompletedProcess[str] | None':
         try:
@@ -2588,6 +2605,7 @@ def _save_downloaded(downloaded: str, folder: str, basename: str, link_idx: int,
         dest_name = basename + ext
     else:
         dest_name = f"{basename} ({link_idx + 1}){ext}"
+    dest_name = _truncate_filename(dest_name)
     dest_path = os.path.join(folder, dest_name)
 
     # --- 3. name collision with different content — keep both ---
@@ -2595,7 +2613,7 @@ def _save_downloaded(downloaded: str, folder: str, basename: str, link_idx: int,
         counter = 2
         stem_base, ext2 = os.path.splitext(dest_name)
         while True:
-            alt_name = f'{stem_base} [alt{counter}]{ext2}'
+            alt_name = _truncate_filename(f'{stem_base} [alt{counter}]{ext2}')
             alt_path = os.path.join(folder, alt_name)
             if not os.path.exists(alt_path):
                 break
