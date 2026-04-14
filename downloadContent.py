@@ -1722,7 +1722,7 @@ def download_ytdlp(_driver, url: str, download_dir: str) -> bool:
         result = subprocess.run(cmd, timeout=3600)
         if result.returncode != 0:
             print(f'  [yt-dlp] failed (exit {result.returncode})')
-            print('  [yt-dlp] if this site was previously working, try updating: pip install -U yt-dlp')
+            print('  [yt-dlp] try again after updating: \"pip install -U yt-dlp\". if this does not work then we are stuck, sorry...')
             return False
         return True
     except subprocess.TimeoutExpired:
@@ -2259,26 +2259,42 @@ def find_and_download(base_path: str):
                         })
                         continue
 
+                def _try_ytdlp_fallback() -> bool:
+                    """Try yt-dlp for *link* into *folder*; save and return True on success."""
+                    if handler is download_ytdlp or not shutil.which('yt-dlp'):
+                        return False
+                    print("  Trying yt-dlp as fallback...")
+                    snap = set(os.listdir(folder))
+                    if not download_ytdlp(driver, link, folder):
+                        return False
+                    dl = wait_for_download(folder, snap)
+                    if dl:
+                        _save_downloaded(dl, folder, basename, link_idx, newly_downloaded)
+                        return True
+                    return False
+
                 if not triggered:
                     print("  Could not trigger download — check the handler for this domain.")
-                    failures.append({
-                        'link': link,
-                        'funscript_name': basename,
-                        'save_directory': folder,
-                        'domain': domain,
-                    })
+                    if not _try_ytdlp_fallback():
+                        failures.append({
+                            'link': link,
+                            'funscript_name': basename,
+                            'save_directory': folder,
+                            'domain': domain,
+                        })
                     continue
 
                 downloaded = wait_for_download(folder, before_files)
 
                 if downloaded is None:
                     print("  Download did not complete.")
-                    failures.append({
-                        'link': link,
-                        'funscript_name': basename,
-                        'save_directory': folder,
-                        'domain': domain,
-                    })
+                    if not _try_ytdlp_fallback():
+                        failures.append({
+                            'link': link,
+                            'funscript_name': basename,
+                            'save_directory': folder,
+                            'domain': domain,
+                        })
                     continue
 
                 _save_downloaded(downloaded, folder, basename, link_idx, newly_downloaded)
