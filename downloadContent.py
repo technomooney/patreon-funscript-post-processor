@@ -1818,12 +1818,43 @@ def _is_temp_file(filename: str) -> bool:
     return False
 
 
+def _peek_is_video(path: str) -> bool:
+    """Return True if the first bytes of *path* match a known video container.
+
+    Checks magic bytes rather than file extension so misnamed files (e.g. a
+    funscript served with a .mp4 Content-Disposition header) are not mistaken
+    for videos.  Covers the containers we actually encounter: MP4/MOV, WebM,
+    MKV, AVI, FLV, MPEG-TS, and raw MPEG.
+    """
+    try:
+        with open(path, 'rb') as fh:
+            h = fh.read(16)
+        if len(h) < 8:
+            return False
+        if h[4:8] == b'ftyp':           # MP4 / MOV / M4V
+            return True
+        if h[:4] == b'\x1a\x45\xdf\xa3':  # WebM / MKV (EBML)
+            return True
+        if h[:4] == b'RIFF' and h[8:12] == b'AVI ':  # AVI
+            return True
+        if h[:3] == b'FLV':             # Flash Video
+            return True
+        if h[0] == 0x47:                # MPEG-TS sync byte
+            return True
+        if h[:3] == b'\x00\x00\x01' and h[3] in (0xb3, 0xba):  # MPEG PS/ES
+            return True
+        return False
+    except OSError:
+        return False
+
+
 def _any_video_in_folder(folder: str) -> str | None:
     """Return the path of any complete video file in *folder*, or None.
 
     Temp/partial files (.part, .crdownload, .tmp, *_temp*) are excluded so a
     previously cancelled download does not falsely count as a finished video.
-    Detection is MIME-based so any video container is recognised.
+    Uses both MIME type (filename extension) and magic-byte inspection so
+    files with a video extension that contain non-video data are not counted.
     """
     for f in os.listdir(folder):
         if _is_temp_file(f):
@@ -1832,7 +1863,7 @@ def _any_video_in_folder(folder: str) -> str | None:
         if not os.path.isfile(full):
             continue
         mime, _ = mimetypes.guess_type(f)
-        if mime and mime.startswith('video/'):
+        if mime and mime.startswith('video/') and _peek_is_video(full):
             return full
     return None
 
