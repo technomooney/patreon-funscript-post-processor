@@ -1910,18 +1910,138 @@ def _video_duration(path: str) -> float | None:
         return None
 
 
-def _is_av_similar(new_path: str, folder: str, duration_threshold: float = 2.0) -> str | None:
-    """Return the path of an existing video in *folder* that is AV-similar to *new_path*.
+def _audio_fingerprint(path: str) -> list[int] | None:
+    """Return a chromaprint fingerprint array for *path* using fpcalc.
 
-    Similarity is judged by video duration within *duration_threshold* seconds —
-    a reliable indicator that two files carry the same content even when encoded
-    differently.  Returns None if no similar video is found or if ffprobe is not
-    installed.
+    Analyses up to the first 120 seconds of audio so the check stays fast
+    even for long files.  Returns None if fpcalc is not installed.
     """
-    new_dur = _video_duration(new_path)
-    if new_dur is None:
+    fpcalc = shutil.which('fpcalc')
+    if fpcalc is None:
+        return None
+    try:
+        result = subprocess.run(
+            [fpcalc, '-raw', '-json', '-length', '120', path],
+            capture_output=True, text=True, timeout=120,
+        )
+        data = json.loads(result.stdout)
+        fp = data.get('fingerprint')
+        return fp if isinstance(fp, list) else None
+    except Exception:
         return None
 
+
+def _fingerprint_similarity(fp1: list[int], fp2: list[int]) -> float:
+    """Return bit-match similarity [0, 1] between two chromaprint fingerprint arrays.
+
+    Each element is a 32-bit integer; similarity is the fraction of bits that
+    match across the shorter of the two arrays.  A score ≥ 0.85 indicates the
+    same underlying audio track (possibly at different bitrates or sample rates).
+    """
+    n = min(len(fp1), len(fp2))
+    if n == 0:
+        return 0.0
+    matching = sum(32 - bin(a ^ b).count('1') for a, b in zip(fp1[:n], fp2[:n]))
+    return matching / (n * 32)
+
+
+def _format_ts(seconds: float) -> str:
+    """Format *seconds* as HH:MM:SS.mmm for use as an ffmpeg -ss argument."""
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = seconds % 60
+    return f'{h:02d}:{m:02d}:{s:06.3f}'
+
+
+def _video_frame_hash(path: str, timestamp: str) -> bytes | None:
+    """Extract a 32×32 grayscale frame at *timestamp* and return its raw pixels.
+
+    Uses ffmpeg pipe output — no temp files needed.  Returns None if ffmpeg is
+    unavailable or the timestamp is beyond the end of the video.
+    """
+    ffmpeg = shutil.which('ffmpeg')
+    if ffmpeg is None:
+        return None
+    try:
+        result = subprocess.run(
+            [ffmpeg, '-ss', timestamp, '-i', path,
+             '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'gray',
+             '-vf', 'scale=32:32', '-loglevel', 'error', 'pipe:1'],
+            capture_output=True, timeout=30,
+        )
+        if result.returncode == 0 and len(result.stdout) == 32 * 32:
+            return result.stdout
+    except Exception:
+        pass
+    return None
+
+
+def _frame_similarity(h1: bytes, h2: bytes) -> float:
+    """Return pixel-wise similarity [0, 1] between two raw 32×32 grayscale frames."""
+    if not h1 or not h2 or len(h1) != len(h2):
+        return 0.0
+    total_diff = sum(abs(a - b) for a, b in zip(h1, h2))
+    return 1.0 - total_diff / (255 * len(h1))
+
+
+def _videos_are_similar(path_a: str, path_b: str) -> bool:
+    """Return True if *path_a* and *path_b* appear to contain the same AV content.
+
+    Three-level comparison, from cheapest to most thorough:
+      1. Duration gate  — if durations differ by > 3 s the files cannot be the
+                          same content.
+      2. Audio fingerprint (fpcalc/chromaprint) — compares up to 120 s of audio.
+                          Score ≥ 0.85 → same; score < 0.5 → different.
+      3. Video frame hash (ffmpeg) — compares 32×32 grayscale frames at 10 % and
+                          50 % of the shorter clip's duration.
+    Falls back gracefully when tools are missing.
+    """
+    dur_a = _video_duration(path_a)
+    dur_b = _video_duration(path_b)
+
+    # 1. Duration gate
+    if dur_a is not None and dur_b is not None:
+        if abs(dur_a - dur_b) > 3.0:
+            return False
+
+    # 2. Audio fingerprint
+    fp_a = _audio_fingerprint(path_a)
+    fp_b = _audio_fingerprint(path_b)
+    if fp_a is not None and fp_b is not None:
+        sim = _fingerprint_similarity(fp_a, fp_b)
+        if sim >= 0.85:
+            return True
+        if sim < 0.5:
+            return False
+        # inconclusive — fall through to frame check
+
+    # 3. Video frame comparison
+    short_dur = min(d for d in (dur_a, dur_b) if d is not None) if (dur_a or dur_b) else 60.0
+    timestamps = [_format_ts(short_dur * 0.10), _format_ts(short_dur * 0.50)]
+    frame_sims = []
+    for ts in timestamps:
+        h_a = _video_frame_hash(path_a, ts)
+        h_b = _video_frame_hash(path_b, ts)
+        if h_a and h_b:
+            frame_sims.append(_frame_similarity(h_a, h_b))
+
+    if frame_sims:
+        return all(s >= 0.85 for s in frame_sims)
+
+    # Fallback: trust duration alone when no AV tools are available
+    if dur_a is not None and dur_b is not None:
+        return abs(dur_a - dur_b) <= 2.0
+
+    return False
+
+
+def _is_av_similar(new_path: str, folder: str) -> str | None:
+    """Return the path of an existing video in *folder* that is AV-similar to *new_path*.
+
+    Uses duration, audio fingerprinting (fpcalc), and video frame hashing (ffmpeg)
+    in order from cheapest to most thorough.  Returns None if no similar video is
+    found or the folder contains no other video files.
+    """
     for f in os.listdir(folder):
         if _is_temp_file(f):
             continue
@@ -1931,8 +2051,7 @@ def _is_av_similar(new_path: str, folder: str, duration_threshold: float = 2.0) 
         mime, _ = mimetypes.guess_type(f)
         if not (mime and mime.startswith('video/')):
             continue
-        existing_dur = _video_duration(full)
-        if existing_dur is not None and abs(new_dur - existing_dur) <= duration_threshold:
+        if _videos_are_similar(new_path, full):
             return full
     return None
 
@@ -2354,12 +2473,6 @@ def find_and_download(base_path: str):
             driver = _ensure_driver_alive(driver, folder)
             set_download_dir(driver, folder)
 
-            # Skip folders that already have a completed video file.
-            existing = _any_video_in_folder(folder)
-            if existing:
-                print(f"  [SKIP] video already exists: {_safe(os.path.basename(existing))}")
-                continue
-
             link_no_match: set[str] = task.get('link_no_match', set())
             saved_for_folder = 0
             for link_idx, link in enumerate(links):
@@ -2466,12 +2579,6 @@ def find_and_download(base_path: str):
                                         original_name=original_name, no_funscript_match=no_match)
                 if kept:
                     saved_for_folder += 1
-
-                # Stop trying further links for this folder once a video is saved.
-                if _any_video_in_folder(folder):
-                    if link_idx < len(links) - 1:
-                        print(f'  Video saved — skipping {len(links) - link_idx - 1} remaining link(s) for this folder.')
-                    break
 
             _cleanup_temp_files(folder)
 
