@@ -75,6 +75,10 @@ def _file_hash(path: str, block_size: int = 1 << 20) -> str:
 # Lets us detect when two different links resolve to the exact same content.
 _session_hashes: dict[str, str] = {}
 
+# Original filename captured by _direct_fetch from Content-Disposition or URL.
+# Reset before each download attempt; read by find_and_download after the handler returns.
+_last_fetch_original_name: str | None = None
+
 
 # Add new domains here along with a handler function in DOMAIN_HANDLERS below.
 # If a URL's domain is not listed, the script will raise an error and skip it.
@@ -357,6 +361,25 @@ def _ext_from_response(response, url: str) -> str:
     return '.mp4'
 
 
+def _name_from_response(response, url: str) -> str | None:
+    """Extract the original filename from Content-Disposition, falling back to the URL path.
+
+    Returns None if no meaningful name can be found.
+    """
+    cd = response.headers.get('Content-Disposition', '')
+    if cd:
+        m = re.search(r"filename\*=[^']*''([^\s;]+)", cd, re.IGNORECASE)
+        if not m:
+            m = re.search(r'filename=["\']?([^"\';\r\n]+)["\']?', cd, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
+    # Fall back to the last path component of the URL when it has an extension.
+    url_basename = urlparse(url).path.rstrip('/').split('/')[-1]
+    if url_basename and '.' in url_basename:
+        return url_basename
+    return None
+
+
 def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: dict[str, str]) -> bool:
     """Download *video_url* straight to *download_dir* using urllib, no browser needed.
 
@@ -366,10 +389,12 @@ def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: 
     The file extension is taken from the Content-Disposition header when present
     so that non-video files (e.g. .funscript, .zip) keep their original extension.
     """
+    global _last_fetch_original_name
     writing_path = os.path.join(download_dir, f'{temp_prefix}.part')
     req = urllib.request.Request(video_url, headers=headers)
     with urllib.request.urlopen(req) as response:
         ext = _ext_from_response(response, video_url)
+        _last_fetch_original_name = _name_from_response(response, video_url)
         size_mb = int(response.headers.get('Content-Length', 0)) / 1024 / 1024
         if size_mb:
             print(f'  file size: {size_mb:.1f} MB')
@@ -1868,6 +1893,50 @@ def _any_video_in_folder(folder: str) -> str | None:
     return None
 
 
+def _video_duration(path: str) -> float | None:
+    """Return the video duration in seconds using ffprobe, or None if unavailable."""
+    ffprobe = shutil.which('ffprobe')
+    if ffprobe is None:
+        return None
+    try:
+        result = subprocess.run(
+            [ffprobe, '-v', 'error', '-show_entries', 'format=duration',
+             '-of', 'default=noprint_wrappers=1:nokey=1', path],
+            capture_output=True, text=True, timeout=30,
+        )
+        text = result.stdout.strip()
+        return float(text) if text else None
+    except Exception:
+        return None
+
+
+def _is_av_similar(new_path: str, folder: str, duration_threshold: float = 2.0) -> str | None:
+    """Return the path of an existing video in *folder* that is AV-similar to *new_path*.
+
+    Similarity is judged by video duration within *duration_threshold* seconds —
+    a reliable indicator that two files carry the same content even when encoded
+    differently.  Returns None if no similar video is found or if ffprobe is not
+    installed.
+    """
+    new_dur = _video_duration(new_path)
+    if new_dur is None:
+        return None
+
+    for f in os.listdir(folder):
+        if _is_temp_file(f):
+            continue
+        full = os.path.join(folder, f)
+        if full == new_path or not os.path.isfile(full):
+            continue
+        mime, _ = mimetypes.guess_type(f)
+        if not (mime and mime.startswith('video/')):
+            continue
+        existing_dur = _video_duration(full)
+        if existing_dur is not None and abs(new_dur - existing_dur) <= duration_threshold:
+            return full
+    return None
+
+
 def _dedup_existing(base_path: str) -> int:
     """Hash every file under *base_path* and remove exact duplicates.
 
@@ -1944,16 +2013,18 @@ def _update_env_file(key: str, value: str):
         f.writelines(lines)
 
 
-def _match_links_to_funscripts(links: list[str], funscript_paths: list[str]) -> dict[str, str]:
+def _match_links_to_funscripts(links: list[str], funscript_paths: list[str]) -> dict[str, tuple[str, bool]]:
     """
     Fuzzy-match each link URL to the best-fitting funscript stem using token
-    overlap.  Returns {link: funscript_stem}.
+    overlap.  Returns {link: (funscript_stem, is_real_match)}.
 
     Scoring: tokenise both the funscript name and the URL path (split on
     non-alphanumeric chars, ignore tokens ≤ 2 chars), then compute
     (matching tokens) / (total funscript tokens).  The funscript with the
     highest score wins; ties go to the first funscript.  If the best score
-    is below 0.25 the link is left unmatched (falls back to first funscript).
+    is below 0.25 the link is left unmatched (falls back to first funscript)
+    and is_real_match is False — callers can then keep the download's original
+    filename instead of renaming to the funscript basename.
     """
     def tokenize(s: str) -> list[str]:
         return [t for t in re.split(r'[^a-z0-9]+', s.lower()) if len(t) > 2]
@@ -1962,7 +2033,7 @@ def _match_links_to_funscripts(links: list[str], funscript_paths: list[str]) -> 
     stem_tokens = {stem: set(tokenize(stem)) for stem in stems}
     fallback = stems[0]
 
-    result: dict[str, str] = {}
+    result: dict[str, tuple[str, bool]] = {}
     for link in links:
         url_tokens = set(tokenize(link))
         best_stem, best_score = fallback, 0.0
@@ -1972,7 +2043,8 @@ def _match_links_to_funscripts(links: list[str], funscript_paths: list[str]) -> 
             score = len(fs_tokens & url_tokens) / len(fs_tokens)
             if score > best_score:
                 best_score, best_stem = score, stem
-        result[link] = best_stem if best_score >= 0.25 else fallback
+        is_real_match = best_score >= 0.25
+        result[link] = (best_stem if is_real_match else fallback, is_real_match)
     return result
 
 
@@ -2054,18 +2126,26 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
         # When there are multiple funscripts AND multiple links, fuzzy-match
         # each link to the funscript whose name shares the most URL tokens.
         if main_scripts and len(main_scripts) > 1 and len(validated_links) > 1:
-            link_to_stem = _match_links_to_funscripts(validated_links, main_scripts)
+            link_to_match = _match_links_to_funscripts(validated_links, main_scripts)
             stem_to_links: dict[str, list[str]] = {}
-            for link, stem in link_to_stem.items():
+            stem_no_match: dict[str, set[str]] = {}
+            for link, (stem, is_real) in link_to_match.items():
                 stem_to_links.setdefault(stem, []).append(link)
+                if not is_real:
+                    stem_no_match.setdefault(stem, set()).add(link)
             for stem, stem_links in stem_to_links.items():
                 print(f"  [fuzzy] '{_safe(stem)}' matched {len(stem_links)} link(s)")
-                tasks.append({'folder': root, 'basename': stem, 'links': stem_links})
+                tasks.append({'folder': root, 'basename': stem, 'links': stem_links,
+                              'link_no_match': stem_no_match.get(stem, set())})
         else:
+            # Single funscript: all links match it by default (no fuzzy scoring needed).
+            # No funscript at all: keep original download names for every link.
+            no_match_set: set[str] = set(validated_links) if not main_scripts else set()
             tasks.append({
                 'folder': root,
                 'basename': funscript_basename,
                 'links': validated_links,
+                'link_no_match': no_match_set,
             })
 
     return tasks, failures
@@ -2151,7 +2231,8 @@ def _find_existing_by_hash(folder: str, file_hash: str, exclude: str) -> str | N
 
 
 def _save_downloaded(downloaded: str, folder: str, basename: str, link_idx: int,
-                     newly_downloaded: list[str]) -> bool:
+                     newly_downloaded: list[str], original_name: str | None = None,
+                     no_funscript_match: bool = False) -> bool:
     """Hash *downloaded*, check for session/disk duplicates, then rename into place.
 
     Checks (in order):
@@ -2160,6 +2241,10 @@ def _save_downloaded(downloaded: str, folder: str, basename: str, link_idx: int,
          under a different name (e.g. multiple funscripts from a Yandex link).
       3. Name collision at the exact dest_path with different content — saved
          as [alt2], [alt3], etc.
+
+    When *no_funscript_match* is True and *original_name* is available the file
+    is saved under *original_name* rather than the funscript basename — the link
+    had no meaningful semantic connection to any funscript in the folder.
 
     Returns True if the file was kept (and added to *newly_downloaded*).
     Always removes *downloaded* if the content is a duplicate.
@@ -2182,7 +2267,11 @@ def _save_downloaded(downloaded: str, folder: str, basename: str, link_idx: int,
         return False
 
     ext = os.path.splitext(downloaded)[1]
-    if link_idx == 0:
+    # Use the download's original name when there is no funscript to name after.
+    if no_funscript_match and original_name:
+        dest_stem = Path(original_name).stem  # strip any extension already in the name
+        dest_name = dest_stem + ext
+    elif link_idx == 0:
         dest_name = basename + ext
     else:
         dest_name = f"{basename} ({link_idx + 1}){ext}"
@@ -2248,6 +2337,7 @@ def find_and_download(base_path: str):
 
     newly_downloaded: list[str] = []
     total = len(tasks)
+    global _last_fetch_original_name
     try:
         for task_idx, task in enumerate(tasks, start=1):
             folder   = task['folder']
@@ -2259,6 +2349,9 @@ def find_and_download(base_path: str):
 
             print(f"\n[{task_idx}/{total}] {_safe(basename)}")
             _cleanup_temp_files(folder)
+
+            # Health-check the browser before touching the task; restart if dead.
+            driver = _ensure_driver_alive(driver, folder)
             set_download_dir(driver, folder)
 
             # Skip folders that already have a completed video file.
@@ -2267,8 +2360,11 @@ def find_and_download(base_path: str):
                 print(f"  [SKIP] video already exists: {_safe(os.path.basename(existing))}")
                 continue
 
+            link_no_match: set[str] = task.get('link_no_match', set())
             saved_for_folder = 0
             for link_idx, link in enumerate(links):
+                _last_fetch_original_name = None  # reset before each attempt
+
                 try:
                     domain  = check_domain(link)
                     handler = DOMAIN_HANDLERS[domain]
@@ -2342,7 +2438,32 @@ def find_and_download(base_path: str):
                     })
                     continue
 
-                kept = _save_downloaded(downloaded, folder, basename, saved_for_folder, newly_downloaded)
+                # AV similarity check: skip if an existing video in the folder
+                # has the same duration (i.e. same content, different encoding).
+                if _peek_is_video(downloaded):
+                    similar = _is_av_similar(downloaded, folder)
+                    if similar:
+                        print(f'  [SKIP] AV-similar to existing video: {_safe(os.path.basename(similar))}')
+                        try:
+                            os.remove(downloaded)
+                        except OSError:
+                            pass
+                        continue
+
+                # Determine the original filename for use when there is no
+                # funscript match.  Browser-based handlers preserve the real
+                # name in the downloaded path; _direct_fetch stores it globally.
+                orig_basename = os.path.basename(downloaded)
+                if not _is_temp_file(orig_basename):
+                    original_name: str | None = Path(orig_basename).stem
+                elif _last_fetch_original_name:
+                    original_name = Path(_last_fetch_original_name).stem
+                else:
+                    original_name = None
+
+                no_match = link in link_no_match
+                kept = _save_downloaded(downloaded, folder, basename, saved_for_folder, newly_downloaded,
+                                        original_name=original_name, no_funscript_match=no_match)
                 if kept:
                     saved_for_folder += 1
 
