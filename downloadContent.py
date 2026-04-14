@@ -2581,21 +2581,7 @@ def _save_downloaded(downloaded: str, folder: str, basename: str, link_idx: int,
     """
     new_hash = _file_hash(downloaded)
 
-    # --- 1. session-level dedup: same content already saved this run ---
-    if new_hash in _session_hashes:
-        prior = _session_hashes[new_hash]
-        print(f'  [SKIP] identical to already-downloaded file: {_safe(os.path.basename(prior))}')
-        os.remove(downloaded)
-        return False
-
-    # --- 2. folder-level dedup: same content exists under any name ---
-    existing_match = _find_existing_by_hash(folder, new_hash, exclude=downloaded)
-    if existing_match:
-        print(f'  [SKIP] identical file already on disk: {_safe(os.path.basename(existing_match))}')
-        os.remove(downloaded)
-        _session_hashes[new_hash] = existing_match
-        return False
-
+    # Compute desired destination name up front so rename-on-dedup can use it.
     ext = os.path.splitext(downloaded)[1]
     # Use the download's original name when there is no funscript to name after.
     if no_funscript_match and original_name:
@@ -2607,6 +2593,30 @@ def _save_downloaded(downloaded: str, folder: str, basename: str, link_idx: int,
         dest_name = f"{basename} ({link_idx + 1}){ext}"
     dest_name = _truncate_filename(dest_name)
     dest_path = os.path.join(folder, dest_name)
+
+    # --- 1. session-level dedup: same content already saved this run ---
+    if new_hash in _session_hashes:
+        prior = _session_hashes[new_hash]
+        print(f'  [SKIP] identical to already-downloaded file: {_safe(os.path.basename(prior))}')
+        os.remove(downloaded)
+        return False
+
+    # --- 2. folder-level dedup: same content exists under any name ---
+    existing_match = _find_existing_by_hash(folder, new_hash, exclude=downloaded)
+    if existing_match:
+        existing_name = os.path.basename(existing_match)
+        os.remove(downloaded)
+        # Opportunistic rename: if the current download gave us a better name
+        # (e.g. properly decoded Unicode vs. earlier mojibake), apply it now.
+        if existing_name != dest_name and not os.path.exists(dest_path):
+            os.rename(existing_match, dest_path)
+            print(f'  [RENAME] {_safe(existing_name)}')
+            print(f'        -> {_safe(dest_name)}')
+            _session_hashes[new_hash] = dest_path
+        else:
+            print(f'  [SKIP] identical file already on disk: {_safe(existing_name)}')
+            _session_hashes[new_hash] = existing_match
+        return False
 
     # --- 3. name collision with different content — keep both ---
     if os.path.exists(dest_path):
