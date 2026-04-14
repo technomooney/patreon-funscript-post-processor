@@ -2312,6 +2312,12 @@ def find_and_download(base_path: str):
 
                 _save_downloaded(downloaded, folder, basename, link_idx, newly_downloaded)
 
+                # Stop trying further links for this folder once a video is saved.
+                if _any_video_in_folder(folder):
+                    if link_idx < len(links) - 1:
+                        print(f'  Video saved — skipping {len(links) - link_idx - 1} remaining link(s) for this folder.')
+                    break
+
             _cleanup_temp_files(folder)
 
     except KeyboardInterrupt:
