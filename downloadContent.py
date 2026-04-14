@@ -1,5 +1,6 @@
 import base64
 import csv
+import hashlib
 import re
 import json
 import mimetypes
@@ -55,6 +56,24 @@ def _get_secret(key: str, default: str = '') -> str:
     except Exception:
         pass
     return os.getenv(key, default)
+
+
+# ---------------------------------------------------------------------------
+# File hashing — used for duplicate detection within a session and on disk.
+# ---------------------------------------------------------------------------
+
+def _file_hash(path: str, block_size: int = 1 << 20) -> str:
+    """Return the SHA-256 hex digest of *path*, reading in 1 MB chunks."""
+    h = hashlib.sha256()
+    with open(path, 'rb') as fh:
+        for chunk in iter(lambda: fh.read(block_size), b''):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+# Maps hash → final saved path for every file downloaded in this session.
+# Lets us detect when two different links resolve to the exact same content.
+_session_hashes: dict[str, str] = {}
 
 
 # Add new domains here along with a handler function in DOMAIN_HANDLERS below.
@@ -1615,18 +1634,82 @@ def _cleanup_temp_files(folder: str):
                 print(f'  [cleanup] could not remove {f}: {e}')
 
 
-def _video_exists(folder: str, basename: str) -> str | None:
-    """Return the path of an existing video for *basename* in *folder*, or None.
-    Uses MIME type detection so any video format is recognized, not just a fixed list.
+def _is_temp_file(filename: str) -> bool:
+    """Return True if *filename* looks like an in-progress or leftover temp file."""
+    if filename.endswith(('.part', '.crdownload', '.tmp')):
+        return True
+    stem = Path(filename).stem
+    if stem.endswith('_temp'):
+        return True
+    # Double-extension temp: e.g. _iwara_temp.mp4 → stem still ends in _temp
+    if Path(stem).stem.endswith('_temp'):
+        return True
+    return False
+
+
+def _any_video_in_folder(folder: str) -> str | None:
+    """Return the path of any complete video file in *folder*, or None.
+
+    Temp/partial files (.part, .crdownload, .tmp, *_temp*) are excluded so a
+    previously cancelled download does not falsely count as a finished video.
+    Detection is MIME-based so any video container is recognised.
     """
     for f in os.listdir(folder):
-        stem, _ = os.path.splitext(f)
-        if stem != basename:
+        if _is_temp_file(f):
+            continue
+        full = os.path.join(folder, f)
+        if not os.path.isfile(full):
             continue
         mime, _ = mimetypes.guess_type(f)
         if mime and mime.startswith('video/'):
-            return os.path.join(folder, f)
+            return full
     return None
+
+
+def _dedup_existing(base_path: str) -> int:
+    """Hash every video file under *base_path* and remove exact duplicates.
+
+    For each set of identical files the oldest (earliest mtime) is kept;
+    all others are deleted.  Returns the number of files removed.
+
+    Controlled by the DEDUP_EXISTING env var (default 'true').
+    Set DEDUP_EXISTING=false in .env to skip this scan.
+    """
+    print('\n[dedup] Scanning for duplicate videos (set DEDUP_EXISTING=false to skip)...')
+    hash_to_paths: dict[str, list[str]] = {}
+    for root, dirs, files in os.walk(base_path):
+        dirs.sort()
+        for f in sorted(files):
+            if _is_temp_file(f):
+                continue
+            full = os.path.join(root, f)
+            if not os.path.isfile(full):
+                continue
+            mime, _ = mimetypes.guess_type(f)
+            if not (mime and mime.startswith('video/')):
+                continue
+            h = _file_hash(full)
+            hash_to_paths.setdefault(h, []).append(full)
+
+    removed = 0
+    for paths in hash_to_paths.values():
+        if len(paths) < 2:
+            continue
+        paths.sort(key=os.path.getmtime)   # oldest first
+        keeper = paths[0]
+        for dup in paths[1:]:
+            print(f'  [dedup] duplicate of {_safe(os.path.basename(keeper))}: removing {_safe(dup)}')
+            try:
+                os.remove(dup)
+                removed += 1
+            except OSError as e:
+                print(f'  [dedup] could not remove {_safe(dup)}: {e}')
+
+    if removed:
+        print(f'[dedup] removed {removed} duplicate video(s)')
+    else:
+        print('[dedup] no duplicates found')
+    return removed
 
 
 def _update_env_file(key: str, value: str):
@@ -1837,9 +1920,68 @@ def _write_failures_csv(base_path: str, failures: list):
     print(f"\nFailed downloads ({len(failures)}) written to: {csv_path}")
 
 
+def _save_downloaded(downloaded: str, folder: str, basename: str, link_idx: int,
+                     newly_downloaded: list[str]) -> bool:
+    """Hash *downloaded*, check for session/disk duplicates, then rename into place.
+
+    Returns True if the file was kept (and added to *newly_downloaded*).
+    Always removes *downloaded* if the content is a duplicate.
+    """
+    new_hash = _file_hash(downloaded)
+
+    # --- session-level dedup: same content already saved this run ---
+    if new_hash in _session_hashes:
+        prior = _session_hashes[new_hash]
+        print(f'  [SKIP] identical to already-downloaded file: {_safe(os.path.basename(prior))}')
+        os.remove(downloaded)
+        return False
+
+    ext = os.path.splitext(downloaded)[1]
+    if link_idx == 0:
+        dest_name = basename + ext
+    else:
+        dest_name = f"{basename} ({link_idx + 1}){ext}"
+    dest_path = os.path.join(folder, dest_name)
+
+    if os.path.exists(dest_path):
+        existing_hash = _file_hash(dest_path)
+        if existing_hash == new_hash:
+            print(f'  [SKIP] identical file already on disk: {_safe(dest_name)}')
+            os.remove(downloaded)
+            # Register so later links in this session don't re-download.
+            _session_hashes[new_hash] = dest_path
+            return False
+        # Different content with the same name — keep both, append a counter.
+        counter = 2
+        stem_base, ext2 = os.path.splitext(dest_name)
+        while True:
+            alt_name = f'{stem_base} [alt{counter}]{ext2}'
+            alt_path = os.path.join(folder, alt_name)
+            if not os.path.exists(alt_path):
+                break
+            counter += 1
+        os.rename(downloaded, alt_path)
+        print(f'  Saved as: {_safe(alt_name)} (different content from existing file)')
+        _session_hashes[new_hash] = alt_path
+        newly_downloaded.append(alt_path)
+        return True
+
+    os.rename(downloaded, dest_path)
+    print(f'  Saved as: {_safe(dest_name)}')
+    _session_hashes[new_hash] = dest_path
+    newly_downloaded.append(dest_path)
+    return True
+
+
 def find_and_download(base_path: str):
     ans = input("Download even without a funscript file? (y/n, default n): ").strip().lower()
     require_funscript = ans != 'y'
+
+    # Deduplicate existing videos unless the user has opted out.
+    dedup_existing = os.getenv('DEDUP_EXISTING', 'true').strip().lower() not in ('false', '0', 'no')
+    if dedup_existing:
+        _dedup_existing(base_path)
+
     tasks, failures = collect_tasks(base_path, require_funscript=require_funscript)
 
     if not tasks:
@@ -1881,7 +2023,8 @@ def find_and_download(base_path: str):
             _cleanup_temp_files(folder)
             set_download_dir(driver, folder)
 
-            existing = _video_exists(folder, basename)
+            # Skip folders that already have a completed video file.
+            existing = _any_video_in_folder(folder)
             if existing:
                 print(f"  [SKIP] video already exists: {_safe(os.path.basename(existing))}")
                 continue
@@ -1950,20 +2093,7 @@ def find_and_download(base_path: str):
                     })
                     continue
 
-                ext = os.path.splitext(downloaded)[1]
-                if link_idx == 0:
-                    dest_name = basename + ext
-                else:
-                    dest_name = f"{basename} ({link_idx + 1}){ext}"
-
-                dest_path = os.path.join(folder, dest_name)
-
-                if os.path.exists(dest_path):
-                    print(f"  Already exists, skipping rename: {dest_name}")
-                else:
-                    os.rename(downloaded, dest_path)
-                    print(f"  Saved as: {dest_name}")
-                    newly_downloaded.append(dest_path)
+                _save_downloaded(downloaded, folder, basename, link_idx, newly_downloaded)
 
             _cleanup_temp_files(folder)
 
@@ -1971,16 +2101,8 @@ def find_and_download(base_path: str):
         print('\n\nInterrupted — waiting up to 120 s for the active download to finish...')
         downloaded = wait_for_download(current_folder, current_before_files, timeout=120)
         if downloaded:
-            ext = os.path.splitext(downloaded)[1]
-            if current_link_idx == 0:
-                dest_name = current_basename + ext
-            else:
-                dest_name = f"{current_basename} ({current_link_idx + 1}){ext}"
-            dest_path = os.path.join(current_folder, dest_name)
-            if not os.path.exists(dest_path):
-                os.rename(downloaded, dest_path)
-                newly_downloaded.append(dest_path)
-                print(f'  Saved as: {dest_name}')
+            _save_downloaded(downloaded, current_folder, current_basename,
+                             current_link_idx, newly_downloaded)
         else:
             print('  Download did not complete in time — removing temp files.')
             _cleanup_temp_files(current_folder)
