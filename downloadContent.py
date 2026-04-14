@@ -72,6 +72,8 @@ KNOWN_DOMAINS = [
     'disk.yandex.com',
     'disk.yandex.ru',
     'mega.nz',
+    'mega.co.nz',
+    'rule34video.party',
 ]
 
 # Links to these domains are creator pages / social profiles — no file to download.
@@ -1293,9 +1295,11 @@ DOMAIN_HANDLERS = {
     'rule34.xxx':      download_rule34xxx,
     'fap-nation.org':  download_fapnation,
     'eporner.com':     download_eporner,
-    'disk.yandex.com': download_yandex_disk,
-    'disk.yandex.ru':  download_yandex_disk,
-    'mega.nz':         download_mega,
+    'disk.yandex.com':   download_yandex_disk,
+    'disk.yandex.ru':    download_yandex_disk,
+    'mega.nz':           download_mega,
+    'mega.co.nz':        download_mega,
+    'rule34video.party': download_rule34video,
 }
 
 
