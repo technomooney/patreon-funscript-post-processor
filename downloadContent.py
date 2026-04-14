@@ -408,6 +408,66 @@ def _remote_video_duration(url: str, headers: dict[str, str]) -> float | None:
         return None
 
 
+def _stream_frame(url: str, headers: dict[str, str], timestamp: str) -> bytes | None:
+    """Seek to *timestamp* in a remote URL and extract one 32×32 grayscale frame.
+
+    ffmpeg uses HTTP Range requests internally to seek efficiently — only the
+    data around the requested keyframe is actually downloaded.
+    Returns None if ffmpeg is unavailable or the seek fails.
+    """
+    ffmpeg = shutil.which('ffmpeg')
+    if ffmpeg is None:
+        return None
+    cmd = [ffmpeg, '-v', 'error']
+    if headers:
+        cmd += ['-headers', ''.join(f'{k}: {v}\r\n' for k, v in headers.items())]
+    # Input-side seek (-ss before -i) lets ffmpeg use Range requests rather
+    # than reading from the start of the stream.
+    cmd += ['-ss', timestamp, '-i', url,
+            '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'gray',
+            '-vf', 'scale=32:32', 'pipe:1']
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=60)
+        if result.returncode == 0 and len(result.stdout) == 32 * 32:
+            return result.stdout
+    except Exception:
+        pass
+    return None
+
+
+def _remote_visually_similar(url: str, headers: dict[str, str],
+                              url_dur: float, local_path: str) -> bool:
+    """Return True if the remote video at *url* is visually similar to *local_path*.
+
+    Samples one frame every 15 seconds (capped at 8 samples), starting from
+    ~5 % of the video duration so opening-title frames are avoided.  Each
+    sample downloads only the data around that seek point via HTTP Range
+    requests.  At least 75 % of sampled frames must match for a True result.
+    """
+    timestamps: list[str] = []
+    t = max(url_dur * 0.05, 2.0)
+    while t < url_dur * 0.92 and len(timestamps) < 8:
+        timestamps.append(_format_ts(t))
+        t += 15.0
+    if not timestamps:
+        return False
+
+    match_count = 0
+    total_count = 0
+    for ts in timestamps:
+        remote_frame = _stream_frame(url, headers, ts)
+        local_frame  = _video_frame_hash(local_path, ts)
+        if remote_frame and local_frame:
+            total_count += 1
+            if _frame_similarity(remote_frame, local_frame) >= 0.85:
+                match_count += 1
+
+    return total_count > 0 and (match_count / total_count) >= 0.75
+
+
+_VISUAL_PRECHECK_MIN_BYTES = 100 * 1024 * 1024  # 100 MB
+
+
 def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str | None:
     """Check whether *url* appears to point to content already in *download_dir*.
 
@@ -415,9 +475,11 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
     or None if it should proceed.
 
     Checks in order of increasing cost:
-      1. HEAD request → filename match, exact byte-size match.
-      2. ffprobe on the remote URL → duration match against existing videos
-         (only a few KB of the file are fetched to read the container header).
+      1. HEAD request → filename match, exact byte-size match (free).
+      2. ffprobe on the remote URL → duration gate, a few KB only.
+      3. Visual frame sampling (only for files ≥ 100 MB) → ffmpeg seeks to
+         one frame every 15 s and compares against the duration-matched local
+         file; each seek downloads only the data around that keyframe.
     """
     # --- 1. HEAD request: filename and size ---
     content_length = 0
@@ -445,22 +507,42 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
 
     # --- 2. ffprobe remote duration ---
     url_dur = _remote_video_duration(url, headers)
-    if url_dur is not None:
-        for entry in os.listdir(download_dir):
-            if _is_temp_file(entry):
-                continue
-            full = os.path.join(download_dir, entry)
-            if not os.path.isfile(full):
-                continue
-            mime, _ = mimetypes.guess_type(entry)
-            if not (mime and mime.startswith('video/')):
-                continue
-            existing_dur = _video_duration(full)
-            if existing_dur is not None and abs(url_dur - existing_dur) <= 3.0:
-                return (f'duration matches existing video: {entry} '
-                        f'({url_dur:.1f}s ≈ {existing_dur:.1f}s)')
+    if url_dur is None:
+        return None  # can't probe — proceed with download
 
-    return None  # no match found — proceed with download
+    duration_candidates: list[str] = []
+    for entry in os.listdir(download_dir):
+        if _is_temp_file(entry):
+            continue
+        full = os.path.join(download_dir, entry)
+        if not os.path.isfile(full):
+            continue
+        mime, _ = mimetypes.guess_type(entry)
+        if not (mime and mime.startswith('video/')):
+            continue
+        existing_dur = _video_duration(full)
+        if existing_dur is not None and abs(url_dur - existing_dur) <= 3.0:
+            duration_candidates.append(full)
+
+    if not duration_candidates:
+        return None  # no duration match — proceed with download
+
+    # --- 3. Visual frame sampling (large files only) ---
+    # For files under 100 MB, the full download is cheap enough that we skip
+    # the per-frame probing and let the post-download hash/AV check handle it.
+    if content_length >= _VISUAL_PRECHECK_MIN_BYTES:
+        for candidate in duration_candidates:
+            print(f'  [pre-check] visually sampling remote URL against {_safe(os.path.basename(candidate))}...')
+            if _remote_visually_similar(url, headers, url_dur, candidate):
+                return (f'visually similar to existing: {os.path.basename(candidate)} '
+                        f'({url_dur:.1f}s)')
+        # Duration matched but no visual match — not a duplicate.
+        return None
+
+    # Small file: duration match alone is enough to flag as duplicate.
+    cand = duration_candidates[0]
+    return (f'duration matches existing video: {os.path.basename(cand)} '
+            f'({url_dur:.1f}s ≈ {_video_duration(cand) or 0:.1f}s)')
 
 
 def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: dict[str, str]) -> bool:
