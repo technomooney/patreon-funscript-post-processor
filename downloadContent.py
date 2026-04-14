@@ -1461,7 +1461,7 @@ def _mega_ensure_login() -> bool:
             [mega_login, email, password],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=15,
         )
     except subprocess.TimeoutExpired:
         print('  [mega.nz] login timed out')
