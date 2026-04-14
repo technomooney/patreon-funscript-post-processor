@@ -5,6 +5,7 @@ import json
 import mimetypes
 import os
 import shutil
+import subprocess
 import sys
 import time
 import glob
@@ -70,6 +71,7 @@ KNOWN_DOMAINS = [
     'eporner.com',
     'disk.yandex.com',
     'disk.yandex.ru',
+    'mega.nz',
 ]
 
 # Links to these domains are creator pages / social profiles — no file to download.
@@ -1185,6 +1187,44 @@ def download_yandex_disk(_driver, url: str, download_dir: str) -> bool:
     return False
 
 
+def download_mega(_driver, url: str, download_dir: str) -> bool:
+    """Download a mega.nz file using the MEGAcmd mega-get CLI tool.
+
+    Requires MEGAcmd to be installed (https://mega.nz/cmd).
+    For public links no login is needed.  For private links run
+    `mega-login <email> <password>` once before starting the script.
+    mega-get is synchronous — the file is fully written before this returns.
+    """
+    mega_get = shutil.which('mega-get')
+    if mega_get is None:
+        print('  [mega.nz] mega-get not found — install MEGAcmd: https://mega.nz/cmd')
+        return False
+
+    try:
+        print(f'  [mega.nz] running mega-get...')
+        result = subprocess.run(
+            [mega_get, url, download_dir],
+            capture_output=True,
+            text=True,
+            timeout=3600,
+        )
+        if result.stdout:
+            for line in result.stdout.strip().splitlines():
+                print(f'  [mega.nz] {_safe(line)}')
+        if result.returncode != 0:
+            err = _safe(result.stderr.strip()) if result.stderr else '(no output)'
+            print(f'  [mega.nz] mega-get failed (exit {result.returncode}): {err}')
+            return False
+        return True
+
+    except subprocess.TimeoutExpired:
+        print('  [mega.nz] download timed out after 1 hour')
+    except Exception as e:
+        print(f'  [mega.nz] handler error: {e}')
+
+    return False
+
+
 # Map each KNOWN_DOMAINS entry to its handler.
 # When adding a new domain, add it to KNOWN_DOMAINS above AND here.
 DOMAIN_HANDLERS = {
@@ -1199,6 +1239,7 @@ DOMAIN_HANDLERS = {
     'eporner.com':     download_eporner,
     'disk.yandex.com': download_yandex_disk,
     'disk.yandex.ru':  download_yandex_disk,
+    'mega.nz':         download_mega,
 }
 
 
