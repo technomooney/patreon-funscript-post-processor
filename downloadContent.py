@@ -452,15 +452,23 @@ def _remote_visually_similar(url: str, headers: dict[str, str],
     if not timestamps:
         return False
 
+    n = len(timestamps)
     match_count = 0
     total_count = 0
-    for ts in timestamps:
+    for i, ts in enumerate(timestamps, start=1):
+        print(f'  [pre-check] frame sample {i}/{n} at {ts}...', end='\r', flush=True)
         remote_frame = _stream_frame(url, headers, ts)
         local_frame  = _video_frame_hash(local_path, ts)
         if remote_frame and local_frame:
             total_count += 1
-            if _frame_similarity(remote_frame, local_frame) >= 0.85:
+            sim = _frame_similarity(remote_frame, local_frame)
+            match = sim >= 0.85
+            if match:
                 match_count += 1
+            print(f'  [pre-check] frame {i}/{n} at {ts}: {"match" if match else "no match"} ({sim:.0%})',
+                  flush=True)
+        else:
+            print(f'  [pre-check] frame {i}/{n} at {ts}: could not extract', flush=True)
 
     return total_count > 0 and (match_count / total_count) >= 0.75
 
@@ -482,6 +490,7 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
          file; each seek downloads only the data around that keyframe.
     """
     # --- 1. HEAD request: filename and size ---
+    print('  [pre-check] HEAD request...', end='\r', flush=True)
     content_length = 0
     head_name: str | None = None
     try:
@@ -491,6 +500,9 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
             head_name = _name_from_response(resp, url)
     except Exception:
         pass  # HEAD not supported by all servers — continue to other checks
+
+    size_str = f'{content_length / 1024 / 1024:.1f} MB' if content_length else 'unknown size'
+    print(f'  [pre-check] HEAD: {size_str}{f", name: {head_name}" if head_name else ""}', flush=True)
 
     if head_name:
         name_path = os.path.join(download_dir, head_name)
@@ -506,9 +518,12 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
                 return f'same file size as existing: {entry}'
 
     # --- 2. ffprobe remote duration ---
+    print('  [pre-check] probing remote duration...', end='\r', flush=True)
     url_dur = _remote_video_duration(url, headers)
     if url_dur is None:
+        print('  [pre-check] duration unavailable — proceeding with download', flush=True)
         return None  # can't probe — proceed with download
+    print(f'  [pre-check] remote duration: {url_dur:.1f}s', flush=True)
 
     duration_candidates: list[str] = []
     for entry in os.listdir(download_dir):
@@ -525,6 +540,7 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
             duration_candidates.append(full)
 
     if not duration_candidates:
+        print('  [pre-check] no duration match — proceeding with download', flush=True)
         return None  # no duration match — proceed with download
 
     # --- 3. Visual frame sampling (large files only) ---
@@ -532,10 +548,12 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
     # the per-frame probing and let the post-download hash/AV check handle it.
     if content_length >= _VISUAL_PRECHECK_MIN_BYTES:
         for candidate in duration_candidates:
-            print(f'  [pre-check] visually sampling remote URL against {_safe(os.path.basename(candidate))}...')
+            cname = _safe(os.path.basename(candidate))
+            print(f'  [pre-check] visually sampling against {cname} ({url_dur:.1f}s)...', flush=True)
             if _remote_visually_similar(url, headers, url_dur, candidate):
                 return (f'visually similar to existing: {os.path.basename(candidate)} '
                         f'({url_dur:.1f}s)')
+        print('  [pre-check] no visual match — proceeding with download', flush=True)
         # Duration matched but no visual match — not a duplicate.
         return None
 
