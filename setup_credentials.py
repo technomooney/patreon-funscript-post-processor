@@ -100,8 +100,36 @@ def _keyring_set(key: str, value: str) -> None:
 # Prompt helpers
 # ---------------------------------------------------------------------------
 
+try:
+    import readline as _readline
+    def _input_prefilled(prompt: str, prefill: str) -> str:
+        """Show *prompt* with *prefill* already in the edit buffer.
+
+        The user can accept it with Enter, edit it in place, or clear it.
+        Falls back to the bracket-hint style if readline is unavailable.
+        """
+        def _hook():
+            _readline.insert_text(prefill)
+            _readline.redisplay()
+        _readline.set_pre_input_hook(_hook)
+        try:
+            return input(prompt).strip()
+        finally:
+            _readline.set_pre_input_hook(None)
+except ImportError:
+    # Windows without pyreadline — show the current value in brackets instead.
+    def _input_prefilled(prompt: str, prefill: str) -> str:  # type: ignore[misc]
+        hint = f'[{prefill}]' if prefill else '[not set]'
+        value = input(f'{prompt}{hint}: ').strip()
+        return value if value else prefill
+
+
 def _prompt_secret(label: str, key: str) -> str:
-    """Prompt for a secret; press Enter to keep the existing stored value."""
+    """Prompt for a secret; press Enter to keep the existing stored value.
+
+    Passwords are never pre-filled in the buffer — getpass hides the input
+    so the current value is acknowledged with a hint only.
+    """
     current = _keyring_get(key)
     hint = '[currently set — press Enter to keep]' if current else '[not set]'
     value = getpass.getpass(f'  {label} {hint}: ')
@@ -109,38 +137,34 @@ def _prompt_secret(label: str, key: str) -> str:
 
 
 def _prompt_plain(label: str, key: str, default: str = '') -> str:
-    """Prompt for a plain-text value; press Enter to keep / use default."""
+    """Prompt for a plain-text value, pre-filled with the current stored value."""
     current = _keyring_get(key) or _read_env(key) or default
-    hint = f'[{current}]' if current else '[not set]'
-    value = input(f'  {label} {hint}: ').strip()
-    return value if value else current
+    return _input_prefilled(f'  {label}: ', current)
 
 
 def _prompt_env(label: str, key: str, default: str = '', comment: str = '') -> str:
-    """Prompt for a .env setting; press Enter to keep / use default."""
+    """Prompt for a .env setting, pre-filled with the current value."""
     current = _read_env(key) or default
-    hint = f'[{current}]' if current else '[not set]'
-    value = input(f'  {label} {hint}: ').strip()
-    chosen = value if value else current
+    chosen = _input_prefilled(f'  {label}: ', current)
     _update_env(key, chosen, comment=comment)
     return chosen
 
 
 def _prompt_bool_env(label: str, key: str, default: bool = True, comment: str = '') -> bool:
-    """Prompt for a true/false .env setting."""
+    """Prompt for a true/false .env setting, pre-filled with the current value."""
     current_str = _read_env(key)
     if current_str:
         current = current_str.lower() not in ('false', '0', 'no')
     else:
         current = default
-    hint = 'true' if current else 'false'
-    value = input(f'  {label} [{hint}] (true/false): ').strip().lower()
+    prefill = 'true' if current else 'false'
+    value = _input_prefilled(f'  {label} (true/false): ', prefill).lower()
     if value in ('true', 'yes', '1'):
         chosen = True
     elif value in ('false', 'no', '0'):
         chosen = False
     else:
-        chosen = current   # keep existing on Enter
+        chosen = current   # keep existing if unrecognised
     _update_env(key, 'true' if chosen else 'false', comment=comment)
     return chosen
 
@@ -210,8 +234,7 @@ def setup_env_settings():
     # MAX_RESOLUTION: validate it is a positive integer.
     while True:
         current = _read_env('MAX_RESOLUTION') or '1080'
-        value = input(f'  Maximum download resolution (e.g. 720, 1080, 2160) [{current}]: ').strip()
-        chosen = value if value else current
+        chosen = _input_prefilled('  Maximum download resolution (e.g. 720, 1080, 2160): ', current)
         try:
             if int(chosen) > 0:
                 _update_env(
