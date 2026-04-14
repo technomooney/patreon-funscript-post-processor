@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Interactive setup for credentials and runtime settings.
+Interactive setup for runtime settings and credentials.
+Run this once (or again to change a value).
 
-Secrets (passwords, API keys) are stored in the OS keyring (Windows Credential
-Manager, macOS Keychain, or Linux Secret Service) so they are never written to
-disk as plain text.  If the keyring is unavailable the value is written to .env
-as a fallback.
+Settings are written to .env.
+Secrets are stored in the OS keyring (Windows Credential Manager, macOS
+Keychain, or Linux Secret Service); if the keyring is unavailable they
+fall back to .env.
 
-Non-secret settings (headless mode, resolution cap, dedup) are written directly
-to the .env file alongside the project.
+Press Enter at any prompt to keep the value shown in brackets.
 """
 import getpass
 import os
@@ -22,36 +22,28 @@ _ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
 # ---------------------------------------------------------------------------
 
 def _read_env(key: str) -> str:
-    """Return the current value of *key* from .env, or '' if not set."""
+    """Return the current value of *key* from .env, or '' if absent."""
     if not os.path.exists(_ENV_PATH):
         return ''
     with open(_ENV_PATH, 'r', encoding='utf-8') as f:
         for line in f:
-            line = line.rstrip('\n')
             if line.startswith(f'{key}='):
-                return line[len(key) + 1:]
+                return line[len(key) + 1:].rstrip('\n')
     return ''
 
 
-def _update_env(key: str, value: str, comment: str = '') -> None:
-    """Write or update *key*=*value* in .env, preserving all other content.
-
-    If the key is not already present it is appended (with an optional comment
-    on the preceding line).  The file is created if it does not exist.
-    """
+def _write_env(key: str, value: str, comment: str = '') -> None:
+    """Write or update *key*=*value* in .env, preserving all other content."""
     lines: list[str] = []
     if os.path.exists(_ENV_PATH):
         with open(_ENV_PATH, 'r', encoding='utf-8') as f:
             lines = f.readlines()
 
-    found = False
     for i, line in enumerate(lines):
         if line.startswith(f'{key}='):
             lines[i] = f'{key}={value}\n'
-            found = True
             break
-
-    if not found:
+    else:
         if lines and not lines[-1].endswith('\n'):
             lines.append('\n')
         if comment:
@@ -67,212 +59,151 @@ def _update_env(key: str, value: str, comment: str = '') -> None:
 # ---------------------------------------------------------------------------
 
 try:
-    import keyring
+    import keyring as _keyring
     _KEYRING_OK = True
 except ImportError:
     _KEYRING_OK = False
-    print('WARNING: keyring package not installed — credentials will be stored in .env.')
 
 
 def _keyring_get(key: str) -> str:
-    if not _KEYRING_OK:
-        return _read_env(key)
-    try:
-        return keyring.get_password(SERVICE, key) or ''
-    except Exception:
-        return _read_env(key)
+    if _KEYRING_OK:
+        try:
+            return _keyring.get_password(SERVICE, key) or ''
+        except Exception:
+            pass
+    return _read_env(key)
 
 
 def _keyring_set(key: str, value: str) -> None:
-    """Save *value* to the OS keyring; fall back to .env if unavailable."""
-    if not _KEYRING_OK:
-        _update_env(key, value)
-        print(f'  Saved {key} to .env (keyring not available).')
-        return
-    try:
-        keyring.set_password(SERVICE, key, value)
-    except Exception as e:
-        print(f'  WARNING: keyring unavailable ({e}) — saving to .env as fallback.')
-        _update_env(key, value)
-
-
-# ---------------------------------------------------------------------------
-# Prompt helpers
-# ---------------------------------------------------------------------------
-
-try:
-    import readline as _readline
-    def _input_prefilled(prompt: str, prefill: str) -> str:
-        """Show *prompt* with *prefill* already in the edit buffer.
-
-        The user can accept it with Enter, edit it in place, or clear it.
-        Falls back to the bracket-hint style if readline is unavailable.
-        """
-        def _hook():
-            _readline.insert_text(prefill)
-            _readline.redisplay()
-        _readline.set_pre_input_hook(_hook)
+    if _KEYRING_OK:
         try:
-            return input(prompt).strip()
-        finally:
-            _readline.set_pre_input_hook(None)
-except ImportError:
-    # Windows without pyreadline — show the current value in brackets instead.
-    def _input_prefilled(prompt: str, prefill: str) -> str:  # type: ignore[misc]
-        hint = f'[{prefill}]' if prefill else '[not set]'
-        value = input(f'{prompt}{hint}: ').strip()
-        return value if value else prefill
+            _keyring.set_password(SERVICE, key, value)
+            return
+        except Exception as e:
+            print(f'  WARNING: keyring unavailable ({e}) — saving to .env instead.')
+    _write_env(key, value)
 
 
-def _prompt_secret(label: str, key: str) -> str:
-    """Prompt for a secret; press Enter to keep the existing stored value.
+# ---------------------------------------------------------------------------
+# Prompt helpers  (press Enter to keep the value shown in brackets)
+# ---------------------------------------------------------------------------
 
-    Passwords are never pre-filled in the buffer — getpass hides the input
-    so the current value is acknowledged with a hint only.
-    """
-    current = _keyring_get(key)
-    hint = '[currently set — press Enter to keep]' if current else '[not set]'
+def _ask(label: str, current: str) -> str:
+    """Prompt with the current value in brackets; Enter keeps it."""
+    hint = f'[{current}]' if current else '[not set]'
+    value = input(f'  {label} {hint}: ').strip()
+    return value if value else current
+
+
+def _ask_secret(label: str, current: str) -> str:
+    """Like _ask but hides input; shows [set] or [not set] instead of the value."""
+    hint = '[set — Enter to keep]' if current else '[not set]'
     value = getpass.getpass(f'  {label} {hint}: ')
     return value if value else current
 
 
-def _prompt_plain(label: str, key: str, default: str = '') -> str:
-    """Prompt for a plain-text value, pre-filled with the current stored value."""
-    current = _keyring_get(key) or _read_env(key) or default
-    return _input_prefilled(f'  {label}: ', current)
-
-
-def _prompt_env(label: str, key: str, default: str = '', comment: str = '') -> str:
-    """Prompt for a .env setting, pre-filled with the current value."""
-    current = _read_env(key) or default
-    chosen = _input_prefilled(f'  {label}: ', current)
-    _update_env(key, chosen, comment=comment)
-    return chosen
-
-
-def _prompt_bool_env(label: str, key: str, default: bool = True, comment: str = '') -> bool:
-    """Prompt for a true/false .env setting, pre-filled with the current value."""
-    current_str = _read_env(key)
-    if current_str:
-        current = current_str.lower() not in ('false', '0', 'no')
-    else:
-        current = default
-    prefill = 'true' if current else 'false'
-    value = _input_prefilled(f'  {label} (true/false): ', prefill).lower()
-    if value in ('true', 'yes', '1'):
-        chosen = True
-    elif value in ('false', 'no', '0'):
-        chosen = False
-    else:
-        chosen = current   # keep existing if unrecognised
-    _update_env(key, 'true' if chosen else 'false', comment=comment)
-    return chosen
+def _ask_bool(label: str, current: bool) -> bool:
+    """Prompt for true/false; Enter keeps the current value."""
+    hint = 'true' if current else 'false'
+    raw = input(f'  {label} [{hint}]: ').strip().lower()
+    if raw in ('true', 'yes', '1'):
+        return True
+    if raw in ('false', 'no', '0'):
+        return False
+    return current
 
 
 # ---------------------------------------------------------------------------
-# Setup sections
+# Main setup
 # ---------------------------------------------------------------------------
 
-def setup_credentials():
-    # --- Pixeldrain ----------------------------------------------------------
-    print('Pixeldrain')
-    print('  API key found at https://pixeldrain.com/user/api')
-    print('  Leave blank to download as anonymous (public files only).')
-    api_key = _prompt_plain('API key:', 'PIXELDRAIN_API_KEY')
-    if api_key:
-        _keyring_set('PIXELDRAIN_API_KEY', api_key)
-
-    # --- iwara.tv ------------------------------------------------------------
+def main():
     print()
-    print('iwara.tv  (required for 18+ content; leave blank to skip)')
-    email = _prompt_plain('Email:', 'IWARA_EMAIL')
-    if email:
-        _keyring_set('IWARA_EMAIL', email)
-        password = _prompt_secret('Password:', 'IWARA_PASSWORD')
-        if password:
-            _keyring_set('IWARA_PASSWORD', password)
-    else:
-        print('  Skipping iwara.tv credentials.')
+    print('==============================================')
+    print('  Setup  (press Enter to keep current values)')
+    print('==============================================')
 
-    # --- mega.nz -------------------------------------------------------------
+    # -------------------------------------------------------------------------
+    # Settings  (written to .env)
+    # -------------------------------------------------------------------------
     print()
-    print('mega.nz  (only needed for private/account links; leave blank to skip)')
-    mega_email = _prompt_plain('Email:', 'MEGA_EMAIL')
-    if mega_email:
-        _keyring_set('MEGA_EMAIL', mega_email)
-        mega_password = _prompt_secret('Password:', 'MEGA_PASSWORD')
-        if mega_password:
-            _keyring_set('MEGA_PASSWORD', mega_password)
-    else:
-        print('  Skipping mega.nz credentials.')
+    print('--- Settings ---')
 
-    # --- spankbang.com -------------------------------------------------------
-    print()
-    print('spankbang.com  (required for all downloads; leave blank to skip)')
-    sb_username = _prompt_plain('Username:', 'SPANKBANG_USERNAME')
-    if sb_username:
-        _keyring_set('SPANKBANG_USERNAME', sb_username)
-        sb_password = _prompt_secret('Password:', 'SPANKBANG_PASSWORD')
-        if sb_password:
-            _keyring_set('SPANKBANG_PASSWORD', sb_password)
-    else:
-        print('  Skipping spankbang.com credentials.')
-
-
-def setup_env_settings():
-    print()
-    print('Runtime settings  (written to .env)')
-    print()
-
-    _prompt_bool_env(
-        'Run browser in headless mode?',
-        'BROWSER_HEADLESS',
-        default=False,
-        comment='Run the browser in headless mode (no visible window). Set to false if sites block automation.',
+    headless = _ask_bool(
+        'Run browser in headless mode? (true/false)',
+        current=_read_env('BROWSER_HEADLESS').lower() not in ('', 'false', '0', 'no'),
     )
+    _write_env('BROWSER_HEADLESS', 'true' if headless else 'false',
+               comment='Run the browser in headless mode. Set to false if sites block automation.')
 
-    # MAX_RESOLUTION: validate it is a positive integer.
     while True:
-        current = _read_env('MAX_RESOLUTION') or '1080'
-        chosen = _input_prefilled('  Maximum download resolution (e.g. 720, 1080, 2160): ', current)
+        raw = _ask('Max download resolution (e.g. 1080, 720, 2160)',
+                   current=_read_env('MAX_RESOLUTION') or '1080')
         try:
-            if int(chosen) > 0:
-                _update_env(
-                    'MAX_RESOLUTION', chosen,
-                    comment='Maximum resolution to download (e.g. 1080, 720, 2160). Downloads the highest quality available up to this value.',
-                )
+            if int(raw) > 0:
+                _write_env('MAX_RESOLUTION', raw,
+                           comment='Maximum resolution to download. Downloads highest quality up to this value.')
                 break
         except ValueError:
             pass
         print('  Please enter a positive integer (e.g. 1080).')
 
-    _prompt_bool_env(
-        'Scan for duplicate videos on startup and remove extras?',
-        'DEDUP_EXISTING',
-        default=True,
-        comment='Scan existing videos for duplicates on startup and keep only one copy. Set to false to skip (faster startup on large libraries).',
+    dedup = _ask_bool(
+        'Scan for duplicate videos on startup and remove extras? (true/false)',
+        current=_read_env('DEDUP_EXISTING').lower() not in ('false', '0', 'no'),
     )
+    _write_env('DEDUP_EXISTING', 'true' if dedup else 'false',
+               comment='Remove duplicate video files on startup. Set to false to skip (faster on large libraries).')
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-def main():
+    # -------------------------------------------------------------------------
+    # Credentials  (keyring, with .env fallback)
+    # -------------------------------------------------------------------------
     print()
-    print('========================================')
-    print('  Setup')
-    print('  Secrets → OS keyring (or .env fallback)')
-    print('  Settings → .env')
-    print('========================================')
-    print()
-
-    setup_credentials()
-    setup_env_settings()
+    print('--- Credentials ---')
 
     print()
-    print('Setup complete.')
-    print(f'  .env location: {_ENV_PATH}')
+    print('Pixeldrain  (API key at https://pixeldrain.com/user/api)')
+    print('  Leave blank to download as anonymous (public files only).')
+    api_key = _ask('API key', current=_keyring_get('PIXELDRAIN_API_KEY'))
+    if api_key:
+        _keyring_set('PIXELDRAIN_API_KEY', api_key)
+
+    print()
+    print('iwara.tv  (required for 18+ content; leave blank to skip)')
+    email = _ask('Email', current=_keyring_get('IWARA_EMAIL'))
+    if email:
+        _keyring_set('IWARA_EMAIL', email)
+        password = _ask_secret('Password', current=_keyring_get('IWARA_PASSWORD'))
+        if password:
+            _keyring_set('IWARA_PASSWORD', password)
+    else:
+        print('  Skipping iwara.tv.')
+
+    print()
+    print('mega.nz  (only needed for private/account links; leave blank to skip)')
+    mega_email = _ask('Email', current=_keyring_get('MEGA_EMAIL'))
+    if mega_email:
+        _keyring_set('MEGA_EMAIL', mega_email)
+        mega_password = _ask_secret('Password', current=_keyring_get('MEGA_PASSWORD'))
+        if mega_password:
+            _keyring_set('MEGA_PASSWORD', mega_password)
+    else:
+        print('  Skipping mega.nz.')
+
+    print()
+    print('spankbang.com  (required for all downloads; leave blank to skip)')
+    sb_user = _ask('Username', current=_keyring_get('SPANKBANG_USERNAME'))
+    if sb_user:
+        _keyring_set('SPANKBANG_USERNAME', sb_user)
+        sb_pass = _ask_secret('Password', current=_keyring_get('SPANKBANG_PASSWORD'))
+        if sb_pass:
+            _keyring_set('SPANKBANG_PASSWORD', sb_pass)
+    else:
+        print('  Skipping spankbang.com.')
+
+    print()
+    print('Done.')
+    print(f'  .env: {_ENV_PATH}')
     print()
 
 
