@@ -1461,14 +1461,36 @@ def _mega_ensure_login() -> bool:
             [mega_login, email, password],
             capture_output=True,
             text=True,
-            timeout=120,   # login can be slow; server start adds latency
+            timeout=30,
         )
     except subprocess.TimeoutExpired:
-        print('  [mega.nz] login timed out — MEGAcmd server may be overloaded')
+        print('  [mega.nz] login timed out')
         return False
 
+    # MEGAcmd reports MFA requirement in stdout or stderr.
+    combined = (result.stdout + result.stderr).lower()
+    mfa_needed = result.returncode != 0 and any(
+        phrase in combined for phrase in ('two-factor', '2fa', 'multi-factor', 'auth code', 'authcode')
+    )
+
+    if mfa_needed:
+        code = input('  [mega.nz] MFA code from your authenticator app: ').strip()
+        if not code:
+            print('  [mega.nz] no code entered — login aborted')
+            return False
+        try:
+            result = subprocess.run(
+                [mega_login, email, password, f'--auth-code={code}'],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            print('  [mega.nz] login timed out')
+            return False
+
     if result.returncode != 0:
-        err = _safe(result.stderr.strip()) if result.stderr else '(no output)'
+        err = _safe((result.stderr or result.stdout).strip()) or '(no output)'
         print(f'  [mega.nz] login failed: {err}')
         return False
 
