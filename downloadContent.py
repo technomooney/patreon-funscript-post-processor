@@ -365,11 +365,36 @@ def _ext_from_response(response, url: str) -> str:
     return '.mp4'
 
 
+def _decode_filename(name: str) -> str:
+    """Decode all known encoding layers a filename might have picked up.
+
+    Applies in order:
+      1. Percent-decoding  (%E3%80%8C → 「)
+      2. Mojibake reversal — if the string looks like UTF-8 bytes that were
+         misread as cp1252/Latin-1 (e.g. ãé¸£æ½® → 「鸣潮), re-encode as
+         cp1252 and decode as UTF-8.  Accepted only when the result is shorter
+         (multi-byte sequences collapsed into single codepoints) so plain ASCII
+         or already-correct Unicode passes through unchanged.
+    """
+    # Step 1: percent-decode (idempotent for strings without %)
+    decoded = unquote(name)
+    # Step 2: mojibake reversal
+    for encoding in ('cp1252', 'latin-1'):
+        try:
+            fixed = decoded.encode(encoding).decode('utf-8')
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+        if fixed != decoded and len(fixed) < len(decoded):
+            decoded = fixed
+            break
+    return decoded
+
+
 def _name_from_response(response, url: str) -> str | None:
     """Extract the original filename from Content-Disposition, falling back to the URL path.
 
     Returns None if no meaningful name can be found.
-    Percent-encoding (e.g. RFC 5987 filename*= or encoded URL paths) is decoded.
+    Both percent-encoding and cp1252/Latin-1 mojibake are corrected.
     """
     cd = response.headers.get('Content-Disposition', '')
     if cd:
@@ -377,11 +402,11 @@ def _name_from_response(response, url: str) -> str | None:
         if not m:
             m = re.search(r'filename=["\']?([^"\';\r\n]+)["\']?', cd, re.IGNORECASE)
         if m:
-            return unquote(m.group(1).strip())
+            return _decode_filename(m.group(1).strip())
     # Fall back to the last path component of the URL when it has an extension.
     url_basename = urlparse(url).path.rstrip('/').split('/')[-1]
     if url_basename and '.' in url_basename:
-        return unquote(url_basename)
+        return _decode_filename(url_basename)
     return None
 
 
@@ -2825,9 +2850,9 @@ def find_and_download(base_path: str):
                 # name in the downloaded path; _direct_fetch stores it globally.
                 orig_basename = os.path.basename(downloaded)
                 if not _is_temp_file(orig_basename):
-                    original_name: str | None = Path(orig_basename).stem
+                    original_name: str | None = Path(_decode_filename(orig_basename)).stem
                 elif _last_fetch_original_name:
-                    original_name = Path(_last_fetch_original_name).stem
+                    original_name = Path(_decode_filename(_last_fetch_original_name)).stem
                 else:
                     original_name = None
 
