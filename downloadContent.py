@@ -1380,26 +1380,69 @@ def download_yandex_disk(_driver, url: str, download_dir: str) -> bool:
 _mega_logged_in: bool = False
 
 
+def _mega_ensure_server() -> None:
+    """Start the MEGAcmd background server if it is not already running.
+
+    mega-login (and all other mega-* commands) communicate with mega-cmd-server.
+    If the server is not running the first command that tries to contact it will
+    block while it starts up, often exceeding short timeouts.  Starting it
+    explicitly first and waiting for it to be ready avoids that race.
+    """
+    mega_cmd_server = shutil.which('mega-cmd-server')
+    mega_whoami     = shutil.which('mega-whoami')
+
+    if mega_cmd_server is None:
+        return  # not installed — nothing to start
+
+    # Use mega-whoami as a cheap liveness probe for the server.
+    if mega_whoami:
+        try:
+            result = subprocess.run(
+                [mega_whoami], capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                return  # server is already up
+        except subprocess.TimeoutExpired:
+            pass  # server not responding — fall through to start it
+
+    print('  [mega.nz] starting MEGAcmd server...')
+    subprocess.Popen(
+        [mega_cmd_server],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    # Give the server a moment to become ready before the next command.
+    time.sleep(3)
+
+
 def _mega_ensure_login() -> bool:
     """Log into MEGAcmd with keyring credentials if not already logged in.
 
-    Checks the current session with mega-whoami first so we never re-login
-    unnecessarily.  If no credentials are stored the function returns True
-    so that public-link downloads can still proceed without an account.
+    Ensures the MEGAcmd server is running first, then checks the current
+    session with mega-whoami so we never re-login unnecessarily.
+    If no credentials are stored the function returns True so that
+    public-link downloads can still proceed without an account.
     """
     global _mega_logged_in
     if _mega_logged_in:
         return True
+
+    _mega_ensure_server()
 
     mega_whoami = shutil.which('mega-whoami')
     mega_login  = shutil.which('mega-login')
 
     # Check whether MEGAcmd already has an active session.
     if mega_whoami:
-        result = subprocess.run([mega_whoami], capture_output=True, text=True, timeout=10)
-        if result.returncode == 0 and 'not logged in' not in result.stdout.lower():
-            _mega_logged_in = True
-            return True
+        try:
+            result = subprocess.run(
+                [mega_whoami], capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode == 0 and 'not logged in' not in result.stdout.lower():
+                _mega_logged_in = True
+                return True
+        except subprocess.TimeoutExpired:
+            print('  [mega.nz] mega-whoami timed out — server may still be starting')
 
     email    = _get_secret('MEGA_EMAIL').strip()
     password = _get_secret('MEGA_PASSWORD').strip()
@@ -1413,12 +1456,17 @@ def _mega_ensure_login() -> bool:
         return True
 
     print(f'  [mega.nz] logging in as {email}...')
-    result = subprocess.run(
-        [mega_login, email, password],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
+    try:
+        result = subprocess.run(
+            [mega_login, email, password],
+            capture_output=True,
+            text=True,
+            timeout=120,   # login can be slow; server start adds latency
+        )
+    except subprocess.TimeoutExpired:
+        print('  [mega.nz] login timed out — MEGAcmd server may be overloaded')
+        return False
+
     if result.returncode != 0:
         err = _safe(result.stderr.strip()) if result.stderr else '(no output)'
         print(f'  [mega.nz] login failed: {err}')
