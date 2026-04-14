@@ -2632,7 +2632,7 @@ def find_and_download(base_path: str):
 
     newly_downloaded: list[str] = []
     total = len(tasks)
-    global _last_fetch_original_name
+    global _last_fetch_original_name, _last_download_skipped
     try:
         for task_idx, task in enumerate(tasks, start=1):
             folder   = task['folder']
