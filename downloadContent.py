@@ -496,23 +496,21 @@ def _quality_is_replacement_candidate(remote_q: dict, local_q: dict,
                                        remote_size: int, local_size: int) -> bool:
     """Return True if the remote file is worth downloading to replace the local one.
 
-    Replacement is warranted when both files are the same quality (resolution
-    and codec within tolerance) AND the remote file is strictly smaller — i.e.
-    better-compressed same content.  Also replaces when the remote is higher
-    resolution (genuine quality upgrade).
+    Replacement is only warranted when the remote file is the same resolution
+    (within 2 %) AND strictly smaller in file size — i.e. better-compressed
+    same content.  Resolution upgrades are intentionally ignored: the user's
+    MAX_RESOLUTION setting controls what gets downloaded, and a higher-resolution
+    remote would bypass that preference.
 
     remote_size / local_size of 0 means unknown — treated conservatively.
     """
     r_w, r_h = remote_q.get('width', 0), remote_q.get('height', 0)
     l_w, l_h = local_q.get('width', 0), local_q.get('height', 0)
 
-    # Higher resolution remote → always worth replacing
+    # If we know both resolutions, require them to match within 2 %
     if r_w and r_h and l_w and l_h:
-        if r_w * r_h > l_w * l_h * 1.02:
-            return True
-        # Lower resolution remote → never replace
-        if r_w * r_h < l_w * l_h * 0.98:
-            return False
+        if abs(r_w * r_h - l_w * l_h) > l_w * l_h * 0.02:
+            return False  # different resolution — skip regardless of size
 
     # Same (or unknown) resolution: replace only if remote is smaller
     if remote_size > 0 and local_size > 0 and remote_size < local_size:
@@ -720,10 +718,10 @@ def _decide_skip_or_replace(match_path: str, url: str, headers: dict[str, str],
     """Given a confirmed content match, decide whether to skip the download or replace.
 
     Probes both the remote URL and the local matched file with ffprobe to
-    compare resolution and size.  If the remote is a better candidate (higher
-    resolution, or same quality at smaller file size), sets
-    _precheck_replace_target and returns None so the download proceeds and the
-    old file is replaced.  Otherwise returns *skip_reason* unchanged.
+    compare resolution and size.  If the remote is the same resolution but
+    strictly smaller, sets _precheck_replace_target and returns None so the
+    download proceeds and the old file is replaced.  Otherwise returns
+    *skip_reason* unchanged.
 
     For non-video files or when quality cannot be determined, falls back to a
     pure size comparison.
@@ -731,7 +729,7 @@ def _decide_skip_or_replace(match_path: str, url: str, headers: dict[str, str],
     global _precheck_replace_target
     local_size = os.path.getsize(match_path)
 
-    # Probe quality only when meaningful (video files or known large size)
+    # Probe quality only when meaningful (video files or known different size)
     local_q = _video_quality(match_path) or {}
     remote_q: dict = {}
     if local_q or (content_length > 0 and content_length != local_size):
@@ -739,15 +737,11 @@ def _decide_skip_or_replace(match_path: str, url: str, headers: dict[str, str],
         remote_q = _video_quality(url, headers) or {}
 
     if _quality_is_replacement_candidate(remote_q, local_q, content_length, local_size):
-        r_w, r_h = remote_q.get('width', 0), remote_q.get('height', 0)
-        l_w, l_h = local_q.get('width', 0), local_q.get('height', 0)
-        if r_w and l_w and r_w * r_h > l_w * l_h * 1.02:
-            note = f'higher resolution {r_w}x{r_h} vs {l_w}x{l_h}'
-        elif content_length > 0:
+        if content_length > 0:
             note = (f'smaller file {content_length / 1024 / 1024:.1f} MB '
                     f'vs {local_size / 1024 / 1024:.1f} MB')
         else:
-            note = 'better candidate'
+            note = 'smaller file'
         cname = _safe(os.path.basename(match_path))
         print(f'  [pre-check] same content, {note} — will replace {cname}', flush=True)
         _precheck_replace_target = match_path
