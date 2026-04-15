@@ -2666,6 +2666,64 @@ def _save_downloaded(downloaded: str, folder: str, basename: str, link_idx: int,
     return True
 
 
+# ---------------------------------------------------------------------------
+# Progress tracking — lets the user resume after a crash or interruption.
+# ---------------------------------------------------------------------------
+
+class ProgressTracker:
+    """Persist per-link download progress so an interrupted run can resume.
+
+    State is written to *base_path*/.download_progress.json after every
+    completed link.  A link is "completed" when it was successfully downloaded,
+    found to be a duplicate/AV-similar file, or pre-checked as already present
+    — i.e. it does not need to be attempted again.  Genuine failures are NOT
+    marked done so they are retried on the next run.
+    """
+
+    _FILENAME = '.download_progress.json'
+
+    def __init__(self, base_path: str):
+        self._path = os.path.join(base_path, self._FILENAME)
+        self._done: dict[str, set[str]] = {}   # folder → set of completed link URLs
+        self._load()
+
+    def _load(self):
+        if os.path.exists(self._path):
+            try:
+                with open(self._path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                self._done = {k: set(v) for k, v in data.items()}
+            except Exception:
+                self._done = {}
+
+    def has_progress(self) -> bool:
+        return bool(self._done)
+
+    def is_done(self, folder: str, link: str) -> bool:
+        return link in self._done.get(folder, set())
+
+    def mark_done(self, folder: str, link: str):
+        self._done.setdefault(folder, set()).add(link)
+        self._save()
+
+    def _save(self):
+        tmp = self._path + '.tmp'
+        try:
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump({k: list(v) for k, v in self._done.items()}, f, indent=2)
+            os.replace(tmp, self._path)
+        except Exception as e:
+            print(f'  [progress] could not save progress: {e}')
+
+    def clear(self):
+        self._done = {}
+        try:
+            if os.path.exists(self._path):
+                os.remove(self._path)
+        except Exception:
+            pass
+
+
 def find_and_download(base_path: str):
     ans = input("Download even without a funscript file? (y/n, default n): ").strip().lower()
     require_funscript = ans != 'y'
@@ -2682,11 +2740,24 @@ def find_and_download(base_path: str):
         _write_failures_csv(base_path, failures)
         return
 
+    tracker = ProgressTracker(base_path)
+    if tracker.has_progress():
+        ans = input(
+            '\nA previous session was interrupted. Resume where it left off? '
+            '(y/n, default y): '
+        ).strip().lower()
+        if ans == 'n':
+            tracker.clear()
+            print('Starting fresh — all links will be re-attempted.')
+        else:
+            print('Resuming previous session — completed links will be skipped.')
+
     print(f"\nFound {len(tasks)} folder(s) to process:")
     for t in tasks:
         print(f"  {_safe(t['basename'])}")
         for link in t['links']:
-            print(f"    -> {link}")
+            status = ' [done]' if tracker.is_done(t['folder'], link) else ''
+            print(f"    -> {link}{status}")
 
     confirm = input("\nProceed with downloads? (y/n): ").strip().lower()
     if confirm != 'y':
@@ -2704,6 +2775,7 @@ def find_and_download(base_path: str):
     newly_downloaded: list[str] = []
     total = len(tasks)
     global _last_fetch_original_name, _last_download_skipped
+    completed_cleanly = False
     try:
         for task_idx, task in enumerate(tasks, start=1):
             folder   = task['folder']
@@ -2725,6 +2797,10 @@ def find_and_download(base_path: str):
             for link_idx, link in enumerate(links):
                 _last_fetch_original_name = None   # reset before each attempt
                 _last_download_skipped = False
+
+                if tracker.is_done(folder, link):
+                    print(f"  [resume] already done — skipping: {link}")
+                    continue
 
                 try:
                     domain  = check_domain(link)
@@ -2809,6 +2885,7 @@ def find_and_download(base_path: str):
                     continue
 
                 if _last_download_skipped:
+                    tracker.mark_done(folder, link)
                     continue  # pre-download check found a duplicate — not a failure
 
                 if not triggered:
@@ -2843,6 +2920,7 @@ def find_and_download(base_path: str):
                             os.remove(downloaded)
                         except OSError:
                             pass
+                        tracker.mark_done(folder, link)
                         continue
 
                 # Determine the original filename for use when there is no
@@ -2859,10 +2937,13 @@ def find_and_download(base_path: str):
                 no_match = link in link_no_match
                 kept = _save_downloaded(downloaded, folder, basename, saved_for_folder, newly_downloaded,
                                         original_name=original_name, no_funscript_match=no_match)
+                tracker.mark_done(folder, link)
                 if kept:
                     saved_for_folder += 1
 
             _cleanup_temp_files(folder)
+
+        completed_cleanly = True
 
     except KeyboardInterrupt:
         print('\n\nInterrupted — waiting up to 120 s for the active download to finish...')
@@ -2881,6 +2962,8 @@ def find_and_download(base_path: str):
 
     finally:
         driver.quit()
+        if completed_cleanly:
+            tracker.clear()
         _write_failures_csv(base_path, failures)
         _write_playlist(base_path, newly_downloaded)
 
