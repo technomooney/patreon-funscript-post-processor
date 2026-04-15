@@ -83,6 +83,32 @@ _last_fetch_original_name: str | None = None
 # find_and_download reads this to distinguish "skipped duplicate" from "download failed".
 _last_download_skipped: bool = False
 
+# Set by _precheck_url when the remote file is the same content but a better candidate
+# (smaller size at equal/better quality).  _direct_fetch reads this after a successful
+# download and deletes the old file so the new one takes its place.
+_precheck_replace_target: str | None = None
+
+# Extensions that mimetypes may not register on all systems (e.g. .mkv on Linux)
+# but are unambiguously video containers, including common AV1 delivery formats.
+_VIDEO_EXTENSIONS: frozenset[str] = frozenset({
+    '.mp4', '.m4v', '.mkv', '.webm', '.avi', '.mov', '.wmv',
+    '.flv', '.ts', '.m2ts', '.mts', '.mpg', '.mpeg', '.3gp',
+})
+
+
+def _is_video_filename(filename: str) -> bool:
+    """Return True if *filename* appears to be a video file.
+
+    Uses mimetypes first, then falls back to a known-extension set so that
+    containers like .mkv (often unregistered on Linux) and AV1-in-WebM are
+    not missed.
+    """
+    mime, _ = mimetypes.guess_type(filename)
+    if mime and mime.startswith('video/'):
+        return True
+    _, ext = os.path.splitext(filename)
+    return ext.lower() in _VIDEO_EXTENSIONS
+
 
 # Add new domains here along with a handler function in DOMAIN_HANDLERS below.
 # If a URL's domain is not listed, the script will raise an error and skip it.
@@ -425,6 +451,178 @@ def _truncate_filename(name: str, max_bytes: int = 255) -> str:
     return truncated_stem + ext
 
 
+def _video_quality(path_or_url: str, headers: dict[str, str] | None = None) -> dict | None:
+    """Return video quality info for a local file or remote URL via ffprobe.
+
+    Returns a dict with keys: width, height, bitrate (bps), codec.
+    Any unavailable field is absent from the dict.  Returns None if ffprobe
+    is missing or the probe completely fails.
+    """
+    ffprobe = shutil.which('ffprobe')
+    if ffprobe is None:
+        return None
+    cmd = [ffprobe, '-v', 'error']
+    if headers:
+        cmd += ['-headers', ''.join(f'{k}: {v}\r\n' for k, v in headers.items())]
+    cmd += ['-select_streams', 'v:0',
+            '-show_entries', 'stream=width,height,bit_rate,codec_name:format=bit_rate',
+            '-of', 'json', path_or_url]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        data = json.loads(result.stdout)
+        out: dict = {}
+        streams = data.get('streams', [])
+        if streams:
+            s = streams[0]
+            if s.get('width'):
+                out['width'] = int(s['width'])
+            if s.get('height'):
+                out['height'] = int(s['height'])
+            if s.get('codec_name'):
+                out['codec'] = s['codec_name']
+            br = s.get('bit_rate') or data.get('format', {}).get('bit_rate')
+            if br and str(br).isdigit():
+                out['bitrate'] = int(br)
+        elif data.get('format', {}).get('bit_rate'):
+            br = data['format']['bit_rate']
+            if str(br).isdigit():
+                out['bitrate'] = int(br)
+        return out if out else None
+    except Exception:
+        return None
+
+
+def _quality_is_replacement_candidate(remote_q: dict, local_q: dict,
+                                       remote_size: int, local_size: int) -> bool:
+    """Return True if the remote file is worth downloading to replace the local one.
+
+    Replacement is warranted when both files are the same quality (resolution
+    and codec within tolerance) AND the remote file is strictly smaller — i.e.
+    better-compressed same content.  Also replaces when the remote is higher
+    resolution (genuine quality upgrade).
+
+    remote_size / local_size of 0 means unknown — treated conservatively.
+    """
+    r_w, r_h = remote_q.get('width', 0), remote_q.get('height', 0)
+    l_w, l_h = local_q.get('width', 0), local_q.get('height', 0)
+
+    # Higher resolution remote → always worth replacing
+    if r_w and r_h and l_w and l_h:
+        if r_w * r_h > l_w * l_h * 1.02:
+            return True
+        # Lower resolution remote → never replace
+        if r_w * r_h < l_w * l_h * 0.98:
+            return False
+
+    # Same (or unknown) resolution: replace only if remote is smaller
+    if remote_size > 0 and local_size > 0 and remote_size < local_size:
+        return True
+
+    return False
+
+
+def _remote_range_bytes(url: str, headers: dict[str, str], start: int, length: int) -> bytes | None:
+    """Fetch a byte range from *url* using an HTTP Range request.
+
+    Returns the raw bytes on success, or None if Range requests are not
+    supported or the request fails.
+    """
+    try:
+        req_headers = dict(headers)
+        req_headers['Range'] = f'bytes={start}-{start + length - 1}'
+        req = urllib.request.Request(url, headers=req_headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            if resp.status not in (206, 200):
+                return None
+            return resp.read(length)
+    except Exception:
+        return None
+
+
+def _remote_partial_match(url: str, headers: dict[str, str], content_length: int,
+                           download_dir: str, ext: str) -> str | None:
+    """Return an existing filename whose content matches the remote file via Range probing.
+
+    Fetches the first 64 KB of the remote file and compares it against all
+    non-temp files with the same extension in *download_dir*.  For candidates
+    that pass the first-chunk check, also verifies the last 64 KB.  Returns
+    the matching filename, or None if no match is found.
+
+    Only meaningful when *content_length* > 0 so that we can check the tail.
+    """
+    chunk = 64 * 1024  # 64 KB
+    print('  [pre-check] fetching remote start chunk...', end='\r', flush=True)
+    remote_start = _remote_range_bytes(url, headers, 0, chunk)
+    if not remote_start:
+        return None
+
+    for entry in os.listdir(download_dir):
+        if _is_temp_file(entry):
+            continue
+        _, entry_ext = os.path.splitext(entry)
+        if entry_ext.lower() != ext.lower():
+            continue
+        full = os.path.join(download_dir, entry)
+        if not os.path.isfile(full):
+            continue
+        local_size = os.path.getsize(full)
+        if local_size < len(remote_start):
+            continue  # local file is smaller than the probe chunk — can't be the same
+
+        with open(full, 'rb') as f:
+            local_start = f.read(chunk)
+        if local_start != remote_start[:len(local_start)]:
+            continue
+
+        # First chunk matches — verify the tail to reduce false positives
+        if content_length > chunk:
+            tail_offset = content_length - chunk
+            print('  [pre-check] fetching remote end chunk...', end='\r', flush=True)
+            remote_end = _remote_range_bytes(url, headers, tail_offset, chunk)
+            if remote_end:
+                with open(full, 'rb') as f:
+                    f.seek(max(0, local_size - chunk))
+                    local_end = f.read(chunk)
+                if remote_end != local_end:
+                    continue
+
+        return entry
+    return None
+
+
+def _remote_audio_fingerprint(url: str, headers: dict[str, str]) -> list[int] | None:
+    """Return a chromaprint fingerprint for the audio track of a remote URL.
+
+    Pipes audio from ffmpeg (with optional auth headers) into fpcalc reading
+    raw PCM via stdin — avoids saving a temp file and only streams the first
+    120 seconds.  Returns None if either tool is unavailable or the probe fails.
+    """
+    ffmpeg = shutil.which('ffmpeg')
+    fpcalc = shutil.which('fpcalc')
+    if ffmpeg is None or fpcalc is None:
+        return None
+    try:
+        ffmpeg_cmd = [ffmpeg, '-v', 'error']
+        if headers:
+            ffmpeg_cmd += ['-headers', ''.join(f'{k}: {v}\r\n' for k, v in headers.items())]
+        ffmpeg_cmd += ['-i', url, '-t', '120', '-vn', '-ac', '1', '-ar', '11025',
+                       '-f', 's16le', 'pipe:1']
+        fpcalc_cmd = [fpcalc, '-raw', '-json', '-rate', '11025', '-channels', '1',
+                      '-length', '120', '-']
+        ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE,
+                                       stderr=subprocess.DEVNULL)
+        fpcalc_proc = subprocess.Popen(fpcalc_cmd, stdin=ffmpeg_proc.stdout,
+                                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        ffmpeg_proc.stdout.close()
+        fpcalc_out, _ = fpcalc_proc.communicate(timeout=180)
+        ffmpeg_proc.wait(timeout=30)
+        data = json.loads(fpcalc_out.decode())
+        fp = data.get('fingerprint')
+        return fp if isinstance(fp, list) else None
+    except Exception:
+        return None
+
+
 def _remote_video_duration(url: str, headers: dict[str, str]) -> float | None:
     """Probe a remote URL with ffprobe to get its duration without downloading the file.
 
@@ -517,6 +715,46 @@ def _remote_visually_similar(url: str, headers: dict[str, str],
 _VISUAL_PRECHECK_MIN_BYTES = 100 * 1024 * 1024  # 100 MB
 
 
+def _decide_skip_or_replace(match_path: str, url: str, headers: dict[str, str],
+                              content_length: int, skip_reason: str) -> str | None:
+    """Given a confirmed content match, decide whether to skip the download or replace.
+
+    Probes both the remote URL and the local matched file with ffprobe to
+    compare resolution and size.  If the remote is a better candidate (higher
+    resolution, or same quality at smaller file size), sets
+    _precheck_replace_target and returns None so the download proceeds and the
+    old file is replaced.  Otherwise returns *skip_reason* unchanged.
+
+    For non-video files or when quality cannot be determined, falls back to a
+    pure size comparison.
+    """
+    global _precheck_replace_target
+    local_size = os.path.getsize(match_path)
+
+    # Probe quality only when meaningful (video files or known large size)
+    local_q = _video_quality(match_path) or {}
+    remote_q: dict = {}
+    if local_q or (content_length > 0 and content_length != local_size):
+        print('  [pre-check] probing remote quality...', end='\r', flush=True)
+        remote_q = _video_quality(url, headers) or {}
+
+    if _quality_is_replacement_candidate(remote_q, local_q, content_length, local_size):
+        r_w, r_h = remote_q.get('width', 0), remote_q.get('height', 0)
+        l_w, l_h = local_q.get('width', 0), local_q.get('height', 0)
+        if r_w and l_w and r_w * r_h > l_w * l_h * 1.02:
+            note = f'higher resolution {r_w}x{r_h} vs {l_w}x{l_h}'
+        elif content_length > 0:
+            note = (f'smaller file {content_length / 1024 / 1024:.1f} MB '
+                    f'vs {local_size / 1024 / 1024:.1f} MB')
+        else:
+            note = 'better candidate'
+        cname = _safe(os.path.basename(match_path))
+        print(f'  [pre-check] same content, {note} — will replace {cname}', flush=True)
+        _precheck_replace_target = match_path
+        return None  # proceed with download; _direct_fetch will delete match_path
+    return skip_reason
+
+
 def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str | None:
     """Check whether *url* appears to point to content already in *download_dir*.
 
@@ -525,10 +763,14 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
 
     Checks in order of increasing cost:
       1. HEAD request → filename match, exact byte-size match (free).
-      2. ffprobe on the remote URL → duration gate, a few KB only.
-      3. Visual frame sampling (only for files ≥ 100 MB) → ffmpeg seeks to
-         one frame every 15 s and compares against the duration-matched local
-         file; each seek downloads only the data around that keyframe.
+      1b. Partial content probe via HTTP Range requests for large (> 50 MB)
+          non-video files — fetches first + last 64 KB only.
+      2. ffprobe on the remote URL → duration gate for video files.
+      3. Audio fingerprint — pipes 120 s of remote audio through fpcalc
+         (~2.6 MB downloaded); eliminates or confirms candidates.
+      4. Visual frame sampling (only for files ≥ 100 MB) → ffmpeg seeks to
+         one frame every 15 s; each seek downloads only the data around that
+         keyframe.
     """
     # --- 1. HEAD request: filename and size ---
     print('  [pre-check] HEAD request...', end='\r', flush=True)
@@ -548,7 +790,8 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
     if head_name:
         name_path = os.path.join(download_dir, head_name)
         if os.path.isfile(name_path) and not _is_temp_file(head_name):
-            return f'already exists: {_safe(head_name)}'
+            reason = f'already exists: {_safe(head_name)}'
+            return _decide_skip_or_replace(name_path, url, headers, content_length, reason)
 
     if content_length > 0:
         for entry in os.listdir(download_dir):
@@ -556,9 +799,24 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
                 continue
             full = os.path.join(download_dir, entry)
             if os.path.isfile(full) and os.path.getsize(full) == content_length:
+                # Same size: skip without replacement check (no benefit to same-size swap)
                 return f'same file size as existing: {_safe(entry)}'
 
-    # --- 2. ffprobe remote duration ---
+    # --- 1b. Partial content probe for large non-video files ---
+    # For files > 50 MB where we couldn't match by name or size, sample the
+    # first and last 64 KB via Range requests — cheap and definitive for
+    # identical files regardless of what they're named.
+    _PARTIAL_PROBE_MIN_BYTES = 50 * 1024 * 1024
+    if content_length > _PARTIAL_PROBE_MIN_BYTES and head_name:
+        _, head_ext = os.path.splitext(head_name)
+        if not _is_video_filename(head_name):
+            match = _remote_partial_match(url, headers, content_length, download_dir, head_ext)
+            if match:
+                match_path = os.path.join(download_dir, match)
+                reason = f'partial content match with existing: {_safe(match)}'
+                return _decide_skip_or_replace(match_path, url, headers, content_length, reason)
+
+    # --- 2. ffprobe remote duration (video files only) ---
     print('  [pre-check] probing remote duration...', end='\r', flush=True)
     url_dur = _remote_video_duration(url, headers)
     if url_dur is None:
@@ -573,8 +831,7 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
         full = os.path.join(download_dir, entry)
         if not os.path.isfile(full):
             continue
-        mime, _ = mimetypes.guess_type(entry)
-        if not (mime and mime.startswith('video/')):
+        if not _is_video_filename(entry):
             continue
         existing_dur = _video_duration(full)
         if existing_dur is not None and abs(url_dur - existing_dur) <= 3.0:
@@ -584,7 +841,36 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
         print('  [pre-check] no duration match — proceeding with download', flush=True)
         return None  # no duration match — proceed with download
 
-    # --- 3. Visual frame sampling (large files only) ---
+    # --- 3. Audio fingerprint ---
+    # Stream 120 s of audio from the remote URL through fpcalc (~2.6 MB).
+    # Confirms or eliminates duration candidates before the more expensive
+    # visual check.  Inconclusive results (0.5 ≤ sim < 0.85) fall through.
+    print('  [pre-check] audio fingerprint...', end='\r', flush=True)
+    url_fp = _remote_audio_fingerprint(url, headers)
+    if url_fp is not None:
+        surviving: list[str] = []
+        for candidate in duration_candidates:
+            local_fp = _audio_fingerprint(candidate)
+            if local_fp is None:
+                surviving.append(candidate)
+                continue
+            sim = _fingerprint_similarity(url_fp, local_fp)
+            cname = _safe(os.path.basename(candidate))
+            print(f'  [pre-check] audio vs {cname}: {sim:.0%}', flush=True)
+            if sim >= 0.85:
+                reason = (f'audio fingerprint match: {cname} '
+                          f'({url_dur:.1f}s, {sim:.0%})')
+                return _decide_skip_or_replace(candidate, url, headers, content_length, reason)
+            if sim >= 0.5:
+                surviving.append(candidate)  # inconclusive — keep for visual check
+            # sim < 0.5: clearly different audio — drop candidate
+        duration_candidates = surviving
+
+    if not duration_candidates:
+        print('  [pre-check] audio ruled out all candidates — proceeding with download', flush=True)
+        return None
+
+    # --- 4. Visual frame sampling (large files only) ---
     # For files under 100 MB, the full download is cheap enough that we skip
     # the per-frame probing and let the post-download hash/AV check handle it.
     if content_length >= _VISUAL_PRECHECK_MIN_BYTES:
@@ -592,16 +878,18 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
             cname = _safe(os.path.basename(candidate))
             print(f'  [pre-check] visually sampling against {cname} ({url_dur:.1f}s)...', flush=True)
             if _remote_visually_similar(url, headers, url_dur, candidate):
-                return (f'visually similar to existing: {_safe(os.path.basename(candidate))} '
-                        f'({url_dur:.1f}s)')
+                reason = (f'visually similar to existing: {_safe(os.path.basename(candidate))} '
+                          f'({url_dur:.1f}s)')
+                return _decide_skip_or_replace(candidate, url, headers, content_length, reason)
         print('  [pre-check] no visual match — proceeding with download', flush=True)
         # Duration matched but no visual match — not a duplicate.
         return None
 
-    # Small file: duration match alone is enough to flag as duplicate.
+    # Small file: duration + audio (if available) is enough to flag as duplicate.
     cand = duration_candidates[0]
-    return (f'duration matches existing video: {_safe(os.path.basename(cand))} '
-            f'({url_dur:.1f}s ≈ {_video_duration(cand) or 0:.1f}s)')
+    reason = (f'duration matches existing video: {_safe(os.path.basename(cand))} '
+              f'({url_dur:.1f}s ≈ {_video_duration(cand) or 0:.1f}s)')
+    return _decide_skip_or_replace(cand, url, headers, content_length, reason)
 
 
 def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: dict[str, str]) -> bool:
@@ -613,8 +901,9 @@ def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: 
     The file extension is taken from the Content-Disposition header when present
     so that non-video files (e.g. .funscript, .zip) keep their original extension.
     """
-    global _last_fetch_original_name, _last_download_skipped
+    global _last_fetch_original_name, _last_download_skipped, _precheck_replace_target
     _last_download_skipped = False
+    _precheck_replace_target = None
 
     # Pre-download duplicate check: HEAD + ffprobe remote duration.
     # Zero bandwidth cost — we only proceed with the full download if nothing
@@ -638,6 +927,36 @@ def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: 
                 f.write(chunk)
     final_temp = os.path.join(download_dir, f'{temp_prefix}{ext}')
     os.rename(writing_path, final_temp)
+
+    # Content-based duplicate check: compare the downloaded bytes against every
+    # existing file with the same extension.  Catches cases where the remote
+    # filename differs from the local copy (e.g. "_maxinterval" suffix) and
+    # where Content-Length was absent so the pre-check couldn't compare sizes.
+    existing_match = _file_matches_any_existing(final_temp, download_dir)
+    if existing_match:
+        existing_path = os.path.join(download_dir, existing_match)
+        new_size = os.path.getsize(final_temp)
+        old_size = os.path.getsize(existing_path)
+        if new_size < old_size:
+            # New file is smaller (better compressed) — replace the old one
+            os.remove(existing_path)
+            print(f'  [post-check] replacing {_safe(existing_match)} with smaller identical-content file '
+                  f'({old_size // 1024} KB → {new_size // 1024} KB)')
+        else:
+            os.remove(final_temp)
+            print(f'  [post-check] duplicate of existing file: {_safe(existing_match)} — removed')
+            _last_download_skipped = True
+            return False
+
+    # If the pre-check flagged a file for replacement (same content, better quality
+    # or smaller size), delete it now that the new download has succeeded.
+    replace_target: str = _precheck_replace_target or ''
+    if replace_target and os.path.isfile(replace_target):
+        rname = _safe(os.path.basename(replace_target))
+        os.remove(replace_target)
+        print(f'  [pre-check] replaced {rname} with new download')
+        _precheck_replace_target = None
+
     return True
 
 
@@ -2123,8 +2442,7 @@ def _any_video_in_folder(folder: str) -> str | None:
         full = os.path.join(folder, f)
         if not os.path.isfile(full):
             continue
-        mime, _ = mimetypes.guess_type(f)
-        if mime and mime.startswith('video/') and _peek_is_video(full):
+        if _is_video_filename(f) and _peek_is_video(full):
             return full
     return None
 
@@ -2144,6 +2462,43 @@ def _video_duration(path: str) -> float | None:
         return float(text) if text else None
     except Exception:
         return None
+
+
+def _file_matches_any_existing(new_path: str, download_dir: str) -> str | None:
+    """Return the name of an existing file in *download_dir* whose content is
+    identical to *new_path*, or None if no match is found.
+
+    Only compares files with the same extension (case-insensitive) and ignores
+    temp/partial files.  Reads both files in chunks to avoid loading large
+    files fully into memory.
+    """
+    _, new_ext = os.path.splitext(new_path)
+    new_size = os.path.getsize(new_path)
+    for entry in os.listdir(download_dir):
+        if _is_temp_file(entry):
+            continue
+        full = os.path.join(download_dir, entry)
+        if full == new_path or not os.path.isfile(full):
+            continue
+        _, entry_ext = os.path.splitext(entry)
+        if entry_ext.lower() != new_ext.lower():
+            continue
+        if os.path.getsize(full) != new_size:
+            continue
+        # Same size and extension — compare content
+        matched = True
+        with open(new_path, 'rb') as f_new, open(full, 'rb') as f_existing:
+            while True:
+                a = f_new.read(65536)
+                b = f_existing.read(65536)
+                if a != b:
+                    matched = False
+                    break
+                if not a:
+                    break
+        if matched:
+            return entry
+    return None
 
 
 def _audio_fingerprint(path: str) -> list[int] | None:
@@ -2284,8 +2639,7 @@ def _is_av_similar(new_path: str, folder: str) -> str | None:
         full = os.path.join(folder, f)
         if full == new_path or not os.path.isfile(full):
             continue
-        mime, _ = mimetypes.guess_type(f)
-        if not (mime and mime.startswith('video/')):
+        if not _is_video_filename(f):
             continue
         if _videos_are_similar(new_path, full):
             return full
@@ -2532,8 +2886,7 @@ def _write_playlist(base_path: str, newly_downloaded: list[str] | None = None):
             if Path(f).stem.endswith('_temp'):
                 continue
             full_path = os.path.join(root, f)
-            mime, _ = mimetypes.guess_type(full_path)
-            if mime and mime.startswith('video/'):
+            if _is_video_filename(f):
                 video_files.append(full_path)
 
     if not video_files:
