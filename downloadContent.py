@@ -543,12 +543,12 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
         pass  # HEAD not supported by all servers — continue to other checks
 
     size_str = f'{content_length / 1024 / 1024:.1f} MB' if content_length else 'unknown size'
-    print(f'  [pre-check] HEAD: {size_str}{f", name: {head_name}" if head_name else ""}', flush=True)
+    print(f'  [pre-check] HEAD: {size_str}{f", name: {_safe(head_name)}" if head_name else ""}', flush=True)
 
     if head_name:
         name_path = os.path.join(download_dir, head_name)
         if os.path.isfile(name_path) and not _is_temp_file(head_name):
-            return f'already exists: {head_name}'
+            return f'already exists: {_safe(head_name)}'
 
     if content_length > 0:
         for entry in os.listdir(download_dir):
@@ -556,7 +556,7 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
                 continue
             full = os.path.join(download_dir, entry)
             if os.path.isfile(full) and os.path.getsize(full) == content_length:
-                return f'same file size as existing: {entry}'
+                return f'same file size as existing: {_safe(entry)}'
 
     # --- 2. ffprobe remote duration ---
     print('  [pre-check] probing remote duration...', end='\r', flush=True)
@@ -592,7 +592,7 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
             cname = _safe(os.path.basename(candidate))
             print(f'  [pre-check] visually sampling against {cname} ({url_dur:.1f}s)...', flush=True)
             if _remote_visually_similar(url, headers, url_dur, candidate):
-                return (f'visually similar to existing: {os.path.basename(candidate)} '
+                return (f'visually similar to existing: {_safe(os.path.basename(candidate))} '
                         f'({url_dur:.1f}s)')
         print('  [pre-check] no visual match — proceeding with download', flush=True)
         # Duration matched but no visual match — not a duplicate.
@@ -600,7 +600,7 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
 
     # Small file: duration match alone is enough to flag as duplicate.
     cand = duration_candidates[0]
-    return (f'duration matches existing video: {os.path.basename(cand)} '
+    return (f'duration matches existing video: {_safe(os.path.basename(cand))} '
             f'({url_dur:.1f}s ≈ {_video_duration(cand) or 0:.1f}s)')
 
 
