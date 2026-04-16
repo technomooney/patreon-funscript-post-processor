@@ -1,4 +1,5 @@
 import base64
+import concurrent.futures
 import csv
 import hashlib
 import re
@@ -2664,15 +2665,19 @@ def _dedup_existing(base_path: str) -> int:
 
     total = len(candidates)
     hash_to_paths: dict[str, list[str]] = {}
-    for idx, full in enumerate(candidates, start=1):
-        # Overwrite the same line so large libraries don't flood the terminal.
-        print(f'  hashing {idx}/{total}: {_safe(os.path.basename(full))}' + ' ' * 10,
-              end='\r', flush=True)
-        h = _file_hash(full)
-        hash_to_paths.setdefault(h, []).append(full)
 
-    # Clear the progress line before printing results.
-    print(' ' * 80, end='\r')
+    completed = 0
+    def _hash_one(path: str) -> tuple[str, str]:
+        return path, _file_hash(path)
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = {executor.submit(_hash_one, f): f for f in candidates}
+        for future in concurrent.futures.as_completed(futures):
+            path, h = future.result()
+            hash_to_paths.setdefault(h, []).append(path)
+            completed += 1
+            if completed % 25 == 0 or completed == total:
+                print(f'  hashing {completed}/{total}...', flush=True)
 
     removed = 0
     for paths in hash_to_paths.values():
