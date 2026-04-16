@@ -195,8 +195,56 @@ def _list_drives() -> list[tuple[str, str]]:
 # I/O benchmark
 # ---------------------------------------------------------------------------
 
-def _hash_file(path: str) -> str:
+def _drop_cache(path: str) -> None:
+    """Best-effort: release OS page-cache pages for *path* so subsequent
+    reads come from disk rather than RAM.
+
+    - Linux:  posix_fadvise(POSIX_FADV_DONTNEED)
+    - macOS:  not possible after-the-fact; cache bypass is handled per-read
+              in _hash_file_nocache via F_NOCACHE on the read fd instead.
+    - Windows: no equivalent without FILE_FLAG_NO_BUFFERING (requires aligned
+              buffers); silently skipped.
+    """
+    if sys.platform == 'linux':
+        try:
+            import ctypes
+            libc = ctypes.CDLL('libc.so.6', use_errno=True)
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                libc.posix_fadvise(fd, 0, 0, 4)  # POSIX_FADV_DONTNEED = 4
+            finally:
+                os.close(fd)
+        except Exception:
+            pass
+
+
+def _hash_file_nocache(path: str) -> str:
+    """Hash *path*, bypassing the OS page cache where supported.
+
+    - Linux:  cache was already dropped by _drop_cache before the round;
+              read normally (pages won't be re-warmed between rounds because
+              _drop_cache is called again before each round).
+    - macOS:  sets F_NOCACHE on the read fd so the kernel skips caching.
+    - Windows / other: falls back to normal buffered read.
+    """
     h = hashlib.sha256()
+    if sys.platform == 'darwin':
+        try:
+            import ctypes
+            F_NOCACHE = 48
+            libc = ctypes.CDLL('libc.dylib', use_errno=True)
+            fd = os.open(path, os.O_RDONLY)
+            libc.fcntl(fd, F_NOCACHE, 1)
+            try:
+                with os.fdopen(fd, 'rb', closefd=True) as f:
+                    while chunk := f.read(_BENCH_CHUNK):
+                        h.update(chunk)
+            except Exception:
+                os.close(fd)
+                raise
+            return h.hexdigest()
+        except Exception:
+            pass  # fall through to buffered read below
     with open(path, 'rb') as f:
         while chunk := f.read(_BENCH_CHUNK):
             h.update(chunk)
@@ -204,9 +252,12 @@ def _hash_file(path: str) -> str:
 
 
 def _time_round(paths: list[str], workers: int) -> float:
+    # Drop cache before each round so reads come from disk, not RAM.
+    for p in paths:
+        _drop_cache(p)
     t0 = time.perf_counter()
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-        list(ex.map(_hash_file, paths))
+        list(ex.map(_hash_file_nocache, paths))
     return time.perf_counter() - t0
 
 
