@@ -2670,7 +2670,8 @@ def _dedup_existing(base_path: str) -> int:
     def _hash_one(path: str) -> tuple[str, str]:
         return path, _file_hash(path)
 
-    max_workers = max(1, (os.cpu_count() or 4) - 2)
+    _env_threads = os.getenv('DEDUP_THREADS', '').strip()
+    max_workers = int(_env_threads) if _env_threads.isdigit() else max(1, (os.cpu_count() or 4) - 2)
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(_hash_one, f): f for f in candidates}
         for future in concurrent.futures.as_completed(futures):
