@@ -45,28 +45,36 @@ echo "========================================"
 echo "  Patreon Downloader Post-Processor"
 echo "========================================"
 echo ""
-echo "  1) Download content  — find links in description.json files"
+echo "  1) Fix file prefixes — strip the attachment ID prefix from"
+echo "     downloaded filenames (run this first)"
+echo ""
+echo "  2) Download content  — find links in description.json files"
 echo "     and download the associated videos"
 echo ""
-echo "  2) Fix file prefixes — strip the attachment ID prefix from"
-echo "     downloaded filenames"
+echo "  3) Generate HTML     — build an index.html visual overview"
+echo "     from description.json files"
 echo ""
 
 while true; do
-    read -rp "Choose a program to run (1 or 2): " choice
+    read -rp "Choose a program to run (1, 2 or 3): " choice
     case "$choice" in
         1)
-            echo ""
-            .venv/bin/python downloadContent.py
-            break
-            ;;
-        2)
             echo ""
             .venv/bin/python prefixFix.py
             break
             ;;
+        2)
+            echo ""
+            .venv/bin/python downloadContent.py
+            break
+            ;;
+        3)
+            echo ""
+            .venv/bin/python generate_html.py
+            break
+            ;;
         *)
-            echo "Invalid choice. Please enter 1 or 2."
+            echo "Invalid choice. Please enter 1, 2 or 3."
             ;;
     esac
 done

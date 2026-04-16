@@ -2767,11 +2767,15 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
     """
     tasks = []
     failures = []
+    many_funscripts = []
 
     axis_suffixes = ('.surge', '.pitch', '.roll', '.twist', '.sway')
 
     for root, dirs, files in os.walk(base_path):
         dirs.sort()  # visit subdirectories in alphabetical order
+        if '.manual' in files:
+            print(f"[SKIP] Manual folder: {_safe(root)}")
+            continue
         if 'description.json' not in files:
             continue
 
@@ -2781,6 +2785,12 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
                             if not any(Path(fs).stem.endswith(s) for s in axis_suffixes)]
             if not main_scripts:
                 main_scripts = all_funscripts
+            if len(main_scripts) >= 3:
+                many_funscripts.append({
+                    'folder': root,
+                    'count': len(main_scripts),
+                    'funscripts': ', '.join(Path(fs).name for fs in sorted(main_scripts)),
+                })
             funscript_basename = Path(main_scripts[0]).stem
         elif require_funscript:
             print(f"[SKIP] No .funscript in: {_safe(root)}")
@@ -2851,7 +2861,7 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
                 'link_no_match': no_match_set,
             })
 
-    return tasks, failures
+    return tasks, failures, many_funscripts
 
 
 def _write_playlist(base_path: str, newly_downloaded: list[str] | None = None):
@@ -2915,6 +2925,18 @@ def _write_failures_csv(base_path: str, failures: list):
         writer.writeheader()
         writer.writerows(failures)
     print(f"\nFailed downloads ({len(failures)}) written to: {csv_path}")
+
+
+def _write_many_funscripts_csv(base_path: str, many_funscripts: list):
+    """Write folders with 3+ main funscripts to many_funscripts.csv in *base_path*."""
+    if not many_funscripts:
+        return
+    csv_path = os.path.join(base_path, 'many_funscripts.csv')
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=['folder', 'count', 'funscripts'])
+        writer.writeheader()
+        writer.writerows(many_funscripts)
+    print(f"\nFolders with 3+ funscripts ({len(many_funscripts)}) written to: {csv_path}")
 
 
 def _find_existing_by_hash(folder: str, file_hash: str, exclude: str) -> str | None:
@@ -3080,7 +3102,8 @@ def find_and_download(base_path: str):
     if dedup_existing:
         _dedup_existing(base_path)
 
-    tasks, failures = collect_tasks(base_path, require_funscript=require_funscript)
+    tasks, failures, many_funscripts = collect_tasks(base_path, require_funscript=require_funscript)
+    _write_many_funscripts_csv(base_path, many_funscripts)
 
     if not tasks:
         print("No valid download tasks found.")
@@ -3312,6 +3335,7 @@ def find_and_download(base_path: str):
         if completed_cleanly:
             tracker.clear()
         _write_failures_csv(base_path, failures)
+        _write_many_funscripts_csv(base_path, many_funscripts)
         _write_playlist(base_path, newly_downloaded)
 
 

@@ -112,6 +112,9 @@ def getFileList(filePath: str, extList: list):
     fileRoots = []
     for root, dirs, files in os.walk(filePath):
         dirs.sort()
+        if '.manual' in files:
+            print(f"  SKIP (manual): {root}")
+            continue
         for file in sorted(files):
             if extList:
                 if os.path.splitext(file)[1] in extList:

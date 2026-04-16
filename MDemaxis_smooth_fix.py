@@ -12,6 +12,9 @@ import sys
 
 def process(root_dir):
     for dirpath, _, filenames in os.walk(root_dir):
+        if '.manual' in filenames:
+            print(f'  SKIP (manual)  {dirpath}')
+            continue
         for filename in filenames:
             stem, ext = os.path.splitext(filename)
             filepath = os.path.join(dirpath, filename)

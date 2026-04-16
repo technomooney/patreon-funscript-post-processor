@@ -102,6 +102,9 @@ def _resolve_new_name(filename: str, folder_name: str) -> tuple[str, str] | None
 def process(root_dir: str, dry_run: bool) -> int:
     renamed = 0
     for dirpath, _, filenames in os.walk(root_dir):
+        if '.manual' in filenames:
+            print(f'  SKIP (manual)  {dirpath}')
+            continue
         folder_name = os.path.basename(dirpath)
         for filename in filenames:
             result = _resolve_new_name(filename, folder_name)
