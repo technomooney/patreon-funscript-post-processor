@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Interactive setup for runtime settings and credentials.
+Interactive setup for runtime settings, credentials, and I/O tuning.
 Run this once (or again to change a value).
 
 Settings are written to .env.
@@ -10,12 +10,32 @@ fall back to .env.
 
 Press Enter at any prompt to keep the value shown in brackets.
 """
+import concurrent.futures
 import getpass
+import hashlib
 import os
+import string
 import sys
+import tempfile
+import time
 
-SERVICE = 'patreon-funscript-video-downloader'
+SERVICE   = 'patreon-funscript-video-downloader'
 _ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+
+# Pseudo-filesystem types to ignore when listing drives on Linux/macOS
+_PSEUDO_FS = {
+    'tmpfs', 'devtmpfs', 'sysfs', 'proc', 'cgroup', 'cgroup2',
+    'devpts', 'overlay', 'nsfs', 'pstore', 'securityfs', 'debugfs',
+    'configfs', 'fusectl', 'hugetlbfs', 'mqueue', 'tracefs', 'bpf',
+    'ramfs', 'efivarfs', 'autofs',
+}
+
+# Benchmark parameters
+_BENCH_FILE_COUNT = 8
+_BENCH_FILE_SIZE  = 16 * 1024 * 1024   # 16 MB per file → 128 MB total
+_BENCH_CHUNK      = 1 << 20             # 1 MB read chunks
+_BENCH_ROUNDS     = 2                   # timed rounds per thread count
+
 
 # ---------------------------------------------------------------------------
 # .env helpers
@@ -38,7 +58,6 @@ def _write_env(key: str, value: str, comment: str = '') -> None:
     if os.path.exists(_ENV_PATH):
         with open(_ENV_PATH, 'r', encoding='utf-8') as f:
             lines = f.readlines()
-
     for i, line in enumerate(lines):
         if line.startswith(f'{key}='):
             lines[i] = f'{key}={value}\n'
@@ -49,7 +68,6 @@ def _write_env(key: str, value: str, comment: str = '') -> None:
         if comment:
             lines.append(f'# {comment}\n')
         lines.append(f'{key}={value}\n')
-
     with open(_ENV_PATH, 'w', encoding='utf-8') as f:
         f.writelines(lines)
 
@@ -90,14 +108,14 @@ def _keyring_set(key: str, value: str) -> None:
 
 def _ask(label: str, current: str) -> str:
     """Prompt with the current value in brackets; Enter keeps it."""
-    hint = f'[{current}]' if current else '[not set]'
+    hint  = f'[{current}]' if current else '[not set]'
     value = input(f'  {label} {hint}: ').strip()
     return value if value else current
 
 
 def _ask_secret(label: str, current: str) -> str:
     """Like _ask but hides input; shows [set] or [not set] instead of the value."""
-    hint = '[set — Enter to keep]' if current else '[not set]'
+    hint  = '[set — Enter to keep]' if current else '[not set]'
     value = getpass.getpass(f'  {label} {hint}: ')
     return value if value else current
 
@@ -105,12 +123,232 @@ def _ask_secret(label: str, current: str) -> str:
 def _ask_bool(label: str, current: bool) -> bool:
     """Prompt for true/false; Enter keeps the current value."""
     hint = 'true' if current else 'false'
-    raw = input(f'  {label} [{hint}]: ').strip().lower()
+    raw  = input(f'  {label} [{hint}]: ').strip().lower()
     if raw in ('true', 'yes', '1'):
         return True
     if raw in ('false', 'no', '0'):
         return False
     return current
+
+
+# ---------------------------------------------------------------------------
+# Drive detection (for I/O benchmark)
+# ---------------------------------------------------------------------------
+
+def _list_drives() -> list[tuple[str, str]]:
+    """Return a list of (label, path) for writable drives on this system."""
+    drives: list[tuple[str, str]] = []
+
+    if sys.platform == 'win32':
+        for c in string.ascii_uppercase:
+            path = f'{c}:\\'
+            if os.path.exists(path) and os.access(path, os.W_OK):
+                try:
+                    import ctypes
+                    buf = ctypes.create_unicode_buffer(261)
+                    ctypes.windll.kernel32.GetVolumeInformationW(
+                        path, buf, 261, None, None, None, None, 0)
+                    label = f'{c}: {buf.value}' if buf.value else f'{c}:'
+                except Exception:
+                    label = f'{c}:'
+                drives.append((label, path))
+    else:
+        seen: set[str] = set()
+        try:
+            with open('/proc/mounts', 'r') as f:
+                mounts = f.readlines()
+        except OSError:
+            import subprocess
+            try:
+                out    = subprocess.check_output(['mount'], text=True)
+                mounts = []
+                for line in out.splitlines():
+                    parts = line.split(' on ')
+                    if len(parts) == 2:
+                        mp  = parts[1].split(' (')[0].strip()
+                        dev = parts[0].strip()
+                        mounts.append(f'{dev} {mp} unknown')
+            except Exception:
+                mounts = []
+
+        for line in mounts:
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            device, mountpoint, fstype = parts[0], parts[1], parts[2]
+            if fstype in _PSEUDO_FS:
+                continue
+            if device.startswith(('tmpfs', 'devtmpfs', 'none', 'udev')):
+                continue
+            mountpoint = mountpoint.replace('\\040', ' ')
+            if mountpoint in seen:
+                continue
+            if not os.path.isdir(mountpoint) or not os.access(mountpoint, os.W_OK):
+                continue
+            seen.add(mountpoint)
+            drives.append((f'{mountpoint}  [{device}]', mountpoint))
+
+    return drives
+
+
+# ---------------------------------------------------------------------------
+# I/O benchmark
+# ---------------------------------------------------------------------------
+
+def _hash_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        while chunk := f.read(_BENCH_CHUNK):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _time_round(paths: list[str], workers: int) -> float:
+    t0 = time.perf_counter()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        list(ex.map(_hash_file, paths))
+    return time.perf_counter() - t0
+
+
+def _run_benchmark(base_dir: str) -> int:
+    """Benchmark hashing on *base_dir* and return the optimal thread count."""
+    cpu      = os.cpu_count() or 4
+    max_test = max(1, cpu - 2)
+    total_mb = _BENCH_FILE_COUNT * _BENCH_FILE_SIZE // (1024 * 1024)
+
+    print(f'  Writing {_BENCH_FILE_COUNT} × {_BENCH_FILE_SIZE // (1024*1024)} MB temp files '
+          f'({total_mb} MB) to {base_dir} ...', flush=True)
+
+    tmp_dir = tempfile.mkdtemp(prefix='dedup_bench_', dir=base_dir)
+    paths: list[str] = []
+    try:
+        for i in range(_BENCH_FILE_COUNT):
+            p = os.path.join(tmp_dir, f'bench_{i}.bin')
+            with open(p, 'wb') as f:
+                written = 0
+                while written < _BENCH_FILE_SIZE:
+                    block = os.urandom(min(64 * 1024, _BENCH_FILE_SIZE - written))
+                    f.write(block)
+                    written += len(block)
+                f.flush()
+                os.fsync(f.fileno())
+            paths.append(p)
+
+        print(f'  Testing 1 – {max_test} thread(s), {_BENCH_ROUNDS} rounds each...', flush=True)
+
+        best_workers = 1
+        best_time    = float('inf')
+        no_gain      = 0
+
+        for workers in range(1, max_test + 1):
+            times   = [_time_round(paths, workers) for _ in range(_BENCH_ROUNDS)]
+            elapsed = min(times)
+            mb_s    = total_mb / elapsed
+            print(f'    {workers:2d} thread(s):  {elapsed:.2f}s  ({mb_s:.0f} MB/s)')
+
+            if elapsed < best_time:
+                best_time    = elapsed
+                best_workers = workers
+                no_gain      = 0
+            else:
+                no_gain += 1
+
+            if no_gain >= 2:
+                break
+
+        print(f'  → optimal for this drive: {best_workers} thread(s)')
+        return best_workers
+
+    finally:
+        for p in paths:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        try:
+            os.rmdir(tmp_dir)
+        except OSError:
+            pass
+
+
+def _setup_benchmark() -> None:
+    """Interactive drive selection and I/O benchmark."""
+    existing = _read_env('DEDUP_THREADS')
+    if existing:
+        redo = _ask_bool(
+            f'DEDUP_THREADS is already set to {existing}. Re-run benchmark?',
+            current=False,
+        )
+        if not redo:
+            return
+
+    drives = _list_drives()
+    if not drives:
+        print('  No writable drives detected — skipping benchmark.')
+        return
+
+    print()
+    print('  Available drives:')
+    for i, (label, _) in enumerate(drives, start=1):
+        print(f'    {i}) {label}')
+    print(f'    A) Test all drives')
+    print()
+
+    while True:
+        raw = input('  Select drive(s) to benchmark [1]: ').strip()
+        if raw == '':
+            raw = '1'
+        if raw.upper() == 'A':
+            selected = list(range(len(drives)))
+            break
+        try:
+            idx = int(raw) - 1
+            if 0 <= idx < len(drives):
+                selected = [idx]
+                break
+        except ValueError:
+            pass
+        print(f'  Please enter a number between 1 and {len(drives)}, or A for all.')
+
+    results: list[tuple[str, int]] = []
+    for idx in selected:
+        label, path = drives[idx]
+        print(f'\n  Benchmarking: {label}')
+        optimal = _run_benchmark(path)
+        results.append((label, optimal))
+
+    print()
+    if len(results) == 1:
+        chosen = results[0][1]
+    else:
+        print('  Results summary:')
+        for i, (label, threads) in enumerate(results, start=1):
+            print(f'    {i}) {label}  →  {threads} thread(s)')
+        print()
+        print('  Which result should be saved?')
+        print('  (Pick the drive your library lives on.')
+        print('   Enter L to use the lowest / most conservative value.)')
+        print()
+        while True:
+            raw = input(f'  Select [1–{len(results)}, L]: ').strip()
+            if raw.upper() == 'L':
+                chosen = min(t for _, t in results)
+                break
+            try:
+                idx = int(raw) - 1
+                if 0 <= idx < len(results):
+                    chosen = results[idx][1]
+                    break
+            except ValueError:
+                pass
+            print(f'  Please enter a number between 1 and {len(results)}, or L.')
+
+    _write_env(
+        'DEDUP_THREADS',
+        str(chosen),
+        comment='Optimal hashing thread count from I/O benchmark. Re-run setup to recalibrate.',
+    )
+    print(f'  Saved DEDUP_THREADS={chosen} to .env')
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +438,13 @@ def main():
             _keyring_set('SPANKBANG_PASSWORD', sb_pass)
     else:
         print('  Skipping spankbang.com.')
+
+    # -------------------------------------------------------------------------
+    # I/O benchmark
+    # -------------------------------------------------------------------------
+    print()
+    print('--- Disk I/O benchmark ---')
+    _setup_benchmark()
 
     print()
     print('Done.')

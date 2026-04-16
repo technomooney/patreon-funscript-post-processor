@@ -41,9 +41,6 @@ echo Dependencies installed.
 
 .venv\Scripts\python.exe setup_credentials.py
 
-echo Running disk I/O benchmark to optimise hashing thread count...
-.venv\Scripts\python.exe benchmark_io.py
-
 echo ========================================
 echo   Setup complete!
 echo   Run run.bat to start the downloader.

@@ -48,9 +48,6 @@ echo "Dependencies installed."
 
 .venv/bin/python setup_credentials.py
 
-echo "Running disk I/O benchmark to optimise hashing thread count..."
-.venv/bin/python benchmark_io.py
-
 echo "========================================"
 echo "  Setup complete!"
 echo "  Run ./run.sh to start the downloader."
