@@ -215,16 +215,17 @@ def _write_csv(root_dir: str, results: list[FolderResult]):
 
 
 if __name__ == '__main__':
-    args = sys.argv[1:]
-    write_csv = '--csv' in args
-    dirs = [a for a in args if not a.startswith('--')]
-    root = os.path.abspath(dirs[0] if dirs else os.getcwd())
+    root = input('Enter full directory path to scan: ').strip()
+    root = os.path.abspath(root)
 
     if not os.path.isdir(root):
         print(f'Directory not found: {root}')
         sys.exit(1)
 
-    print(f'Scanning: {root}\n')
+    write_csv_input = input('Write CSV report? (y/N): ').strip().lower()
+    write_csv = write_csv_input == 'y'
+
+    print(f'\nScanning: {root}\n')
     results = scan(root, write_csv)
     _print_results(results)
     if write_csv:
