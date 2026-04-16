@@ -589,6 +589,25 @@ def _remote_partial_match(url: str, headers: dict[str, str], content_length: int
     return None
 
 
+def _remote_full_hash(url: str, headers: dict[str, str]) -> str | None:
+    """Download the full content of *url* and return its SHA-256 hex digest.
+
+    Only intended for small files (≤ 50 MB).  Returns None on any error.
+    """
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            h = hashlib.sha256()
+            while True:
+                block = resp.read(1 << 20)  # 1 MB
+                if not block:
+                    break
+                h.update(block)
+            return h.hexdigest()
+    except Exception:
+        return None
+
+
 def _remote_audio_fingerprint(url: str, headers: dict[str, str]) -> list[int] | None:
     """Return a chromaprint fingerprint for the audio track of a remote URL.
 
@@ -788,21 +807,73 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
             reason = f'already exists: {_safe(head_name)}'
             return _decide_skip_or_replace(name_path, url, headers, content_length, reason)
 
+    _HASH_MAX_BYTES = 50 * 1024 * 1024  # full hash for files ≤ 50 MB; chunks for larger
+
     if content_length > 0:
+        # Collect every existing file whose size matches the remote size.
+        size_matched: list[tuple[str, str]] = []
         for entry in os.listdir(download_dir):
             if _is_temp_file(entry):
                 continue
             full = os.path.join(download_dir, entry)
             if os.path.isfile(full) and os.path.getsize(full) == content_length:
-                # Same size: skip without replacement check (no benefit to same-size swap)
-                return f'same file size as existing: {_safe(entry)}'
+                size_matched.append((entry, full))
 
-    # --- 1b. Partial content probe for large non-video files ---
+        if size_matched:
+            if content_length <= _HASH_MAX_BYTES:
+                # Small file: download the full remote content and compare SHA-256.
+                print('  [pre-check] downloading for hash comparison...', end='\r', flush=True)
+                remote_hash = _remote_full_hash(url, headers)
+                if remote_hash:
+                    for entry, full in size_matched:
+                        if _file_hash(full) == remote_hash:
+                            reason = f'hash match: {_safe(entry)}'
+                            return _decide_skip_or_replace(full, url, headers, content_length, reason)
+                    print('  [pre-check] same size but different content — proceeding with download', flush=True)
+                # If remote_hash is None (network error) fall through and proceed.
+            else:
+                # Large file: sample one 64 KB chunk every 5 MB, evenly distributed
+                # from the start to the end of the file.  Fetch all remote chunks
+                # once, then compare against each size-matched candidate.
+                chunk = 64 * 1024
+                stride = 5 * 1024 * 1024
+                n_chunks = max(2, content_length // stride)
+                offsets = [
+                    round(i * (content_length - chunk) / (n_chunks - 1))
+                    for i in range(n_chunks)
+                ]
+
+                remote_chunks: list[bytes] = []
+                range_supported = True
+                for i, off in enumerate(offsets):
+                    print(f'  [pre-check] fetching chunk {i + 1}/{n_chunks}...', end='\r', flush=True)
+                    data = _remote_range_bytes(url, headers, off, chunk)
+                    if data is None:
+                        range_supported = False
+                        break
+                    remote_chunks.append(data)
+
+                if range_supported and remote_chunks:
+                    for entry, full in size_matched:
+                        matched = True
+                        with open(full, 'rb') as f:
+                            for off, rc in zip(offsets, remote_chunks):
+                                f.seek(off)
+                                lc = f.read(len(rc))
+                                if lc != rc:
+                                    matched = False
+                                    break
+                        if matched:
+                            cname = _safe(entry)
+                            reason = f'chunk match ({n_chunks} samples): {cname}'
+                            return _decide_skip_or_replace(full, url, headers, content_length, reason)
+                # No chunk match found — fall through to duration pipeline.
+
+    # --- 1b. Partial content probe for large non-video files (no size match) ---
     # For files > 50 MB where we couldn't match by name or size, sample the
     # first and last 64 KB via Range requests — cheap and definitive for
     # identical files regardless of what they're named.
-    _PARTIAL_PROBE_MIN_BYTES = 50 * 1024 * 1024
-    if content_length > _PARTIAL_PROBE_MIN_BYTES and head_name:
+    if content_length > _HASH_MAX_BYTES and head_name:
         _, head_ext = os.path.splitext(head_name)
         if not _is_video_filename(head_name):
             match = _remote_partial_match(url, headers, content_length, download_dir, head_ext)
