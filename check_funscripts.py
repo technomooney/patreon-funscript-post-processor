@@ -30,21 +30,54 @@ _VIDEO_EXTS  = {'.mp4', '.mkv', '.webm', '.avi', '.mov', '.m4v'}
 _SCRIPT_EXT  = '.funscript'
 _AXIS_SUFFIXES = ('.surge', '.pitch', '.roll', '.twist', '.sway')
 
+# Matches a trailing parenthetical variant, e.g. ' (SMOOTH)' or ' (max interval)'
+_VARIANT_RE = re.compile(r'\s*\([^)]+\)\s*$')
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _strip_variants(stem: str) -> str:
+    """Strip trailing parenthetical variant suffixes repeatedly.
+
+    e.g. 'example (SMOOTH)' → 'example'
+         'example (max interval) (SMOOTH)' → 'example'
+    """
+    while True:
+        stripped = _VARIANT_RE.sub('', stem)
+        if stripped == stem:
+            return stem
+        stem = stripped
+
+
 def _base_stem(funscript_path: str) -> str:
+    """Return the base video stem for a funscript.
+
+    Strips axis suffixes (.surge, .pitch, …) and parenthetical variant
+    suffixes ((SMOOTH), (max interval), …) so all variants of a funscript
+    map to the same base as the plain video stem.
+
+    Examples:
+      'example.surge.funscript'         → 'example'
+      'example (SMOOTH).funscript'      → 'example'
+      'example (max interval).funscript'→ 'example'
     """
-    Return the 'video stem' for a funscript — strips any axis suffix so
-    'example.surge.funscript' maps to the same base as 'example.funscript'.
-    """
-    stem = Path(funscript_path).stem          # e.g. 'example.surge'
+    stem = Path(funscript_path).stem          # e.g. 'example.surge' or 'example (SMOOTH)'
     for suffix in _AXIS_SUFFIXES:
         if stem.endswith(suffix):
-            return stem[: -len(suffix)]
-    return stem
+            stem = stem[: -len(suffix)]
+            break
+    return _strip_variants(stem)
+
+
+def _video_base(video_filename: str) -> str:
+    """Return the base stem for a video, stripping variant suffixes.
+
+    e.g. 'example (SMOOTH).mp4' → 'example'
+         'example.mp4'          → 'example'
+    """
+    return _strip_variants(Path(video_filename).stem)
 
 
 def _tokenize(s: str) -> set[str]:
@@ -97,39 +130,48 @@ def _check_folder(folder: str) -> FolderResult | None:
     result = FolderResult(folder)
 
     # Build lookup: base_stem → list of funscript filenames
+    # base_stem strips axis suffixes AND parenthetical variant suffixes.
     script_bases: dict[str, list[str]] = {}
     for s in scripts:
         base = _base_stem(s)
         script_bases.setdefault(base, []).append(s)
 
-    video_stems = {Path(v).stem: v for v in videos}
+    # Build lookup: video_base → list of video filenames
+    # video_base strips parenthetical variant suffixes so 'example (SMOOTH).mp4'
+    # and 'example.mp4' both map to the same base 'example'.
+    video_base_map: dict[str, list[str]] = {}
+    for v in videos:
+        base = _video_base(v)
+        video_base_map.setdefault(base, []).append(v)
 
     # --- Videos without a funscript ---
-    for vstem, vfile in sorted(video_stems.items()):
-        if vstem in script_bases:
-            continue  # exact match found
+    for vbase, vfiles in sorted(video_base_map.items()):
+        if vbase in script_bases:
+            continue  # base match found (covers all variants)
 
         # Find best fuzzy match across all funscript base stems
         best_script, best_score = '', 0.0
         for fbase, ffiles in script_bases.items():
-            score = _fuzzy_score(vstem, fbase)
+            score = _fuzzy_score(vbase, fbase)
             if score > best_score:
                 best_score = score
                 best_script = ffiles[0]
 
-        result.unmatched_videos.append({
-            'video':      vfile,
-            'suggestion': best_script,
-            'score':      round(best_score, 3),
-        })
+        # Report one entry per unmatched video file under this base
+        for vfile in vfiles:
+            result.unmatched_videos.append({
+                'video':      vfile,
+                'suggestion': best_script,
+                'score':      round(best_score, 3),
+            })
 
     # --- Funscripts without a video ---
     for fbase, ffiles in sorted(script_bases.items()):
-        if fbase in video_stems:
+        if fbase in video_base_map:
             continue
-        # Check partial: any video whose stem fuzzy-matches well enough?
+        # Check partial: any video base that fuzzy-matches well enough?
         best_score = max(
-            (_fuzzy_score(vstem, fbase) for vstem in video_stems),
+            (_fuzzy_score(vbase, fbase) for vbase in video_base_map),
             default=0.0,
         )
         if best_score < 0.5:
