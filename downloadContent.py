@@ -2850,12 +2850,12 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
 
 def _write_playlist(base_path: str, newly_downloaded: list[str] | None = None):
     """
-    Scan *base_path* recursively for video files and write playlist.m3u8.
+    Scan *base_path* recursively for video files and write full_folder_playlist.m3u8.
     Files are sorted newest-first by modification time so the most recently
     downloaded videos appear at the top when opened in a media player.
     Temp files and the playlist itself are excluded.
 
-    If *newly_downloaded* is provided, also write playlist_new.m3u8 containing
+    If *newly_downloaded* is provided, also write full_folder_playlist_new.m3u8 containing
     only those files (in the same newest-first order).
     """
     def _write_m3u8(path: str, video_paths: list[str]):
@@ -2883,7 +2883,7 @@ def _write_playlist(base_path: str, newly_downloaded: list[str] | None = None):
     # Newest downloads first
     video_files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
 
-    playlist_path = os.path.join(base_path, 'playlist.m3u8')
+    playlist_path = os.path.join(base_path, 'full_folder_playlist.m3u8')
     _write_m3u8(playlist_path, video_files)
     print(f'\nPlaylist updated ({len(video_files)} videos): {playlist_path}')
 
@@ -2894,7 +2894,7 @@ def _write_playlist(base_path: str, newly_downloaded: list[str] | None = None):
             reverse=True,
         )
         if new_sorted:
-            new_path = os.path.join(base_path, 'playlist_new.m3u8')
+            new_path = os.path.join(base_path, 'full_folder_playlist_new.m3u8')
             _write_m3u8(new_path, new_sorted)
             print(f'New-downloads playlist ({len(new_sorted)} videos): {new_path}')
 
