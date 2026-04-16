@@ -2855,7 +2855,7 @@ def _write_playlist(base_path: str, newly_downloaded: list[str] | None = None):
     downloaded videos appear at the top when opened in a media player.
     Temp files and the playlist itself are excluded.
 
-    If *newly_downloaded* is provided, also write full_folder_playlist_new.m3u8 containing
+    If *newly_downloaded* is provided, also write new_media_playlist.m3u8 containing
     only those files (in the same newest-first order).
     """
     def _write_m3u8(path: str, video_paths: list[str]):
@@ -2894,7 +2894,7 @@ def _write_playlist(base_path: str, newly_downloaded: list[str] | None = None):
             reverse=True,
         )
         if new_sorted:
-            new_path = os.path.join(base_path, 'full_folder_playlist_new.m3u8')
+            new_path = os.path.join(base_path, 'new_media_playlist.m3u8')
             _write_m3u8(new_path, new_sorted)
             print(f'New-downloads playlist ({len(new_sorted)} videos): {new_path}')
 
