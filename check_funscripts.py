@@ -102,11 +102,10 @@ class FolderResult:
     def __init__(self, folder: str):
         self.folder = folder
         self.unmatched_videos: list[dict] = []   # {'video', 'suggestion', 'score'}
-        self.orphan_scripts: list[str] = []       # funscript stems with no video
 
     @property
     def ok(self) -> bool:
-        return not self.unmatched_videos and not self.orphan_scripts
+        return not self.unmatched_videos
 
 
 def _check_folder(folder: str) -> FolderResult | None:
@@ -124,7 +123,7 @@ def _check_folder(folder: str) -> FolderResult | None:
     scripts = [f for f in entries if f.lower().endswith(_SCRIPT_EXT)
                and os.path.isfile(os.path.join(folder, f))]
 
-    if not videos and not scripts:
+    if not videos:
         return None
 
     result = FolderResult(folder)
@@ -165,19 +164,6 @@ def _check_folder(folder: str) -> FolderResult | None:
                 'score':      round(best_score, 3),
             })
 
-    # --- Funscripts without a video ---
-    for fbase, ffiles in sorted(script_bases.items()):
-        if fbase in video_base_map:
-            continue
-        # Check partial: any video base that fuzzy-matches well enough?
-        best_score = max(
-            (_fuzzy_score(vbase, fbase) for vbase in video_base_map),
-            default=0.0,
-        )
-        if best_score < 0.5:
-            # Only report as orphan when no close video match exists
-            result.orphan_scripts.extend(ffiles)
-
     return result
 
 
@@ -206,7 +192,6 @@ def _print_results(results: list[FolderResult]):
         return
 
     total_unmatched = sum(len(r.unmatched_videos) for r in results)
-    total_orphans   = sum(len(r.orphan_scripts)   for r in results)
 
     for r in results:
         folder_label = os.path.basename(r.folder)
@@ -220,11 +205,7 @@ def _print_results(results: list[FolderResult]):
             else:
                 print(f'        (no funscripts in folder)')
 
-        for s in r.orphan_scripts:
-            print(f'    ? orphan script: {s}')
-
-    print(f'\n  {total_unmatched} unmatched video(s), {total_orphans} orphan script(s) '
-          f'across {len(results)} folder(s).')
+    print(f'\n  {total_unmatched} video(s) missing funscripts across {len(results)} folder(s).')
 
 
 def _write_csv(root_dir: str, results: list[FolderResult]):
@@ -234,23 +215,14 @@ def _write_csv(root_dir: str, results: list[FolderResult]):
         for item in r.unmatched_videos:
             rows.append({
                 'folder':     r.folder,
-                'issue':      'no funscript',
                 'file':       item['video'],
                 'suggestion': item['suggestion'],
                 'score':      item['score'],
             })
-        for s in r.orphan_scripts:
-            rows.append({
-                'folder':     r.folder,
-                'issue':      'orphan script',
-                'file':       s,
-                'suggestion': '',
-                'score':      '',
-            })
     if not rows:
         return
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=['folder', 'issue', 'file', 'suggestion', 'score'])
+        writer = csv.DictWriter(f, fieldnames=['folder', 'file', 'suggestion', 'score'])
         writer.writeheader()
         writer.writerows(rows)
     print(f'  Report written to: {csv_path}')
