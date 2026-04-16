@@ -48,15 +48,18 @@ echo ""
 echo "  1) Fix file prefixes — strip the attachment ID prefix from"
 echo "     downloaded filenames (run this first)"
 echo ""
-echo "  2) Download content  — find links in description.json files"
+echo "  2) Download content       — find links in description.json files"
 echo "     and download the associated videos"
 echo ""
-echo "  3) Generate HTML     — build an index.html visual overview"
-echo "     from description.json files"
+echo "  3) Check funscript match  — find videos missing a funscript and"
+echo "     report fuzzy-match suggestions"
+echo ""
+echo "  4) Generate HTML          — build a description.html visual overview"
+echo "     in each post folder"
 echo ""
 
 while true; do
-    read -rp "Choose a program to run (1, 2 or 3): " choice
+    read -rp "Choose a program to run (1-4): " choice
     case "$choice" in
         1)
             echo ""
@@ -70,11 +73,16 @@ while true; do
             ;;
         3)
             echo ""
+            .venv/bin/python check_funscripts.py
+            break
+            ;;
+        4)
+            echo ""
             .venv/bin/python generate_html.py
             break
             ;;
         *)
-            echo "Invalid choice. Please enter 1, 2 or 3."
+            echo "Invalid choice. Please enter 1, 2, 3 or 4."
             ;;
     esac
 done

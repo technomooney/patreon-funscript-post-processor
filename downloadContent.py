@@ -2751,7 +2751,7 @@ def _match_links_to_funscripts(links: list[str], funscript_paths: list[str]) -> 
     return result
 
 
-def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list, list]:
+def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list, list, list]:
     """
     Walk *base_path* looking for folders that contain a description.json and,
     when *require_funscript* is True, at least one .funscript.
@@ -2836,30 +2836,14 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
         if not validated_links:
             continue
 
-        # When there are multiple funscripts AND multiple links, fuzzy-match
-        # each link to the funscript whose name shares the most URL tokens.
-        if main_scripts and len(main_scripts) > 1 and len(validated_links) > 1:
-            link_to_match = _match_links_to_funscripts(validated_links, main_scripts)
-            stem_to_links: dict[str, list[str]] = {}
-            stem_no_match: dict[str, set[str]] = {}
-            for link, (stem, is_real) in link_to_match.items():
-                stem_to_links.setdefault(stem, []).append(link)
-                if not is_real:
-                    stem_no_match.setdefault(stem, set()).add(link)
-            for stem, stem_links in stem_to_links.items():
-                print(f"  [fuzzy] '{_safe(stem)}' matched {len(stem_links)} link(s)")
-                tasks.append({'folder': root, 'basename': stem, 'links': stem_links,
-                              'link_no_match': stem_no_match.get(stem, set())})
-        else:
-            # Single funscript: all links match it by default (no fuzzy scoring needed).
-            # No funscript at all: keep original download names for every link.
-            no_match_set: set[str] = set(validated_links) if not main_scripts else set()
-            tasks.append({
-                'folder': root,
-                'basename': funscript_basename,
-                'links': validated_links,
-                'link_no_match': no_match_set,
-            })
+        # Always download every link using its original filename.
+        # Funscript-to-video matching is handled separately by check_funscripts.py.
+        tasks.append({
+            'folder': root,
+            'basename': funscript_basename,
+            'links': validated_links,
+            'link_no_match': set(validated_links),
+        })
 
     return tasks, failures, many_funscripts
 
