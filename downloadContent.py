@@ -2923,6 +2923,96 @@ def _write_many_funscripts_csv(base_path: str, many_funscripts: list):
     print(f"\nFolders with 3+ funscripts ({len(many_funscripts)}) written to: {csv_path}")
 
 
+_FOLDER_TITLE_RE = re.compile(r'^\[\d+\]\s+\d{4}-\d{2}-\d{2}\s+(.+)$')
+
+# Thresholds for routing failed links when a matching video is already present.
+_MATCH_CONFIDENT  = 0.50   # skip failure entirely — content is clearly there
+_MATCH_UNCERTAIN  = 0.25   # route to uncertain CSV — possible match but unsure
+
+
+def _folder_title_tokens(folder: str) -> set[str]:
+    """Return the tokenised title words from a Patreon folder name.
+
+    Folder names are expected in the form '[id] YYYY-MM-DD Title text'.
+    Returns an empty set when the format doesn't match or yields no tokens.
+    """
+    m = _FOLDER_TITLE_RE.match(os.path.basename(folder))
+    if not m:
+        return set()
+    return {t for t in re.split(r'[^a-z0-9]+', m.group(1).lower()) if len(t) > 2}
+
+
+def _best_video_match(folder: str) -> tuple[str, float]:
+    """Find the existing video in *folder* whose stem best matches the folder title.
+
+    Returns (filename, score).  Score is (overlapping tokens) / (title tokens).
+    Requires at least 2 token matches to avoid false positives on short titles
+    (e.g. collection posts whose title contains only a creator name).
+    Returns ('', 0.0) when no usable match is found.
+    """
+    title_tokens = _folder_title_tokens(folder)
+    if not title_tokens:
+        return '', 0.0
+
+    best_file, best_score = '', 0.0
+    try:
+        for fname in os.listdir(folder):
+            if _is_temp_file(fname) or not _is_video_filename(fname):
+                continue
+            if not os.path.isfile(os.path.join(folder, fname)):
+                continue
+            stem_tokens = {t for t in re.split(r'[^a-z0-9]+',
+                           Path(fname).stem.lower()) if len(t) > 2}
+            overlap = len(title_tokens & stem_tokens)
+            if overlap < 2:
+                continue
+            score = overlap / len(title_tokens)
+            if score > best_score:
+                best_score, best_file = score, fname
+    except OSError:
+        pass
+
+    return best_file, best_score
+
+
+def _triage_failure(entry: dict, folder: str,
+                    failures: list, uncertain: list) -> None:
+    """Route a failed-download entry to the appropriate list.
+
+    Checks whether a video already present in *folder* plausibly matches the
+    folder title:
+      - score >= _MATCH_CONFIDENT : content is likely already downloaded — drop
+      - score >= _MATCH_UNCERTAIN : possible match — add to *uncertain*
+      - otherwise                 : genuine failure — add to *failures*
+    """
+    matched_file, score = _best_video_match(folder)
+    if score >= _MATCH_CONFIDENT:
+        print(f'  [skip-fail] existing video "{_safe(matched_file)}" '
+              f'matches folder title ({int(score * 100)}%) — not logged as failure')
+        return
+    if score >= _MATCH_UNCERTAIN:
+        print(f'  [uncertain] existing video "{_safe(matched_file)}" '
+              f'may match ({int(score * 100)}%) — logged for manual review')
+        uncertain.append({**entry, 'matched_video': matched_file,
+                          'match_score': round(score, 3)})
+        return
+    failures.append(entry)
+
+
+def _write_uncertain_csv(base_path: str, uncertain: list):
+    """Write uncertain download entries to uncertain_downloads.csv in *base_path*."""
+    if not uncertain:
+        return
+    csv_path = os.path.join(base_path, 'uncertain_downloads.csv')
+    fieldnames = ['link', 'funscript_name', 'save_directory', 'domain',
+                  'matched_video', 'match_score']
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(uncertain)
+    print(f"\nUncertain downloads ({len(uncertain)}) written to: {csv_path}")
+
+
 def _find_existing_by_hash(folder: str, file_hash: str, exclude: str) -> str | None:
     """Return the path of any file in *folder* whose SHA-256 matches *file_hash*.
 
@@ -3127,6 +3217,7 @@ def find_and_download(base_path: str):
     current_link_idx: int = 0
 
     newly_downloaded: list[str] = []
+    uncertain: list[dict] = []
     total = len(tasks)
     global _last_fetch_original_name, _last_download_skipped
     completed_cleanly = False
@@ -3182,12 +3273,10 @@ def find_and_download(base_path: str):
                         print(f'  [cloudflare] {cf_err}')
                         answer = input('  Switch to windowed mode and retry? (y/n): ').strip().lower()
                         if answer != 'y':
-                            failures.append({
-                                'link': link,
-                                'funscript_name': basename,
-                                'save_directory': folder,
-                                'domain': domain,
-                            })
+                            _triage_failure(
+                                {'link': link, 'funscript_name': basename,
+                                 'save_directory': folder, 'domain': domain},
+                                folder, failures, uncertain)
                             _link_failed = True
                             break
                         # Restart the driver in windowed mode for this run only.
@@ -3204,12 +3293,10 @@ def find_and_download(base_path: str):
                             triggered = handler(driver, link, folder)
                         except CloudflareBlockedError:
                             print('  Still blocked after switching to windowed mode.')
-                            failures.append({
-                                'link': link,
-                                'funscript_name': basename,
-                                'save_directory': folder,
-                                'domain': domain,
-                            })
+                            _triage_failure(
+                                {'link': link, 'funscript_name': basename,
+                                 'save_directory': folder, 'domain': domain},
+                                folder, failures, uncertain)
                             _link_failed = True
                         break
                     except WebDriverException as wd_err:
@@ -3226,12 +3313,10 @@ def find_and_download(base_path: str):
                             # loop continues → second attempt with fresh driver
                         else:
                             print(f'  [browser] retry also failed: {wd_err.__class__.__name__}')
-                            failures.append({
-                                'link': link,
-                                'funscript_name': basename,
-                                'save_directory': folder,
-                                'domain': domain,
-                            })
+                            _triage_failure(
+                                {'link': link, 'funscript_name': basename,
+                                 'save_directory': folder, 'domain': domain},
+                                folder, failures, uncertain)
                             _link_failed = True
                             break
 
@@ -3244,24 +3329,20 @@ def find_and_download(base_path: str):
 
                 if not triggered:
                     print("  Could not trigger download — check the handler for this domain.")
-                    failures.append({
-                        'link': link,
-                        'funscript_name': basename,
-                        'save_directory': folder,
-                        'domain': domain,
-                    })
+                    _triage_failure(
+                        {'link': link, 'funscript_name': basename,
+                         'save_directory': folder, 'domain': domain},
+                        folder, failures, uncertain)
                     continue
 
                 downloaded = wait_for_download(folder, before_files)
 
                 if downloaded is None:
                     print("  Download did not complete.")
-                    failures.append({
-                        'link': link,
-                        'funscript_name': basename,
-                        'save_directory': folder,
-                        'domain': domain,
-                    })
+                    _triage_failure(
+                        {'link': link, 'funscript_name': basename,
+                         'save_directory': folder, 'domain': domain},
+                        folder, failures, uncertain)
                     continue
 
                 # AV similarity check: skip if an existing video in the folder
@@ -3319,6 +3400,7 @@ def find_and_download(base_path: str):
         if completed_cleanly:
             tracker.clear()
         _write_failures_csv(base_path, failures)
+        _write_uncertain_csv(base_path, uncertain)
         _write_many_funscripts_csv(base_path, many_funscripts)
         _write_playlist(base_path, newly_downloaded)
 
