@@ -2842,7 +2842,6 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
             'folder': root,
             'basename': funscript_basename,
             'links': validated_links,
-            'link_no_match': set(validated_links),
         })
 
     return tasks, failures, many_funscripts
@@ -3028,62 +3027,46 @@ def _find_existing_by_hash(folder: str, file_hash: str, exclude: str) -> str | N
     return None
 
 
-def _save_downloaded(downloaded: str, folder: str, basename: str, link_idx: int,
-                     newly_downloaded: list[str], original_name: str | None = None,
-                     no_funscript_match: bool = False) -> bool:
-    """Hash *downloaded*, check for session/disk duplicates, then rename into place.
+def _save_downloaded(downloaded: str, folder: str,
+                     newly_downloaded: list[str],
+                     original_name: str | None = None) -> bool:
+    """Hash *downloaded*, check for duplicates, then move into place.
+
+    The file is kept under its own download name — no renaming to funscript
+    basenames is performed.  Use original_name when the file on disk is still a
+    temp/partial name and the real name is known from headers or a global.
 
     Checks (in order):
       1. Session hashes — same content already saved this run.
-      2. Any file in *folder* with the same hash — catches duplicates saved
-         under a different name (e.g. multiple funscripts from a Yandex link).
-      3. Name collision at the exact dest_path with different content — saved
-         as [alt2], [alt3], etc.
-
-    When *no_funscript_match* is True and *original_name* is available the file
-    is saved under *original_name* rather than the funscript basename — the link
-    had no meaningful semantic connection to any funscript in the folder.
+      2. Any file in *folder* with the same hash — catches duplicates.
+      3. Name collision with different content — saved as [alt2], [alt3], etc.
 
     Returns True if the file was kept (and added to *newly_downloaded*).
     Always removes *downloaded* if the content is a duplicate.
     """
     new_hash = _file_hash(downloaded)
 
-    # Compute desired destination name up front so rename-on-dedup can use it.
     ext = os.path.splitext(downloaded)[1]
-    # Use the download's original name when there is no funscript to name after.
-    if no_funscript_match and original_name:
-        dest_stem = Path(original_name).stem  # strip any extension already in the name
-        dest_name = dest_stem + ext
-    elif link_idx == 0:
-        dest_name = basename + ext
+    if original_name:
+        dest_stem = Path(original_name).stem
+        dest_name = _truncate_filename(dest_stem + ext)
     else:
-        dest_name = f"{basename} ({link_idx + 1}){ext}"
-    dest_name = _truncate_filename(dest_name)
+        dest_name = _truncate_filename(os.path.basename(downloaded))
     dest_path = os.path.join(folder, dest_name)
 
-    # --- 1. session-level dedup: same content already saved this run ---
+    # --- 1. session-level dedup ---
     if new_hash in _session_hashes:
         prior = _session_hashes[new_hash]
         print(f'  [SKIP] identical to already-downloaded file: {_safe(os.path.basename(prior))}')
         os.remove(downloaded)
         return False
 
-    # --- 2. folder-level dedup: same content exists under any name ---
+    # --- 2. folder-level dedup ---
     existing_match = _find_existing_by_hash(folder, new_hash, exclude=downloaded)
     if existing_match:
-        existing_name = os.path.basename(existing_match)
         os.remove(downloaded)
-        # Opportunistic rename: if the current download gave us a better name
-        # (e.g. properly decoded Unicode vs. earlier mojibake), apply it now.
-        if existing_name != dest_name and not os.path.exists(dest_path):
-            os.rename(existing_match, dest_path)
-            print(f'  [RENAME] {_safe(existing_name)}')
-            print(f'        -> {_safe(dest_name)}')
-            _session_hashes[new_hash] = dest_path
-        else:
-            print(f'  [SKIP] identical file already on disk: {_safe(existing_name)}')
-            _session_hashes[new_hash] = existing_match
+        print(f'  [SKIP] identical file already on disk: {_safe(os.path.basename(existing_match))}')
+        _session_hashes[new_hash] = existing_match
         return False
 
     # --- 3. name collision with different content — keep both ---
@@ -3097,7 +3080,7 @@ def _save_downloaded(downloaded: str, folder: str, basename: str, link_idx: int,
                 break
             counter += 1
         os.rename(downloaded, alt_path)
-        print(f'  Saved as: {_safe(alt_name)} (different content from existing file)')
+        print(f'  Saved as: {_safe(alt_name)} (name collision with different content)')
         _session_hashes[new_hash] = alt_path
         newly_downloaded.append(alt_path)
         return True
@@ -3213,8 +3196,6 @@ def find_and_download(base_path: str):
     # State tracked so KeyboardInterrupt can finish/clean the active download.
     current_folder: str = tasks[0]['folder']
     current_before_files: set[str] = set()
-    current_basename: str = ''
-    current_link_idx: int = 0
 
     newly_downloaded: list[str] = []
     uncertain: list[dict] = []
@@ -3228,7 +3209,6 @@ def find_and_download(base_path: str):
             links    = task['links']
 
             current_folder = folder
-            current_basename = basename
 
             print(f"\n[{task_idx}/{total}] {_safe(basename)}")
             _cleanup_temp_files(folder)
@@ -3237,9 +3217,8 @@ def find_and_download(base_path: str):
             driver = _ensure_driver_alive(driver, folder)
             set_download_dir(driver, folder)
 
-            link_no_match: set[str] = task.get('link_no_match', set())
             saved_for_folder = 0
-            for link_idx, link in enumerate(links):
+            for link in links:
                 _last_fetch_original_name = None   # reset before each attempt
                 _last_download_skipped = False
 
@@ -3256,7 +3235,6 @@ def find_and_download(base_path: str):
 
                 before_files: set[str] = set(os.listdir(str(folder)))
                 current_before_files = before_files
-                current_link_idx = link_idx
                 print(f"  [{domain}] {link}")
                 print("  Downloading...")
 
@@ -3369,9 +3347,8 @@ def find_and_download(base_path: str):
                 else:
                     original_name = None
 
-                no_match = link in link_no_match
-                kept = _save_downloaded(downloaded, folder, basename, saved_for_folder, newly_downloaded,
-                                        original_name=original_name, no_funscript_match=no_match)
+                kept = _save_downloaded(downloaded, folder, newly_downloaded,
+                                        original_name=original_name)
                 tracker.mark_done(folder, link)
                 if kept:
                     saved_for_folder += 1
@@ -3386,8 +3363,11 @@ def find_and_download(base_path: str):
         try:
             downloaded = wait_for_download(current_folder, current_before_files, timeout=120)
             if downloaded:
-                _save_downloaded(downloaded, current_folder, current_basename,
-                                 current_link_idx, newly_downloaded)
+                orig = os.path.basename(downloaded)
+                if _is_temp_file(orig) and _last_fetch_original_name:
+                    orig = _last_fetch_original_name
+                _save_downloaded(downloaded, current_folder, newly_downloaded,
+                                 original_name=Path(_decode_filename(orig)).stem)
             else:
                 print('  Download did not complete in time — removing temp files.')
                 _cleanup_temp_files(current_folder)
