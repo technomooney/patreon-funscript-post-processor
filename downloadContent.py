@@ -2751,7 +2751,7 @@ def _match_links_to_funscripts(links: list[str], funscript_paths: list[str]) -> 
     return result
 
 
-def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list, list, list]:
+def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list, list, list, list]:
     """
     Walk *base_path* looking for folders that contain a description.json and,
     when *require_funscript* is True, at least one .funscript.
@@ -2762,19 +2762,20 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
     Pixeldrain list URLs (/l/<id>) are automatically expanded into individual
     file URLs (/u/<file_id>) before tasks are created.
 
-    Returns (tasks, failures).  Unsupported domains are added to failures
-    instead of aborting the run.
+    Returns (tasks, failures, many_funscripts, manual_folders).
+    Unsupported domains are added to failures instead of aborting the run.
     """
     tasks = []
     failures = []
     many_funscripts = []
+    manual_folders = []
 
     axis_suffixes = ('.surge', '.pitch', '.roll', '.twist', '.sway')
 
     for root, dirs, files in os.walk(base_path):
         dirs.sort()  # visit subdirectories in alphabetical order
         if '.manual' in files:
-            print(f"[SKIP] Manual folder: {_safe(root)}")
+            manual_folders.append(root)
             continue
         if 'description.json' not in files:
             continue
@@ -2844,7 +2845,7 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
             'links': validated_links,
         })
 
-    return tasks, failures, many_funscripts
+    return tasks, failures, many_funscripts, manual_folders
 
 
 def _write_playlist(base_path: str, newly_downloaded: list[str] | None = None):
@@ -2908,6 +2909,20 @@ def _write_failures_csv(base_path: str, failures: list):
         writer.writeheader()
         writer.writerows(failures)
     print(f"\nFailed downloads ({len(failures)}) written to: {csv_path}")
+
+
+def _write_manual_folders(base_path: str, manual_folders: list):
+    """Print and write the list of .manual folders to manual_folders.txt."""
+    if not manual_folders:
+        return
+    txt_path = os.path.join(base_path, 'manual_folders.txt')
+    with open(txt_path, 'w', encoding='utf-8') as f:
+        for path in manual_folders:
+            f.write(path + '\n')
+    print(f"\nSkipped {len(manual_folders)} manual folder(s):")
+    for path in manual_folders:
+        print(f"  {path}")
+    print(f"  (list written to: {txt_path})")
 
 
 def _write_many_funscripts_csv(base_path: str, many_funscripts: list):
@@ -3159,8 +3174,9 @@ def find_and_download(base_path: str):
     if dedup_existing:
         _dedup_existing(base_path)
 
-    tasks, failures, many_funscripts = collect_tasks(base_path, require_funscript=require_funscript)
+    tasks, failures, many_funscripts, manual_folders = collect_tasks(base_path, require_funscript=require_funscript)
     _write_many_funscripts_csv(base_path, many_funscripts)
+    _write_manual_folders(base_path, manual_folders)
 
     if not tasks:
         print("No valid download tasks found.")
