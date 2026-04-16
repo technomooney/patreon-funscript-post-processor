@@ -2672,14 +2672,30 @@ def _dedup_existing(base_path: str) -> int:
 
     _env_threads = os.getenv('DEDUP_THREADS', '').strip()
     max_workers = int(_env_threads) if _env_threads.isdigit() else max(1, (os.cpu_count() or 4) - 2)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(_hash_one, f): f for f in candidates}
-        for future in concurrent.futures.as_completed(futures):
-            path, h = future.result()
-            hash_to_paths.setdefault(h, []).append(path)
-            completed += 1
-            if completed % 25 == 0 or completed == total:
-                print(f'  hashing {completed}/{total}...', flush=True)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_hash_one, f): f for f in candidates}
+            try:
+                for future in concurrent.futures.as_completed(futures):
+                    path, h = future.result()
+                    hash_to_paths.setdefault(h, []).append(path)
+                    completed += 1
+                    if completed % 25 == 0 or completed == total:
+                        print(f'  hashing {completed}/{total}...', flush=True)
+            except KeyboardInterrupt:
+                done      = sum(1 for f in futures if f.done())
+                running   = sum(1 for f in futures if f.running())
+                pending   = sum(1 for f in futures if not f.done() and not f.running())
+                print(f'\n[dedup] interrupted — '
+                      f'{done} done, {running} running, {pending} pending '
+                      f'({completed}/{total} hashed)')
+                print('[dedup] cancelling remaining tasks...')
+                for f in futures:
+                    f.cancel()
+                raise
+    except KeyboardInterrupt:
+        print('[dedup] hash scan aborted.')
+        return 0
 
     removed = 0
     for paths in hash_to_paths.values():
