@@ -1,5 +1,6 @@
 import os
 import re
+from urllib.parse import unquote
 
 # Matches the Patreon prefix: one or more non-underscore chars (type), underscore,
 # one or more digits (ID), underscore.  Everything after is the real filename.
@@ -49,6 +50,18 @@ _CP1252_EXTRAS: dict[int, int] = {
     0x017E: 0x9E,  # ž
     0x0178: 0x9F,  # Ÿ
 }
+
+
+def _try_percent_decode(name: str) -> str | None:
+    """Return percent-decoded *name*, or None if no change or decoding fails."""
+    if '%' not in name:
+        return None
+    decoded = unquote(name, encoding='utf-8', errors='replace')
+    if decoded == name:
+        return None
+    if '\ufffd' in decoded:
+        return None
+    return decoded
 
 
 def _has_mojibake(name: str) -> bool:
@@ -129,12 +142,19 @@ def getFileList(filePath: str, extList: list):
 
 
 def processAndRename(fileList: list, fileRoots: list):
-    """For each file: repair mojibake if needed, then strip the Patreon prefix."""
+    """For each file: percent-decode, repair mojibake if needed, then strip the Patreon prefix."""
     for index, file in enumerate(fileList):
         original_basename = os.path.basename(file)
         working_name = original_basename
 
-        # Step 1: repair garbled encoding if C1 control chars are present.
+        # Step 1: percent-decode %xx sequences if present.
+        percent_decoded = _try_percent_decode(working_name)
+        if percent_decoded is not None:
+            print(f"  percent-decoded: {working_name!r}")
+            print(f"               → {percent_decoded!r}")
+            working_name = percent_decoded
+
+        # Step 2: repair garbled encoding if C1 control chars are present.
         repaired = None
         if _has_mojibake(working_name):
             repaired = _try_fix_mojibake(working_name)
@@ -145,15 +165,15 @@ def processAndRename(fileList: list, fileRoots: list):
             else:
                 print(f"  garbled (could not repair): {original_basename!r}")
 
-        # Step 2: strip the Patreon prefix (type_id_) if present.
+        # Step 3: strip the Patreon prefix (type_id_) if present.
         m = _PREFIX_RE.match(working_name)
         if m:
             final_name = m.group(1)
             if not final_name:
                 print(f"  prefix stripped but empty result — skipping: {working_name!r}")
                 continue
-        elif repaired:
-            # The file was garbled and fixed, but has no prefix to strip —
+        elif repaired or percent_decoded is not None:
+            # The file was garbled/encoded and fixed, but has no prefix to strip —
             # still rename it to the repaired name.
             final_name = working_name
         else:
