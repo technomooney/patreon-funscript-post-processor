@@ -2373,6 +2373,20 @@ def download_faptap(driver, url: str, download_dir: str) -> bool:
     return False
 
 
+def _ytdlp_cmd() -> list[str] | None:
+    """Return the command prefix to invoke yt-dlp, or None if not available.
+
+    Prefers `sys.executable -m yt_dlp` so the venv installation is found
+    even when yt-dlp is not on PATH (e.g. the venv is not activated).
+    Falls back to the yt-dlp binary on PATH for system-wide installs.
+    """
+    import importlib.util
+    if importlib.util.find_spec('yt_dlp') is not None:
+        return [sys.executable, '-m', 'yt_dlp']
+    ytdlp = shutil.which('yt-dlp')
+    return [ytdlp] if ytdlp else None
+
+
 def download_ytdlp(_driver, url: str, download_dir: str) -> bool:
     """Generic video extractor using yt-dlp for sites without a dedicated handler.
 
@@ -2382,8 +2396,8 @@ def download_ytdlp(_driver, url: str, download_dir: str) -> bool:
 
     Install yt-dlp with:  pip install yt-dlp  or  pipx install yt-dlp
     """
-    ytdlp = shutil.which('yt-dlp')
-    if ytdlp is None:
+    ytdlp_prefix = _ytdlp_cmd()
+    if ytdlp_prefix is None:
         print('  [yt-dlp] not found — install with: pip install yt-dlp')
         return False
 
@@ -2391,7 +2405,7 @@ def download_ytdlp(_driver, url: str, download_dir: str) -> bool:
     output_tmpl = os.path.join(download_dir, '_ytdlp_temp.%(ext)s')
 
     cmd = [
-        ytdlp,
+        *ytdlp_prefix,
         '--no-playlist',
         '--no-write-subs',
         '--no-write-auto-subs',
@@ -2923,7 +2937,7 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
             try:
                 check_domain(link)
             except UnknownDomainError:
-                if shutil.which('yt-dlp'):
+                if _ytdlp_cmd() is not None:
                     print(f"  [yt-dlp] no dedicated handler for '{domain}' — will attempt generic extraction")
                 else:
                     print(f"[ERROR] unsupported domain '{domain}': {link}")
