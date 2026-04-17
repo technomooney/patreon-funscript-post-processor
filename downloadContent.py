@@ -777,6 +777,10 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
 
     Checks in order of increasing cost:
       1. HEAD request → filename match, exact byte-size match (free).
+         For size-matched files: MIME/extension check selects the path —
+         non-video files use multi-chunk sampling (1×64 KB per 5 MB for
+         50–500 MB, 1×64 KB per 10 MB for 500 MB–1 GB, max 100 chunks);
+         video files fall through to the AV pipeline.
       1b. Partial content probe via HTTP Range requests for large (> 50 MB)
           non-video files — fetches first + last 64 KB only.
       2. ffprobe on the remote URL → duration gate for video files.
@@ -832,42 +836,52 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
                     print('  [pre-check] same size but different content — proceeding with download', flush=True)
                 # If remote_hash is None (network error) fall through and proceed.
             else:
-                # Large file: sample one 64 KB chunk every 5 MB, evenly distributed
-                # from the start to the end of the file.  Fetch all remote chunks
-                # once, then compare against each size-matched candidate.
-                chunk = 64 * 1024
-                stride = 5 * 1024 * 1024
-                n_chunks = max(2, content_length // stride)
-                offsets = [
-                    round(i * (content_length - chunk) / (n_chunks - 1))
-                    for i in range(n_chunks)
-                ]
+                # Large file: use MIME/extension to pick the verification path.
+                # Video files skip straight to the AV pipeline below; non-video
+                # files are sampled with evenly-spaced 64 KB chunks.
+                is_video = _is_video_filename(head_name or url)
+                if not is_video:
+                    chunk = 64 * 1024
+                    _MB = 1024 * 1024
+                    # Determine target chunk count from file size, then derive
+                    # spacing from the full file length so chunks are always
+                    # evenly distributed end-to-end regardless of file size.
+                    if content_length <= 500 * _MB:
+                        target = content_length // (5 * _MB)   # ~1 per 5 MB
+                    else:
+                        target = content_length // (10 * _MB)  # ~1 per 10 MB
+                    n_chunks = min(100, max(2, target))
+                    # Offsets span 0 → (content_length - chunk) evenly.
+                    offsets = [
+                        round(i * (content_length - chunk) / (n_chunks - 1))
+                        for i in range(n_chunks)
+                    ]
 
-                remote_chunks: list[bytes] = []
-                range_supported = True
-                for i, off in enumerate(offsets):
-                    print(f'  [pre-check] fetching chunk {i + 1}/{n_chunks}...', end='\r', flush=True)
-                    data = _remote_range_bytes(url, headers, off, chunk)
-                    if data is None:
-                        range_supported = False
-                        break
-                    remote_chunks.append(data)
+                    remote_chunks: list[bytes] = []
+                    range_supported = True
+                    for i, off in enumerate(offsets):
+                        print(f'  [pre-check] fetching chunk {i + 1}/{n_chunks}...', end='\r', flush=True)
+                        data = _remote_range_bytes(url, headers, off, chunk)
+                        if data is None:
+                            range_supported = False
+                            break
+                        remote_chunks.append(data)
 
-                if range_supported and remote_chunks:
-                    for entry, full in size_matched:
-                        matched = True
-                        with open(full, 'rb') as f:
-                            for off, rc in zip(offsets, remote_chunks):
-                                f.seek(off)
-                                lc = f.read(len(rc))
-                                if lc != rc:
-                                    matched = False
-                                    break
-                        if matched:
-                            cname = _safe(entry)
-                            reason = f'chunk match ({n_chunks} samples): {cname}'
-                            return _decide_skip_or_replace(full, url, headers, content_length, reason)
-                # No chunk match found — fall through to duration pipeline.
+                    if range_supported and remote_chunks:
+                        for entry, full in size_matched:
+                            matched = True
+                            with open(full, 'rb') as f:
+                                for off, rc in zip(offsets, remote_chunks):
+                                    f.seek(off)
+                                    lc = f.read(len(rc))
+                                    if lc != rc:
+                                        matched = False
+                                        break
+                            if matched:
+                                cname = _safe(entry)
+                                reason = f'chunk match ({n_chunks} samples): {cname}'
+                                return _decide_skip_or_replace(full, url, headers, content_length, reason)
+                    # No chunk match found — fall through to duration pipeline.
 
     # --- 1b. Partial content probe for large non-video files (no size match) ---
     # For files > 50 MB where we couldn't match by name or size, sample the
