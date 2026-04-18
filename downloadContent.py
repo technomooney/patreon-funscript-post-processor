@@ -287,11 +287,11 @@ def _ensure_driver_alive(driver, folder: str):
     try:
         _ = driver.current_url   # lightweight probe — no navigation
         return driver
-    except WebDriverException:
+    except (WebDriverException, urllib3.exceptions.MaxRetryError, urllib3.exceptions.ReadTimeoutError):
         print('  [browser] driver not responding — restarting...')
         try:
             driver.quit()
-        except WebDriverException:
+        except (WebDriverException, urllib3.exceptions.MaxRetryError, urllib3.exceptions.ReadTimeoutError):
             pass
         new_driver = setup_driver(folder)
         set_download_dir(new_driver, folder)
