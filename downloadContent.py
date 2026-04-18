@@ -287,11 +287,11 @@ def _ensure_driver_alive(driver, folder: str):
     try:
         _ = driver.current_url   # lightweight probe — no navigation
         return driver
-    except Exception:
+    except WebDriverException:
         print('  [browser] driver not responding — restarting...')
         try:
             driver.quit()
-        except Exception:
+        except WebDriverException:
             pass
         new_driver = setup_driver(folder)
         set_download_dir(new_driver, folder)
@@ -490,7 +490,7 @@ def _video_quality(path_or_url: str, headers: dict[str, str] | None = None) -> d
             if str(br).isdigit():
                 out['bitrate'] = int(br)
         return out if out else None
-    except Exception:
+    except (subprocess.SubprocessError, OSError, ValueError):
         return None
 
 
@@ -535,7 +535,7 @@ def _remote_range_bytes(url: str, headers: dict[str, str], start: int, length: i
             if resp.status not in (206, 200):
                 return None
             return resp.read(length)
-    except Exception:
+    except (urllib.error.URLError, OSError):
         return None
 
 
@@ -605,7 +605,7 @@ def _remote_full_hash(url: str, headers: dict[str, str]) -> str | None:
                     break
                 h.update(block)
             return h.hexdigest()
-    except Exception:
+    except (urllib.error.URLError, OSError):
         return None
 
 
@@ -639,7 +639,7 @@ def _remote_audio_fingerprint(url: str, headers: dict[str, str]) -> list[int] | 
         data = json.loads(fpcalc_out.decode())
         fp = data.get('fingerprint')
         return fp if isinstance(fp, list) else None
-    except Exception:
+    except (subprocess.SubprocessError, OSError, json.JSONDecodeError):
         return None
 
 
@@ -663,7 +663,7 @@ def _remote_video_duration(url: str, headers: dict[str, str]) -> float | None:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         text = result.stdout.strip()
         return float(text) if text else None
-    except Exception:
+    except (subprocess.SubprocessError, OSError, ValueError):
         return None
 
 
@@ -689,7 +689,7 @@ def _stream_frame(url: str, headers: dict[str, str], timestamp: str) -> bytes | 
         result = subprocess.run(cmd, capture_output=True, timeout=60)
         if result.returncode == 0 and len(result.stdout) == 32 * 32:
             return result.stdout
-    except Exception:
+    except (subprocess.SubprocessError, OSError):
         pass
     return None
 
@@ -801,7 +801,7 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
         with urllib.request.urlopen(req, timeout=15) as resp:
             content_length = int(resp.headers.get('Content-Length', 0))
             head_name = _name_from_response(resp, url)
-    except Exception:
+    except (urllib.error.URLError, OSError, ValueError):
         pass  # HEAD not supported by all servers — continue to other checks
 
     size_str = f'{content_length / 1024 / 1024:.1f} MB' if content_length else 'unknown size'
@@ -1514,7 +1514,7 @@ def _iwara_browser_login(driver) -> bool:
         )
         age_btn.click()
         time.sleep(1)
-    except Exception:
+    except WebDriverException:
         pass
 
     try:
@@ -1543,7 +1543,7 @@ def _iwara_browser_login(driver) -> bool:
         try:
             login_form = pw_field.find_element(By.XPATH, './ancestor::form')
             submit = login_form.find_element(By.XPATH, './/button[@type="submit"]')
-        except Exception:
+        except WebDriverException:
             # Fallback: pick the last submit button (search is usually first)
             submits = driver.find_elements(By.XPATH, '//button[@type="submit"]')
             submit = submits[-1] if submits else driver.find_element(By.XPATH, '//button[@type="submit"]')
@@ -1555,7 +1555,7 @@ def _iwara_browser_login(driver) -> bool:
                 WebDriverWait(driver, 10).until(
                     lambda _: 'login' not in driver.current_url
                 )
-            except Exception:
+            except WebDriverException:
                 pass
 
             # If still on the login page, check for a rate-limit response.
@@ -1619,7 +1619,7 @@ def _download_iwara_browser(driver, url: str, download_dir: str) -> bool:
         )
         age_btn.click()
         time.sleep(2)
-    except Exception:
+    except WebDriverException:
         pass
 
     print(f'  [iwara.tv] page title after load: {driver.title!r}')
@@ -1794,7 +1794,7 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
 
         try:
             files: list[dict] = json.loads(raw)
-        except Exception:
+        except json.JSONDecodeError:
             print(f'  [iwara.tv] quality list response is not JSON ({content_type}): {raw[:200]!r}')
             return False
 
@@ -1934,7 +1934,7 @@ def _spankbang_login(driver) -> bool:
 
         try:
             WebDriverWait(driver, 10).until(_logged_in)
-        except Exception:
+        except WebDriverException:
             pass
 
         # Verify: a logged-in page won't show the auth modal as visible
@@ -1977,7 +1977,7 @@ def download_spankbang(driver, url: str, download_dir: str) -> bool:
             )
             driver.execute_script('arguments[0].click()', toggle)
             time.sleep(1)
-        except Exception:
+        except WebDriverException:
             pass
 
         # Collect all anchors that look like quality download links.
@@ -2294,7 +2294,7 @@ def download_e621(driver, url: str, download_dir: str) -> bool:
     try:
         try:
             video_el = driver.find_element(By.CSS_SELECTOR, '#webm-video, video')
-        except Exception:
+        except WebDriverException:
             print('  [e621.net] no video element found — post may be an image, not a video')
             return False
 
@@ -2306,7 +2306,7 @@ def download_e621(driver, url: str, download_dir: str) -> bool:
             try:
                 source_el = video_el.find_element(By.TAG_NAME, 'source')
                 video_url = source_el.get_attribute('src') or ''
-            except Exception:
+            except WebDriverException:
                 pass
 
         if not video_url:
@@ -2568,7 +2568,7 @@ def _video_duration(path: str) -> float | None:
         )
         text = result.stdout.strip()
         return float(text) if text else None
-    except Exception:
+    except (subprocess.SubprocessError, OSError, ValueError):
         return None
 
 
@@ -2626,7 +2626,7 @@ def _audio_fingerprint(path: str) -> list[int] | None:
         data = json.loads(result.stdout)
         fp = data.get('fingerprint')
         return fp if isinstance(fp, list) else None
-    except Exception:
+    except (subprocess.SubprocessError, OSError, json.JSONDecodeError):
         return None
 
 
@@ -2670,7 +2670,7 @@ def _video_frame_hash(path: str, timestamp: str) -> bytes | None:
         )
         if result.returncode == 0 and len(result.stdout) == 32 * 32:
             return result.stdout
-    except Exception:
+    except (subprocess.SubprocessError, OSError):
         pass
     return None
 
@@ -3269,7 +3269,7 @@ class ProgressTracker:
                 with open(self._path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 self._done = {k: set(v) for k, v in data.items()}
-            except Exception:
+            except (OSError, json.JSONDecodeError, ValueError):
                 self._done = {}
 
     def has_progress(self) -> bool:
@@ -3296,7 +3296,7 @@ class ProgressTracker:
         try:
             if os.path.exists(self._path):
                 os.remove(self._path)
-        except Exception:
+        except OSError:
             pass
 
 
@@ -3412,7 +3412,7 @@ def find_and_download(base_path: str):
                         # Restart the driver in windowed mode for this run only.
                         try:
                             driver.quit()
-                        except Exception:
+                        except WebDriverException:
                             pass
                         os.environ['BROWSER_HEADLESS'] = 'false'
                         print('  Restarting browser in windowed mode...')
@@ -3434,7 +3434,7 @@ def find_and_download(base_path: str):
                             print(f'  [browser] frozen during navigation ({wd_err.__class__.__name__}) — killing and restarting...')
                             try:
                                 driver.quit()
-                            except Exception:
+                            except WebDriverException:
                                 pass
                             driver = setup_driver(folder)
                             set_download_dir(driver, folder)
