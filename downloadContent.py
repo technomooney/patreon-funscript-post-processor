@@ -1876,7 +1876,7 @@ def _spankbang_normalize_url(url: str) -> str:
 
 
 def _spankbang_login(driver) -> bool:
-    """Log into spankbang.com via the browser UI. Returns True if successful."""
+    """Log into spankbang.com via the modal overlay. Returns True if successful."""
     global _spankbang_logged_in
     if _spankbang_logged_in:
         return True
@@ -1887,15 +1887,21 @@ def _spankbang_login(driver) -> bool:
         print('  [spankbang.com] no credentials — set SPANKBANG_USERNAME and SPANKBANG_PASSWORD via setup_credentials.py')
         return False
 
-    driver.get('https://spankbang.com/login/')
+    driver.get('https://spankbang.com/')
     time.sleep(2)
 
     try:
         wait = WebDriverWait(driver, 10)
 
-        user_field = wait.until(EC.presence_of_element_located(
-            (By.XPATH, '//input[@name="username" or @autocomplete="username" or @id="username"]')
+        # Open the login modal via the header login button
+        login_btn = wait.until(EC.element_to_be_clickable(
+            (By.XPATH, '//*[@data-remodal-target="auth" or @href="#auth" or '
+                       '(contains(@class,"login") and not(ancestor::form))]')
         ))
+        driver.execute_script('arguments[0].click()', login_btn)
+
+        # Wait for the modal form fields to be visible
+        user_field = wait.until(EC.visibility_of_element_located((By.ID, 'log_username')))
         user_field.click()
         time.sleep(0.2)
         user_field.clear()
@@ -1903,7 +1909,7 @@ def _spankbang_login(driver) -> bool:
             user_field.send_keys(char)
             time.sleep(0.05)
 
-        pw_field = driver.find_element(By.XPATH, '//input[@type="password"]')
+        pw_field = driver.find_element(By.ID, 'log_password')
         pw_field.click()
         time.sleep(0.2)
         for char in password:
@@ -1911,22 +1917,28 @@ def _spankbang_login(driver) -> bool:
             time.sleep(0.05)
 
         time.sleep(0.3)
-        try:
-            login_form = pw_field.find_element(By.XPATH, './ancestor::form')
-            submit = login_form.find_element(By.XPATH, './/button[@type="submit"]')
-        except Exception:
-            submits = driver.find_elements(By.XPATH, '//button[@type="submit"]')
-            submit = submits[-1] if submits else driver.find_element(By.XPATH, '//button[@type="submit"]')
-
+        login_form = driver.find_element(By.ID, 'auth_login_form')
+        submit = login_form.find_element(By.XPATH, './/button[@type="submit"]')
         driver.execute_script('arguments[0].click()', submit)
 
+        # Success: modal closes (auth-remodal loses visibility) or a profile element appears
+        def _logged_in(_driver):
+            modal = _driver.find_elements(By.ID, 'auth-remodal')
+            if modal and modal[0].value_of_css_property('visibility') == 'hidden':
+                return True
+            if _driver.find_elements(By.XPATH, '//*[contains(@class,"user-nav") or contains(@class,"profile-btn") or contains(@href,"/users/")]'):
+                return True
+            return False
+
         try:
-            WebDriverWait(driver, 10).until(lambda _: 'login' not in driver.current_url)
+            WebDriverWait(driver, 10).until(_logged_in)
         except Exception:
             pass
 
-        if 'login' in driver.current_url:
-            print(f'  [spankbang.com] login failed — still on: {driver.current_url}')
+        # Verify: a logged-in page won't show the auth modal as visible
+        modal = driver.find_elements(By.ID, 'auth-remodal')
+        if modal and modal[0].value_of_css_property('visibility') == 'visible':
+            print(f'  [spankbang.com] login failed — modal still open')
             return False
 
         print('  [spankbang.com] login successful')
