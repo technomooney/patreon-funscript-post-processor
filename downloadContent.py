@@ -60,7 +60,7 @@ def _get_secret(key: str, default: str = '') -> str:
     return os.getenv(key, default)
 
 
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------------
 # File hashing — used for duplicate detection within a session and on disk.
 # ---------------------------------------------------------------------------
 
@@ -916,7 +916,7 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
         if not _is_video_filename(entry):
             continue
         existing_dur = _video_duration(full)
-        if existing_dur is not None and abs(url_dur - existing_dur) <= 3.0:
+        if existing_dur is not None and abs(url_dur - existing_dur) <= 1.0:
             duration_candidates.append(full)
 
     if not duration_candidates:
@@ -963,15 +963,9 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
                 reason = (f'visually similar to existing: {_safe(os.path.basename(candidate))} '
                           f'({url_dur:.1f}s)')
                 return _decide_skip_or_replace(candidate, url, headers, content_length, reason)
-        print('  [pre-check] no visual match — proceeding with download', flush=True)
-        # Duration matched but no visual match — not a duplicate.
-        return None
 
-    # Small file: duration + audio (if available) is enough to flag as duplicate.
-    cand = duration_candidates[0]
-    reason = (f'duration matches existing video: {_safe(os.path.basename(cand))} '
-              f'({url_dur:.1f}s ≈ {_video_duration(cand) or 0:.1f}s)')
-    return _decide_skip_or_replace(cand, url, headers, content_length, reason)
+    print('  [pre-check] no AV match — proceeding with download', flush=True)
+    return None
 
 
 def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: dict[str, str]) -> bool:
@@ -2700,7 +2694,7 @@ def _videos_are_similar(path_a: str, path_b: str) -> bool:
 
     # 1. Duration gate
     if dur_a is not None and dur_b is not None:
-        if abs(dur_a - dur_b) > 3.0:
+        if abs(dur_a - dur_b) > 1.0:
             return False
 
     # 2. Audio fingerprint
@@ -2728,9 +2722,6 @@ def _videos_are_similar(path_a: str, path_b: str) -> bool:
         return all(s >= 0.85 for s in frame_sims)
 
     # Fallback: trust duration alone when no AV tools are available
-    if dur_a is not None and dur_b is not None:
-        return abs(dur_a - dur_b) <= 2.0
-
     return False
 
 
