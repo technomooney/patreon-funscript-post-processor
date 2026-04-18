@@ -3509,10 +3509,23 @@ def find_and_download(base_path: str):
         completed_cleanly = True
 
     except KeyboardInterrupt:
-        print('\n\nInterrupted — waiting up to 120 s for the active download to finish...')
-        print('  Press Ctrl+C again to cancel immediately and discard the partial download.')
+        print('\n\nInterrupted.')
         try:
-            downloaded = wait_for_download(current_folder, current_before_files, timeout=120)
+            current_files = set(os.listdir(current_folder)) if os.path.isdir(current_folder) else set()
+            new_files = current_files - current_before_files
+            already_complete = [f for f in new_files if not f.endswith(('.part', '.crdownload', '.tmp'))]
+            in_progress = any(f.endswith(('.part', '.crdownload', '.tmp')) for f in new_files)
+
+            if already_complete:
+                # Download finished before the interrupt landed — save it immediately.
+                downloaded: str | None = os.path.join(current_folder, already_complete[0])
+            elif in_progress:
+                print('  Download in progress — waiting up to 120 s for it to finish...')
+                print('  Press Ctrl+C again to cancel immediately and discard the partial download.')
+                downloaded = wait_for_download(current_folder, current_before_files, timeout=120)
+            else:
+                downloaded = None
+
             if downloaded:
                 orig = os.path.basename(downloaded)
                 if _is_temp_file(orig) and _last_fetch_original_name:
@@ -3520,7 +3533,8 @@ def find_and_download(base_path: str):
                 _save_downloaded(downloaded, current_folder, newly_downloaded,
                                  original_name=Path(_decode_filename(orig)).stem)
             else:
-                print('  Download did not complete in time — removing temp files.')
+                if in_progress:
+                    print('  Download did not complete in time — removing temp files.')
                 _cleanup_temp_files(current_folder)
         except KeyboardInterrupt:
             print('\n  Cancelled — removing temp files.')
