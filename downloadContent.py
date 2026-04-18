@@ -515,7 +515,7 @@ def _quality_is_replacement_candidate(remote_q: dict, local_q: dict,
             return False  # different resolution — skip regardless of size
 
     # Same (or unknown) resolution: replace only if remote is smaller
-    if remote_size > 0 and local_size > 0 and remote_size < local_size:
+    if 0 < remote_size < local_size:
         return True
 
     return False
@@ -632,7 +632,8 @@ def _remote_audio_fingerprint(url: str, headers: dict[str, str]) -> list[int] | 
                                        stderr=subprocess.DEVNULL)
         fpcalc_proc = subprocess.Popen(fpcalc_cmd, stdin=ffmpeg_proc.stdout,
                                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        ffmpeg_proc.stdout.close()
+        if ffmpeg_proc.stdout:
+            ffmpeg_proc.stdout.close()
         fpcalc_out, _ = fpcalc_proc.communicate(timeout=180)
         ffmpeg_proc.wait(timeout=30)
         data = json.loads(fpcalc_out.decode())
@@ -1924,8 +1925,8 @@ def _spankbang_login(driver) -> bool:
 
         # Success: modal closes (auth-remodal loses visibility) or a profile element appears
         def _logged_in(_driver):
-            modal = _driver.find_elements(By.ID, 'auth-remodal')
-            if modal and modal[0].value_of_css_property('visibility') == 'hidden':
+            _modal = _driver.find_elements(By.ID, 'auth-remodal')
+            if _modal and _modal[0].value_of_css_property('visibility') == 'hidden':
                 return True
             if _driver.find_elements(By.XPATH, '//*[contains(@class,"user-nav") or contains(@class,"profile-btn") or contains(@href,"/users/")]'):
                 return True
@@ -2779,8 +2780,8 @@ def _dedup_existing(base_path: str) -> int:
     hash_to_paths: dict[str, list[str]] = {}
 
     completed = 0
-    def _hash_one(path: str) -> tuple[str, str]:
-        return path, _file_hash(path)
+    def _hash_one(fpath: str) -> tuple[str, str]:
+        return fpath, _file_hash(fpath)
 
     _env_threads = os.getenv('DEDUP_THREADS', '').strip()
     max_workers = int(_env_threads) if _env_threads.isdigit() else max(1, (os.cpu_count() or 4) - 2)
@@ -2932,7 +2933,6 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
             print(f"[SKIP] No .funscript in: {_safe(root)}")
             continue
         else:
-            main_scripts = []
             funscript_basename = os.path.basename(root)
 
         desc_path = os.path.join(root, 'description.json')
@@ -3072,7 +3072,7 @@ def _write_many_funscripts_csv(base_path: str, many_funscripts: list):
     print(f"\nFolders with 3+ funscripts ({len(many_funscripts)}) written to: {csv_path}")
 
 
-_FOLDER_TITLE_RE = re.compile(r'^\[\d+\]\s+\d{4}-\d{2}-\d{2}\s+(.+)$')
+_FOLDER_TITLE_RE = re.compile(r'^\[\d+]\s+\d{4}-\d{2}-\d{2}\s+(.+)$')
 
 # Thresholds for routing failed links when a matching video is already present.
 _MATCH_CONFIDENT  = 0.50   # skip failure entirely — content is clearly there
