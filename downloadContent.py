@@ -21,6 +21,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
+import urllib3.exceptions
 
 load_dotenv()
 
@@ -3428,7 +3429,7 @@ def find_and_download(base_path: str):
                                 folder, failures, uncertain)
                             _link_failed = True
                         break
-                    except WebDriverException as wd_err:
+                    except (WebDriverException, urllib3.exceptions.ReadTimeoutError) as wd_err:
                         if _browser_attempt == 0:
                             print(f'  [browser] frozen during navigation ({wd_err.__class__.__name__}) — killing and restarting...')
                             try:
