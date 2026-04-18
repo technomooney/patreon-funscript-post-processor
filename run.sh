@@ -57,9 +57,12 @@ echo ""
 echo "  4) Generate HTML          — build a description.html visual overview"
 echo "     in each post folder"
 echo ""
+echo "  5) Sync new folders       — copy folders that are new in the Patreon"
+echo "     downloader output into the post-processor working directory"
+echo ""
 
 while true; do
-    read -rp "Choose a program to run (1-4): " choice
+    read -rp "Choose a program to run (1-5): " choice
     case "$choice" in
         1)
             echo ""
@@ -81,8 +84,13 @@ while true; do
             .venv/bin/python generate_html.py
             break
             ;;
+        5)
+            echo ""
+            .venv/bin/python sync_new_folders.py
+            break
+            ;;
         *)
-            echo "Invalid choice. Please enter 1, 2, 3 or 4."
+            echo "Invalid choice. Please enter 1, 2, 3, 4 or 5."
             ;;
     esac
 done

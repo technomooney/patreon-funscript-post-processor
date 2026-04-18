@@ -32,9 +32,12 @@ echo.
 echo   4^) Generate HTML          -- build a description.html visual overview
 echo      in each post folder
 echo.
+echo   5^) Sync new folders       -- copy folders that are new in the Patreon
+echo      downloader output into the post-processor working directory
+echo.
 
 :ask
-set /p "choice=Choose a program to run (1-4): "
+set /p "choice=Choose a program to run (1-5): "
 
 if "%choice%"=="1" (
     echo.
@@ -56,8 +59,13 @@ if "%choice%"=="4" (
     .venv\Scripts\python.exe generate_html.py
     goto done
 )
+if "%choice%"=="5" (
+    echo.
+    .venv\Scripts\python.exe sync_new_folders.py
+    goto done
+)
 
-echo Invalid choice. Please enter 1, 2, 3 or 4.
+echo Invalid choice. Please enter 1, 2, 3, 4 or 5.
 goto ask
 
 :done
