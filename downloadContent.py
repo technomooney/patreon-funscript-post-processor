@@ -3356,7 +3356,8 @@ def find_and_download(base_path: str):
             set_download_dir(driver, folder)
 
             saved_for_folder = 0
-            for link in links:
+            n_links = len(links)
+            for link_idx, link in enumerate(links, start=1):
                 _last_fetch_original_name = None   # reset before each attempt
                 _last_download_skipped = False
 
@@ -3373,7 +3374,7 @@ def find_and_download(base_path: str):
 
                 before_files: set[str] = set(os.listdir(str(folder)))
                 current_before_files = before_files
-                print(f"  [{domain}] {link}")
+                print(f"  [link {link_idx}/{n_links}] [{domain}] {link}")
                 print("  Downloading...")
 
                 # Health-check the browser before navigating; restart if dead.
