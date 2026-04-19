@@ -49,7 +49,7 @@ echo "  1) Fix file prefixes — strip the attachment ID prefix from"
 echo "     downloaded filenames (run this first)"
 echo ""
 echo "  2) Download content       — find links in description.json files"
-echo "     and download the associated videos"
+echo "     and download the associated videos and files"
 echo ""
 echo "  3) Check funscript match  — find videos missing a funscript and"
 echo "     report fuzzy-match suggestions"
@@ -60,9 +60,12 @@ echo ""
 echo "  5) Sync new folders       — copy folders that are new in the Patreon"
 echo "     downloader output into the post-processor working directory"
 echo ""
+echo "  6) Fix garbled names      — decode percent-encoded or mojibake"
+echo "     filenames; saves unfixable files to garbled_names_failed.csv"
+echo ""
 
 while true; do
-    read -rp "Choose a program to run (1-5): " choice
+    read -rp "Choose a program to run (1-6): " choice
     case "$choice" in
         1)
             echo ""
@@ -89,8 +92,13 @@ while true; do
             .venv/bin/python sync_new_folders.py
             break
             ;;
+        6)
+            echo ""
+            .venv/bin/python fix_garbled_names.py
+            break
+            ;;
         *)
-            echo "Invalid choice. Please enter 1, 2, 3, 4 or 5."
+            echo "Invalid choice. Please enter 1, 2, 3, 4, 5 or 6."
             ;;
     esac
 done
