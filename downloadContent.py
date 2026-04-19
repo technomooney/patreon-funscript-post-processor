@@ -2159,14 +2159,21 @@ def download_spankbang(driver, url: str, download_dir: str) -> bool:
         return False
 
     driver.get(url)
-    time.sleep(3)
+    time.sleep(2)
     _spankbang_dismiss_age_gate(driver)
 
     try:
-        wait = WebDriverWait(driver, 10)
+        wait = WebDriverWait(driver, 15)
 
-        # Read available resolutions from the player quality menu before opening
-        # the download modal — the menu is always in the DOM.
+        # Wait up to 10s for the player quality menu to populate.
+        # On slow-loading pages the buttons appear asynchronously.
+        for _ in range(20):
+            items = driver.find_elements(By.CSS_SELECTOR, '#quality-menu button.quality-item[id]')
+            if any((el.get_attribute('id') or '') not in ('', 'auto') for el in items):
+                break
+            time.sleep(0.5)
+
+        # Read available resolutions from the player quality menu.
         target_cls, resolution = _spankbang_pick_quality(driver)
         if not target_cls:
             print('  [spankbang.com] could not read quality menu from player')
