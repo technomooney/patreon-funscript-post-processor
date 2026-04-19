@@ -29,6 +29,7 @@ Usage
   --dry-run   show what would be renamed without making any changes
 """
 
+import csv
 import os
 import sys
 from urllib.parse import unquote
@@ -164,7 +165,12 @@ if __name__ == '__main__':
         print('No files matched.  For CJK mojibake (e.g. Iwara files), re-run')
         print('downloadContent.py — it now renames garbled duplicates automatically.')
     if failed:
-        print(f'\n{len(failed)} file(s) could not be fixed:')
+        csv_path = os.path.join(root, 'garbled_names_failed.csv')
+        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=['path', 'reason'])
+            writer.writeheader()
+            writer.writerows({'path': p, 'reason': r} for p, r in failed)
+        print(f'\n{len(failed)} file(s) could not be fixed — see {csv_path}')
         for path, reason in failed:
             print(f'  {path}')
             print(f'    reason: {reason}')
