@@ -168,14 +168,16 @@ def _is_funscript_content(path: str) -> bool:
         first = actions[0]
         if isinstance(first, dict) and 'pos' in first and 'at' in first:
             return True
-    # Multi-axis: "axes" dict where each value is an actions list
-    axes = data.get('axes')
-    if isinstance(axes, dict):
-        for axis_actions in axes.values():
-            if isinstance(axis_actions, list) and axis_actions:
-                first = axis_actions[0]
-                if isinstance(first, dict) and 'pos' in first and 'at' in first:
-                    return True
+    # Multi-axis v2: "channels" dict where each channel has its own "actions" list
+    channels = data.get('channels')
+    if isinstance(channels, dict):
+        for channel in channels.values():
+            if isinstance(channel, dict):
+                ch_actions = channel.get('actions')
+                if isinstance(ch_actions, list) and ch_actions:
+                    first = ch_actions[0]
+                    if isinstance(first, dict) and 'pos' in first and 'at' in first:
+                        return True
     return False
 
 
