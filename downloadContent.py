@@ -53,6 +53,45 @@ def _safe(s: str) -> str:
     s = _ANSI_ESCAPE_RE.sub('', s)
     return ''.join(c for c in s if not (ord(c) < 0x20 or 0x7f <= ord(c) <= 0x9f) or c in '\n\t')
 
+# ---------------------------------------------------------------------------
+# In-place status line — updates a single terminal line without scrolling.
+# A monkey-patched print() clears the status before every real log line.
+# Disabled automatically when stdout is not a TTY (e.g. log files, CI).
+# ---------------------------------------------------------------------------
+
+_STATUS_TTY: bool = sys.stdout.isatty()
+_status_active: str = ''        # current status text, '' means nothing shown
+_builtin_print = print          # save reference before we shadow it
+
+
+def _set_status(msg: str) -> None:
+    """Write *msg* as an overwriting status line (no newline, TTY only)."""
+    global _status_active
+    if not _STATUS_TTY:
+        return
+    cols = shutil.get_terminal_size(fallback=(120, 24)).columns
+    line = msg[:cols - 1].ljust(cols - 1)
+    sys.stdout.write(f'\r{line}')
+    sys.stdout.flush()
+    _status_active = msg
+
+
+def _clear_status() -> None:
+    """Erase the status line so a regular print can take its place."""
+    global _status_active
+    if not _STATUS_TTY or not _status_active:
+        return
+    cols = shutil.get_terminal_size(fallback=(120, 24)).columns
+    sys.stdout.write('\r' + ' ' * (cols - 1) + '\r')
+    sys.stdout.flush()
+    _status_active = ''
+
+
+def print(*args, **kwargs):  # noqa: A001
+    _clear_status()
+    _builtin_print(*args, **kwargs)
+
+
 _KEYRING_SERVICE = 'patreon-funscript-video-downloader'
 
 
@@ -75,9 +114,13 @@ def _get_secret(key: str, default: str = '') -> str:
 def _file_hash(path: str, block_size: int = 1 << 20) -> str:
     """Return the SHA-256 hex digest of *path*, reading in 1 MB chunks."""
     h = hashlib.sha256()
+    name = os.path.basename(path)
+    done = 0
     with open(path, 'rb') as fh:
         for chunk in iter(lambda: fh.read(block_size), b''):
             h.update(chunk)
+            done += len(chunk)
+            _set_status(f'  hashing {_safe(name)}... {done // (1 << 20)} MB')
     return h.hexdigest()
 
 
@@ -350,9 +393,23 @@ def wait_for_download(download_dir: str, before_files: set[str], timeout: int | 
     Returns the full path of the downloaded file, or None if timed out.
     """
     deadline = time.time() + timeout if timeout is not None else None
+    t0 = time.time()
     while True:
         current: set[str] = set(os.listdir(download_dir))
         new_files = current - before_files
+        # Show size of the largest in-progress partial file so we know it's moving.
+        partials = [f for f in new_files if f.endswith(('.part', '.crdownload', '.tmp'))]
+        if partials:
+            try:
+                partial_mb = max(
+                    os.path.getsize(os.path.join(download_dir, p)) for p in partials
+                ) / (1 << 20)
+                _set_status(f'  waiting for browser download... {partial_mb:.1f} MB so far'
+                            f' ({int(time.time() - t0)}s)')
+            except OSError:
+                _set_status(f'  waiting for browser download... ({int(time.time() - t0)}s)')
+        else:
+            _set_status(f'  waiting for browser download... ({int(time.time() - t0)}s)')
         complete = [
             f for f in new_files
             if not f.endswith(('.part', '.crdownload', '.tmp'))
@@ -937,12 +994,12 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
                 return _decide_skip_or_replace(match_path, url, headers, content_length, reason)
 
     # --- 2. ffprobe remote duration (video files only) ---
-    print('  [pre-check] probing remote duration...', end='\r', flush=True)
+    _set_status('  [pre-check] probing remote duration...')
     url_dur = _remote_video_duration(url, headers)
     if url_dur is None:
-        print('  [pre-check] duration unavailable — proceeding with download', flush=True)
+        print('  [pre-check] duration unavailable — proceeding with download')
         return None  # can't probe — proceed with download
-    print(f'  [pre-check] remote duration: {url_dur:.1f}s', flush=True)
+    print(f'  [pre-check] remote duration: {url_dur:.1f}s')
 
     duration_candidates: list[str] = []
     for entry in os.listdir(download_dir):
@@ -1036,9 +1093,16 @@ def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: 
         size_mb = int(response.headers.get('Content-Length', 0)) / 1024 / 1024
         if size_mb:
             print(f'  file size: {size_mb:.1f} MB')
+        done_bytes = 0
         with open(writing_path, 'wb') as f:
             while chunk := response.read(65536):
                 f.write(chunk)
+                done_bytes += len(chunk)
+                done_mb = done_bytes / (1 << 20)
+                if size_mb:
+                    _set_status(f'  downloading... {done_mb:.1f} / {size_mb:.1f} MB')
+                else:
+                    _set_status(f'  downloading... {done_mb:.1f} MB')
     final_temp = os.path.join(download_dir, f'{temp_prefix}{ext}')
     os.rename(writing_path, final_temp)
     final_temp = _fix_av_extension(final_temp)
@@ -2275,6 +2339,7 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
     before = set(os.listdir(download_dir))
     try:
         print('  [mega.nz] running mega-get...')
+        _set_status('  [mega.nz] downloading — this may take several minutes...')
         result = subprocess.run(
             [mega_get, url, download_dir],
             capture_output=True,
