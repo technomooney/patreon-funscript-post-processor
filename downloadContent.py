@@ -348,6 +348,7 @@ def wait_for_download(download_dir: str, before_files: set[str], timeout: int | 
         complete = [
             f for f in new_files
             if not f.endswith(('.part', '.crdownload', '.tmp'))
+            and os.path.isfile(os.path.join(download_dir, f))
         ]
         if complete:
             return os.path.join(download_dir, complete[0])
@@ -2196,6 +2197,27 @@ def _mega_ensure_login() -> bool:
     return True
 
 
+def _mega_flatten_folders(download_dir: str, before: set[str]) -> None:
+    """Move files from any new subdirectories created by mega-get into download_dir."""
+    after = set(os.listdir(download_dir))
+    new_dirs = [
+        e for e in (after - before)
+        if os.path.isdir(os.path.join(download_dir, e))
+    ]
+    for d in new_dirs:
+        src_dir = os.path.join(download_dir, d)
+        for root, _dirs, files in os.walk(src_dir):
+            for fname in files:
+                src = os.path.join(root, fname)
+                dst = os.path.join(download_dir, fname)
+                if not os.path.exists(dst):
+                    shutil.move(src, dst)
+                else:
+                    print(f'  [mega.nz] skipping duplicate: {_safe(fname)}')
+        shutil.rmtree(src_dir, ignore_errors=True)
+        print(f'  [mega.nz] flattened folder: {_safe(d)}')
+
+
 def download_mega(_driver, url: str, download_dir: str) -> bool:
     """Download a mega.nz file using the MEGAcmd mega-get CLI tool.
 
@@ -2212,6 +2234,7 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
     if not _mega_ensure_login():
         return False
 
+    before = set(os.listdir(download_dir))
     try:
         print('  [mega.nz] running mega-get...')
         result = subprocess.run(
@@ -2227,6 +2250,7 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
             err = _safe(result.stderr.strip()) if result.stderr else '(no output)'
             print(f'  [mega.nz] mega-get failed (exit {result.returncode}): {err}')
             return False
+        _mega_flatten_folders(download_dir, before)
         return True
 
     except subprocess.TimeoutExpired:
