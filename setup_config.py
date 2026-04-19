@@ -22,6 +22,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
 import urllib.request
 import zipfile
 
@@ -468,7 +469,7 @@ def _setup_ffmpeg() -> None:
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             release = json.loads(r.read())
-    except Exception as e:
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
         print(f'  Could not reach GitHub API: {e}')
         return
 
@@ -484,7 +485,7 @@ def _setup_ffmpeg() -> None:
     print(f'  Downloading {asset} ...')
     try:
         urllib.request.urlretrieve(asset_url, tmp_path)
-    except Exception as e:
+    except (urllib.error.URLError, OSError) as e:
         print(f'  Download failed: {e}')
         return
 
@@ -511,7 +512,7 @@ def _setup_ffmpeg() -> None:
                         with zf.open(info) as src, open(dest, 'wb') as out:
                             shutil.copyfileobj(src, out)
                         print(f'  Installed: {dest}')
-    except Exception as e:
+    except (tarfile.TarError, zipfile.BadZipFile, EOFError, OSError) as e:
         print(f'  Extraction failed: {e}')
         return
     finally:
