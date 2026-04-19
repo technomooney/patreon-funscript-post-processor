@@ -1184,7 +1184,7 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
         except TimeoutException:
             if _is_cloudflare_blocked(driver):
                 raise CloudflareBlockedError('hanime1.me blocked by Cloudflare in headless mode')
-            print(f'  [hanime1.me] timed out waiting for #downloadBtn')
+            print('  [hanime1.me] timed out waiting for #downloadBtn')
             print(f'  [hanime1.me] current URL : {driver.current_url}')
             print(f'  [hanime1.me] page title  : {driver.title!r}')
             return False
@@ -1201,7 +1201,7 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
         try:
             wait.until(EC.presence_of_element_located((By.XPATH, '//a[@data-url]')))
         except TimeoutException:
-            print(f'  [hanime1.me] timed out waiting for quality links on download page')
+            print('  [hanime1.me] timed out waiting for quality links on download page')
             print(f'  [hanime1.me] current URL : {driver.current_url}')
             print(f'  [hanime1.me] page title  : {driver.title!r}')
             return False
@@ -1330,7 +1330,7 @@ def download_rule34xxx(driver, url: str, download_dir: str) -> bool:
             return False
 
         # Strip query string for a clean extension, but keep full URL for the request.
-        print(f'  [rule34.xxx] fetching original...')
+        print('  [rule34.xxx] fetching original...')
         return _direct_fetch(video_url, download_dir, '_r34xxx_temp',
                              {'Referer': 'https://rule34.xxx/'})
 
@@ -1631,7 +1631,7 @@ def _download_iwara_browser(driver, url: str, download_dir: str) -> bool:
     # navigate again — the session cookie is usually fully set by now.
     video_path = urlparse(url).path
     if urlparse(driver.current_url).path != video_path:
-        print(f'  [iwara.tv] unexpected redirect, retrying navigation...')
+        print('  [iwara.tv] unexpected redirect, retrying navigation...')
         driver.get(url)
         time.sleep(5)
         print(f'  [iwara.tv] current URL after retry: {driver.current_url}')
@@ -1973,7 +1973,7 @@ def _spankbang_login(driver) -> bool:
         # Verify: a logged-in page won't show the auth modal as visible
         modal = driver.find_elements(By.ID, 'auth-remodal')
         if modal and modal[0].value_of_css_property('visibility') == 'visible':
-            print(f'  [spankbang.com] login failed — modal still open')
+            print('  [spankbang.com] login failed — modal still open')
             return False
 
         print('  [spankbang.com] login successful')
@@ -2069,7 +2069,7 @@ def download_yandex_disk(_driver, url: str, download_dir: str) -> bool:
             print(f'  [disk.yandex] API returned no href: {data}')
             return False
 
-        print(f'  [disk.yandex] fetching...')
+        print('  [disk.yandex] fetching...')
         return _direct_fetch(download_url, download_dir, '_yandex_temp',
                              {'Referer': 'https://disk.yandex.com/'})
 
@@ -3007,7 +3007,7 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
                     print(f"  [yt-dlp] no dedicated handler for '{domain}' — will attempt generic extraction")
                 else:
                     print(f"[ERROR] unsupported domain '{domain}': {link}")
-                    print(f"        Install yt-dlp (pip install yt-dlp) to attempt generic extraction.")
+                    print("        Install yt-dlp (pip install yt-dlp) to attempt generic extraction.")
                     failures.append({
                         'link': link,
                         'funscript_name': funscript_basename,

@@ -349,7 +349,7 @@ def _setup_benchmark() -> None:
     print('  Available drives:')
     for i, (label, _) in enumerate(drives, start=1):
         print(f'    {i}) {label}')
-    print(f'    A) Test all drives')
+    print('    A) Test all drives')
     print()
 
     while True:
@@ -461,7 +461,7 @@ def _setup_ffmpeg() -> None:
         print(f'  .venv not found at {_VENV_BIN} — run: python -m venv .venv && pip install -r requirements.txt')
         return
 
-    print(f'  Fetching latest ffmpeg release from GitHub...')
+    print('  Fetching latest ffmpeg release from GitHub...')
     req = urllib.request.Request(
         _FFMPEG_GITHUB_API,
         headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'patreon-downloader-setup'},

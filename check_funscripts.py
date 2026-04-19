@@ -203,7 +203,7 @@ def _print_results(results: list[FolderResult]):
                 pct = int(item['score'] * 100)
                 print(f'        closest funscript: {item["suggestion"]}  ({pct}% match)')
             else:
-                print(f'        (no funscripts in folder)')
+                print('        (no funscripts in folder)')
 
     print(f'\n  {total_unmatched} video(s) missing funscripts across {len(results)} folder(s).')
 
