@@ -3646,7 +3646,7 @@ def find_and_download(base_path: str):
     if skip_known:
         known_failure_links, known_failure_rows = _load_known_failures(base_path)
         if known_failure_links:
-            print(f'[skip-known] {len(known_failure_links)} previously-failed link(s) will be skipped.')
+            print(f'[skip-known-failed-url] {len(known_failure_links)} previously-failed link(s) will be skipped.')
 
     tasks, failures, many_funscripts, manual_folders = collect_tasks(base_path, require_funscript=require_funscript)
     _write_many_funscripts_csv(base_path, many_funscripts)
@@ -3743,7 +3743,7 @@ def find_and_download(base_path: str):
                     continue
 
                 if link in known_failure_links:
-                    print(f"  [skip-known] previously failed — skipping: {link}")
+                    print(f"  [skip-known-failed-url] previously failed — skipping: {link}")
                     continue
 
                 try:
