@@ -2322,6 +2322,10 @@ def _mega_flatten_folders(download_dir: str, before: set[str]) -> None:
         print(f'  [mega.nz] flattened folder: {_safe(d)}')
 
 
+_MEGA_RATE_LIMIT_EXIT = 6          # "Too many concurrent connections or transfers"
+_MEGA_RATE_LIMIT_DELAYS = (60, 120, 300)  # seconds to wait before each retry
+
+
 def download_mega(_driver, url: str, download_dir: str) -> bool:
     """Download a mega.nz file using the MEGAcmd mega-get CLI tool.
 
@@ -2329,6 +2333,7 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
     Logs in automatically using MEGA_EMAIL / MEGA_PASSWORD from the keyring
     if credentials are stored; otherwise proceeds as anonymous (public links).
     mega-get is synchronous — the file is fully written before this returns.
+    Retries up to 3 times with increasing delays on exit code 6 (rate limit).
     """
     mega_get = shutil.which('mega-get')
     if mega_get is None:
@@ -2339,31 +2344,42 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
         return False
 
     before = set(os.listdir(download_dir))
-    try:
-        print('  [mega.nz] running mega-get...')
-        _set_status('  [mega.nz] downloading — this may take several minutes...')
-        result = subprocess.run(
-            [mega_get, url, download_dir],
-            capture_output=True,
-            text=True,
-            timeout=3600,
-        )
-        if result.stdout:
-            for line in result.stdout.strip().splitlines():
-                print(f'  [mega.nz] {_safe(line)}')
-        if result.returncode != 0:
+    delays = list(_MEGA_RATE_LIMIT_DELAYS)
+    attempt = 0
+    while True:
+        try:
+            print('  [mega.nz] running mega-get...')
+            _set_status('  [mega.nz] downloading — this may take several minutes...')
+            result = subprocess.run(
+                [mega_get, url, download_dir],
+                capture_output=True,
+                text=True,
+                timeout=3600,
+            )
+            if result.stdout:
+                for line in result.stdout.strip().splitlines():
+                    print(f'  [mega.nz] {_safe(line)}')
+            if result.returncode == 0:
+                _mega_flatten_folders(download_dir, before)
+                return True
             err = _safe(result.stderr.strip()) if result.stderr else '(no output)'
+            if result.returncode == _MEGA_RATE_LIMIT_EXIT and delays:
+                wait = delays.pop(0)
+                attempt += 1
+                print(f'  [mega.nz] rate limited (exit 6) — waiting {wait}s before retry {attempt}/{len(_MEGA_RATE_LIMIT_DELAYS)}...')
+                for remaining in range(wait, 0, -1):
+                    _set_status(f'  [mega.nz] rate limited — retrying in {remaining}s...')
+                    time.sleep(1)
+                continue
             print(f'  [mega.nz] mega-get failed (exit {result.returncode}): {err}')
             return False
-        _mega_flatten_folders(download_dir, before)
-        return True
 
-    except subprocess.TimeoutExpired:
-        print('  [mega.nz] download timed out after 1 hour')
-    except Exception as e:
-        print(f'  [mega.nz] handler error: {e}')
-
-    return False
+        except subprocess.TimeoutExpired:
+            print('  [mega.nz] download timed out after 1 hour')
+            return False
+        except OSError as e:
+            print(f'  [mega.nz] handler error: {e}')
+            return False
 
 
 def _e621_dismiss_tos(driver) -> None:
