@@ -14,18 +14,17 @@ import time
 from dotenv import load_dotenv
 load_dotenv()
 
-import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
+from downloadContent import setup_driver
 
 URL = sys.argv[1] if len(sys.argv) > 1 else 'https://spankbang.com/'
 
 print(f'Opening: {URL}')
-options = uc.ChromeOptions()
-# Run windowed so you can see what happens
-driver = uc.Chrome(options=options)
+import tempfile
+driver = setup_driver(tempfile.gettempdir())
 driver.get(URL)
 time.sleep(3)
 
