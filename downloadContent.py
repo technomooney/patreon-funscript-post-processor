@@ -2080,12 +2080,18 @@ def download_spankbang(driver, url: str, download_dir: str) -> bool:
     driver.get(url)
     time.sleep(3)
 
-    # Dismiss age-gate modal (#age-check-yes) that appears on first visit.
+    # Dismiss age-gate modal (#age-check) that appears on first visit.
+    # Call the page's own accept_warning_modal() JS function; fall back to a
+    # direct element click if that throws.
     try:
-        enter_btn = WebDriverWait(driver, 4).until(
-            EC.element_to_be_clickable((By.ID, 'age-check-yes'))
+        WebDriverWait(driver, 5).until(
+            EC.visibility_of_element_located((By.ID, 'age-check'))
         )
-        driver.execute_script('arguments[0].click()', enter_btn)
+        try:
+            driver.execute_script('accept_warning_modal()')
+        except WebDriverException:
+            btn = driver.find_element(By.ID, 'age-check-yes')
+            driver.execute_script('arguments[0].click()', btn)
         time.sleep(1)
     except TimeoutException:
         pass  # modal not present
