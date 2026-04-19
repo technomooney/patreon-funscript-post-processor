@@ -566,6 +566,13 @@ def main():
     _write_env('DEDUP_EXISTING', 'true' if dedup else 'false',
                comment='Remove duplicate video files on startup. Set to false to skip (faster on large libraries).')
 
+    skip_known = _ask_bool(
+        'Skip links listed in failed_downloads.csv? (true/false)',
+        current=_read_env('SKIP_KNOWN_FAILURES').lower() not in ('', 'false', '0', 'no'),
+    )
+    _write_env('SKIP_KNOWN_FAILURES', 'true' if skip_known else 'false',
+               comment='Skip previously-failed links from failed_downloads.csv. Original CSV entries are preserved.')
+
     # -------------------------------------------------------------------------
     # Credentials  (keyring, with .env fallback)
     # -------------------------------------------------------------------------

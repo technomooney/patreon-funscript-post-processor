@@ -3608,6 +3608,28 @@ class ProgressTracker:
             pass
 
 
+def _load_known_failures(base_path: str) -> tuple[set[str], list[dict]]:
+    """Read failed_downloads.csv and return (link_set, full_rows).
+
+    link_set is used for fast membership checks during download.
+    full_rows is the original data to re-emit at the end so no info is lost.
+    Returns empty structures when the file is absent or unreadable.
+    """
+    csv_path = os.path.join(base_path, 'failed_downloads.csv')
+    if not os.path.isfile(csv_path):
+        return set(), []
+    links: set[str] = set()
+    rows: list[dict] = []
+    try:
+        with open(csv_path, newline='', encoding='utf-8') as f:
+            for row in csv.DictReader(f):
+                links.add(row['link'])
+                rows.append(row)
+    except (OSError, KeyError):
+        pass
+    return links, rows
+
+
 def find_and_download(base_path: str):
     ans = input("Download even without a funscript file? (y/n, default n): ").strip().lower()
     require_funscript = ans != 'y'
@@ -3616,6 +3638,15 @@ def find_and_download(base_path: str):
     dedup_existing = os.getenv('DEDUP_EXISTING', 'true').strip().lower() not in ('false', '0', 'no')
     if dedup_existing:
         _dedup_existing(base_path)
+
+    # Load known failures so they can be skipped (SKIP_KNOWN_FAILURES=true).
+    skip_known = os.getenv('SKIP_KNOWN_FAILURES', 'false').strip().lower() not in ('false', '0', 'no')
+    known_failure_links: set[str] = set()
+    known_failure_rows: list[dict] = []
+    if skip_known:
+        known_failure_links, known_failure_rows = _load_known_failures(base_path)
+        if known_failure_links:
+            print(f'[skip-known] {len(known_failure_links)} previously-failed link(s) will be skipped.')
 
     tasks, failures, many_funscripts, manual_folders = collect_tasks(base_path, require_funscript=require_funscript)
     _write_many_funscripts_csv(base_path, many_funscripts)
@@ -3709,6 +3740,10 @@ def find_and_download(base_path: str):
 
                 if tracker.is_done(folder, link):
                     print(f"  [resume] already done — skipping: {link}")
+                    continue
+
+                if link in known_failure_links:
+                    print(f"  [skip-known] previously failed — skipping: {link}")
                     continue
 
                 try:
@@ -3899,6 +3934,15 @@ def find_and_download(base_path: str):
         driver.quit()
         if completed_cleanly:
             tracker.clear()
+        # Re-emit skipped known failures so the CSV is never stripped of info.
+        # Exclude any that were actually downloaded successfully this session.
+        if known_failure_rows:
+            succeeded_links = {
+                link for folder_links in tracker._done.values() for link in folder_links
+            }
+            for row in known_failure_rows:
+                if row['link'] not in succeeded_links:
+                    failures.append(row)
         _write_failures_csv(base_path, failures)
         _write_uncertain_csv(base_path, uncertain)
         _write_many_funscripts_csv(base_path, many_funscripts)
