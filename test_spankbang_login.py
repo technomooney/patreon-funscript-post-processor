@@ -165,8 +165,8 @@ try:
     login_form = driver.find_element(By.ID, 'auth_login_form')
     submit = login_form.find_element(By.XPATH, './/button[@type="submit"]')
     print(f'  Submit button: text="{submit.text.strip()}"')
-    driver.execute_script('arguments[0].click()', submit)
-    time.sleep(3)
+    submit.click()
+    time.sleep(4)
     print(f'  URL after submit: {driver.current_url}')
 except (TimeoutException, WebDriverException) as e:
     print(f'  Login form interaction failed: {e}')
@@ -181,13 +181,26 @@ except (TimeoutException, WebDriverException) as e:
 print('\n--- Step 4: verify login state ---')
 modal = driver.find_elements(By.ID, 'auth-remodal')
 if modal:
-    vis = modal[0].value_of_css_property('visibility')
-    print(f'  auth-remodal visibility: {vis}')
+    vis  = modal[0].value_of_css_property('visibility')
+    disp = modal[0].value_of_css_property('display')
+    print(f'  auth-remodal  visibility={vis}  display={disp}')
+    inner = driver.execute_script("return arguments[0].innerHTML", modal[0])
+    # Print first 600 chars to catch error messages / CAPTCHA
+    print(f'  auth-remodal innerHTML[:600]:\n{inner[:600]}')
+
+# Look for error messages in the login form
+errors = driver.find_elements(By.CSS_SELECTOR, '.error, .alert, [class*="error"], [class*="alert"]')
+visible_errors = [e for e in errors if e.is_displayed() and e.text.strip()]
+for e in visible_errors[:5]:
+    print(f'  ERROR element: "{e.text.strip()[:120]}"')
+
+# Check for elements that only appear when logged in (not /users/ links which are always present)
+logged_in_els = driver.find_elements(By.CSS_SELECTOR,
+    '[data-testid="user-menu"], .user-avatar, .avatar, [href*="/users/profile"]')
+print(f'  Logged-in-specific elements: {len(logged_in_els)}')
 profile_els = driver.find_elements(By.XPATH,
     '//*[contains(@class,"user-nav") or contains(@class,"profile-btn") or contains(@href,"/users/")]')
-print(f'  Profile/user-nav elements found: {len(profile_els)}')
-for el in profile_els[:3]:
-    print(f'    tag={el.tag_name}  class="{el.get_attribute("class")}"  href="{el.get_attribute("href")}"')
+print(f'  /users/ href elements (may be guest): {len(profile_els)}')
 
 # ---------------------------------------------------------------------------
 # Step 5: Navigate to video URL
@@ -206,6 +219,20 @@ _spankbang_dismiss_age_gate(driver)
 print(f'  Current URL: {driver.current_url}')
 
 # ---------------------------------------------------------------------------
+# Step 5b: Read available resolutions from player quality menu
+# ---------------------------------------------------------------------------
+import os
+from downloadContent import _spankbang_pick_quality
+print('\n--- Step 5b: read player quality menu ---')
+items = driver.find_elements(By.CSS_SELECTOR, '#quality-menu button.quality-item[id]')
+print(f'  quality-item buttons found: {len(items)}')
+for el in items:
+    qid = (el.get_attribute('id') or '').strip()
+    print(f'    id="{qid}"  text="{el.text.strip()}"')
+target_cls, target_res = _spankbang_pick_quality(driver)
+print(f'  → chosen: {target_cls} ({target_res}p)  [MAX_RESOLUTION={os.getenv("MAX_RESOLUTION","1080")}]')
+
+# ---------------------------------------------------------------------------
 # Step 6: Find download links
 # ---------------------------------------------------------------------------
 print('\n--- Step 6: click div.dl to open download modal ---')
@@ -215,8 +242,8 @@ try:
     )
     print(f'  div.dl found  displayed={dl_btn.is_displayed()}')
     original_handles = set(driver.window_handles)
-    driver.execute_script('arguments[0].click()', dl_btn)
-    time.sleep(2)
+    dl_btn.click()   # real click, not JS — lets the site's click handler fire normally
+    time.sleep(4)
 except TimeoutException:
     print('  div.dl not found — printing all divs with short classes:')
     for el in driver.find_elements(By.TAG_NAME, 'div'):
@@ -237,6 +264,31 @@ if modal:
 else:
     print('  #download-remodal not found')
 
+# The inner section uses a CLASS, not an ID: section.download-options-modal
+for sel, label in [('.download-options-modal', 'section.download-options-modal'),
+                   ('.download-promo', 'section.download-promo'),
+                   ('#download-options-modal', '#download-options-modal'),
+                   ('#download-promo', '#download-promo')]:
+    els = driver.find_elements(By.CSS_SELECTOR, sel)
+    if els:
+        disp = driver.execute_script("return window.getComputedStyle(arguments[0]).display", els[0])
+        print(f'  {label}  display={disp}  is_displayed={els[0].is_displayed()}')
+    else:
+        print(f'  {label}  not found')
+
+# Dump the modal innerHTML so we can see exactly what's there
+if modal:
+    inner = driver.execute_script("return arguments[0].innerHTML", modal[0])
+    print(f'  #download-remodal innerHTML (first 800 chars):\n{inner[:800]}')
+
+# If the options section is hidden (SpankBang's async login check failed / promo shown),
+# force it visible via JS — the buttons are always in the DOM.
+options_section = driver.find_elements(By.CSS_SELECTOR, '.download-options-modal')
+if options_section and not options_section[0].is_displayed():
+    print('  Forcing .download-options-modal to display:block via JS')
+    driver.execute_script("arguments[0].style.display = 'block'", options_section[0])
+    time.sleep(1)
+
 quality_btns = driver.find_elements(By.CSS_SELECTOR, '[data-download-button]')
 print(f'  [data-download-button] elements: {len(quality_btns)}')
 for btn in quality_btns:
@@ -250,31 +302,65 @@ if not quality_btns:
     driver.quit()
     sys.exit(1)
 
-print('\n--- Step 8: click first quality button, observe result ---')
-best_btn = quality_btns[0]
-print(f'  Clicking: class="{best_btn.get_attribute("class")}"')
-original_handles = set(driver.window_handles)
-driver.execute_script('arguments[0].click()', best_btn)
-time.sleep(3)
+print(f'\n--- Step 8: click {target_cls} ({target_res}p) button, capture URL ---')
 
+if not target_cls:
+    print('  No target quality chosen — skipping.')
+    time.sleep(10)
+    driver.quit()
+    sys.exit(1)
+
+btn_els = [b for b in quality_btns if target_cls in (b.get_attribute('class') or '')]
+if not btn_els:
+    print(f'  {target_cls} button not found/visible in modal.')
+    time.sleep(60)
+    driver.quit()
+    sys.exit(1)
+
+# Intercept window.open
+driver.execute_script("""
+    window._sb_url = null;
+    var _orig = window.open;
+    window.open = function(u) { if (u) window._sb_url = u; return _orig.apply(this, arguments); };
+""")
+
+pre_res = set(driver.execute_script(
+    "return performance.getEntriesByType('resource').map(function(e){return e.name})"
+) or [])
+original_handles = set(driver.window_handles)
+driver.execute_script('arguments[0].click()', btn_els[0])
+time.sleep(4)
+
+captured    = driver.execute_script('return window._sb_url') or ''
 new_handles = set(driver.window_handles) - original_handles
-print(f'  New tabs opened: {len(new_handles)}')
+post_res    = set(driver.execute_script(
+    "return performance.getEntriesByType('resource').map(function(e){return e.name})"
+) or [])
+new_res = post_res - pre_res
+
+print(f'  window._sb_url:       "{captured[:120]}"')
+print(f'  new tabs:             {len(new_handles)}')
 for h in new_handles:
     driver.switch_to.window(h)
-    print(f'    new tab URL: {driver.current_url}')
+    print(f'    tab URL: {driver.current_url[:120]}')
     driver.close()
-driver.switch_to.window(list(original_handles)[0])
+if new_handles:
+    driver.switch_to.window(list(original_handles)[0])
+print(f'  new network requests: {len(new_res)}')
+for r in sorted(new_res):
+    print(f'    {r[:120]}')
+print(f'  current URL:          {driver.current_url[:100]}')
 
-print(f'  Current URL after click: {driver.current_url}')
-mp4_links = driver.find_elements(By.XPATH, '//a[contains(@href,".mp4")]')
-print(f'  .mp4 links in page: {len(mp4_links)}')
-for el in mp4_links[:5]:
-    print(f'    {(el.get_attribute("href") or "")[:80]}')
+mp4_resource = next((u for u in new_res if '.mp4' in u), '')
+if mp4_resource:
+    print(f'\n[FOUND via resource entry] {mp4_resource}')
+elif captured:
+    print(f'\n[FOUND via window.open] {captured}')
+elif new_handles:
+    print('\n[FOUND via new tab — see above]')
+else:
+    print('\nNo video URL captured — inspect browser network tab manually.')
 
-# Check if button href got populated
-href = best_btn.get_attribute('href') or ''
-print(f'  Button href after click: "{href[:80]}"')
-
-print('\nBrowser open 60s — inspect the page.')
+print('\nBrowser open 60s — inspect the page/network tab.')
 time.sleep(60)
 driver.quit()

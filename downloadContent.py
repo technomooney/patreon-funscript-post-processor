@@ -2040,12 +2040,25 @@ def _spankbang_login(driver) -> bool:
     try:
         wait = WebDriverWait(driver, 10)
 
-        # Open the login modal via the header login button
+        # Open the login modal via the header login button.
+        # Real button has class "bt_signin auth …", not "login".
         login_btn = wait.until(EC.element_to_be_clickable(
-            (By.XPATH, '//*[@data-remodal-target="auth" or @href="#auth" or '
-                       '(contains(@class,"login") and not(ancestor::form))]')
+            (By.XPATH, '//a[contains(@class,"bt_signin")] | '
+                       '//*[@data-remodal-target="auth"] | '
+                       '//*[@href="#auth"]')
         ))
         driver.execute_script('arguments[0].click()', login_btn)
+        time.sleep(1)
+
+        # The modal may open on the signup tab. If log_username isn't visible yet,
+        # look for the "Already have an account? Login" link and click it.
+        try:
+            wait.until(EC.visibility_of_element_located((By.ID, 'log_username')))
+        except TimeoutException:
+            switch = driver.find_elements(By.XPATH, '//a[contains(@onclick,"show_auth") and contains(@onclick,"login")]')
+            if switch:
+                driver.execute_script('arguments[0].click()', switch[0])
+            time.sleep(1)
 
         # Wait for the modal form fields to be visible
         user_field = wait.until(EC.visibility_of_element_located((By.ID, 'log_username')))
@@ -2082,10 +2095,11 @@ def _spankbang_login(driver) -> bool:
         except WebDriverException:
             pass
 
-        # Verify: a logged-in page won't show the auth modal as visible
-        modal = driver.find_elements(By.ID, 'auth-remodal')
-        if modal and modal[0].value_of_css_property('visibility') == 'visible':
-            print('  [spankbang.com] login failed — modal still open')
+        # Verify via profile/user elements — more reliable than modal CSS state.
+        if not driver.find_elements(By.XPATH,
+                '//*[contains(@class,"user-nav") or contains(@class,"profile-btn")'
+                ' or contains(@href,"/users/")]'):
+            print('  [spankbang.com] login failed — no user elements found')
             return False
 
         print('  [spankbang.com] login successful')
@@ -2095,6 +2109,43 @@ def _spankbang_login(driver) -> bool:
     except Exception as e:
         print(f'  [spankbang.com] login error: {e}')
         return False
+
+
+# Maps player quality-menu button id → (resolution int, modal button class)
+_SB_QUALITY_MAP = {
+    '4k':    (2160, 'b_4k'),
+    '2160p': (2160, 'b_4k'),
+    '1080p': (1080, 'b_1080p'),
+    '720p':  (720,  'b_720p'),
+    '480p':  (480,  'b_480p'),
+    '320p':  (320,  'b_320p'),
+    '240p':  (240,  'b_240p'),
+}
+
+
+def _spankbang_pick_quality(driver) -> tuple[str, int]:
+    """Read available resolutions from the player quality menu and return
+    (modal_button_class, resolution) for the best quality within MAX_RESOLUTION.
+    Returns ('', 0) if the quality menu is not found.
+    """
+    max_res = _get_max_resolution()
+    items = driver.find_elements(By.CSS_SELECTOR, '#quality-menu button.quality-item[id]')
+    available = []
+    for el in items:
+        qid = (el.get_attribute('id') or '').strip().lower()
+        if qid in _SB_QUALITY_MAP:
+            res, modal_cls = _SB_QUALITY_MAP[qid]
+            available.append((res, modal_cls))
+
+    if not available:
+        return '', 0
+
+    eligible = [(r, c) for r, c in available if r <= max_res]
+    if eligible:
+        res, cls = max(eligible, key=lambda x: x[0])
+    else:
+        res, cls = min(available, key=lambda x: x[0])
+    return cls, res
 
 
 def download_spankbang(driver, url: str, download_dir: str) -> bool:
@@ -2112,42 +2163,49 @@ def download_spankbang(driver, url: str, download_dir: str) -> bool:
     _spankbang_dismiss_age_gate(driver)
 
     try:
-        # SpankBang renders quality download links inside a .download section.
-        # Clicking the download toggle reveals anchor elements with resolution
-        # labels in their text and direct CDN .mp4 hrefs.
-        try:
-            toggle = driver.find_element(By.XPATH,
-                '//*[contains(@class,"download") and '
-                '(self::button or self::a or self::div) and '
-                'not(contains(@href,".mp4"))]'
-            )
-            driver.execute_script('arguments[0].click()', toggle)
-            time.sleep(1)
-        except WebDriverException:
-            pass
+        wait = WebDriverWait(driver, 10)
 
-        # Collect all anchors that look like quality download links.
-        links = driver.find_elements(By.XPATH,
-            '//a[contains(@href,".mp4") or '
-            '(contains(@class,"download") and @href and @href != "#")]'
-        )
+        # Read available resolutions from the player quality menu before opening
+        # the download modal — the menu is always in the DOM.
+        target_cls, resolution = _spankbang_pick_quality(driver)
+        if not target_cls:
+            print('  [spankbang.com] could not read quality menu from player')
+            return False
+        print(f'  [spankbang.com] target quality: {resolution}p ({target_cls})')
 
-        if not links:
-            print('  [spankbang.com] no download links found')
+        # Open the download modal.
+        dl_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'div.dl')))
+        dl_btn.click()
+        wait.until(EC.visibility_of_element_located((By.ID, 'download-remodal')))
+
+        # The options section is always in the DOM but may be hidden by SpankBang's
+        # async login check. Force it visible — buttons are inert until clicked anyway.
+        options_sec = driver.find_elements(By.CSS_SELECTOR, '.download-options-modal')
+        if options_sec and not options_sec[0].is_displayed():
+            driver.execute_script("arguments[0].style.display = 'block'", options_sec[0])
+            time.sleep(0.5)
+
+        btn = driver.find_elements(By.CSS_SELECTOR, f'[data-download-button].{target_cls}')
+        if not btn:
+            print(f'  [spankbang.com] {target_cls} button not found in modal')
             return False
 
-        best, resolution = _pick_best(
-            links,
-            lambda el: _parse_resolution((el.get_attribute('href') or '') + (el.text or '')),
-        )
-        video_url = best.get_attribute('href') or ''
-        if not video_url or video_url == '#':
-            print('  [spankbang.com] best link has no usable href')
-            return False
+        # Direct the browser's native download handler to our target directory,
+        # then click the button — SpankBang triggers a browser download, not a
+        # window.open or new tab.
+        set_download_dir(driver, download_dir)
+        before_files = set(os.listdir(download_dir))
+        print(f'  [spankbang.com] downloading {resolution}p...')
+        driver.execute_script('arguments[0].click()', btn[0])
 
-        print(f'  [spankbang.com] fetching {resolution}p...')
-        return _direct_fetch(video_url, download_dir, '_spankbang_temp',
-                             {'Referer': 'https://spankbang.com/'})
+        result = wait_for_download(download_dir, before_files,
+                                   timeout=300, label=f'spankbang {resolution}p')
+        if result:
+            print(f'  [spankbang.com] saved: {os.path.basename(result)}')
+            return True
+
+        print('  [spankbang.com] download timed out')
+        return False
 
     except Exception as e:
         print(f'  [spankbang.com] handler error: {e}')
