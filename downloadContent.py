@@ -454,6 +454,35 @@ def _truncate_filename(name: str, max_bytes: int = 255) -> str:
     return truncated_stem + ext
 
 
+_AUDIO_ONLY_EXTENSIONS: frozenset[str] = frozenset({'.m4a', '.aac', '.mp3', '.ogg', '.opus', '.flac', '.wav'})
+
+
+def _fix_av_extension(path: str) -> str:
+    """If *path* has an audio-only extension but actually contains a video stream, rename to .mp4.
+
+    Returns the (possibly new) path.  No-ops when ffprobe is unavailable or the extension is fine.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in _AUDIO_ONLY_EXTENSIONS:
+        return path
+    ffprobe = shutil.which('ffprobe')
+    if ffprobe is None:
+        return path
+    cmd = [ffprobe, '-v', 'error', '-select_streams', 'v:0',
+           '-show_entries', 'stream=codec_type', '-of', 'json', path]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        data = json.loads(result.stdout)
+        if data.get('streams'):
+            new_path = path[:-len(ext)] + '.mp4'
+            os.rename(path, new_path)
+            print(f'  [ext-fix] renamed {os.path.basename(path)} → {os.path.basename(new_path)} (has video stream)')
+            return new_path
+    except (subprocess.SubprocessError, OSError, ValueError):
+        pass
+    return path
+
+
 def _video_quality(path_or_url: str, headers: dict[str, str] | None = None) -> dict | None:
     """Return video quality info for a local file or remote URL via ffprobe.
 
@@ -1004,6 +1033,7 @@ def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: 
                 f.write(chunk)
     final_temp = os.path.join(download_dir, f'{temp_prefix}{ext}')
     os.rename(writing_path, final_temp)
+    final_temp = _fix_av_extension(final_temp)
 
     # Content-based duplicate check: compare the downloaded bytes against every
     # existing file with the same extension.  Catches cases where the remote

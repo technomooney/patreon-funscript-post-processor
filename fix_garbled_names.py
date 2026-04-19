@@ -99,8 +99,13 @@ def _resolve_new_name(filename: str, folder_name: str) -> tuple[str, str] | None
     return None
 
 
-def process(root_dir: str, dry_run: bool) -> int:
+def process(root_dir: str, dry_run: bool) -> tuple[int, list[tuple[str, str]]]:
+    """Return (renamed_count, failed_list).
+
+    failed_list entries are (path, reason) for renames that were attempted but failed.
+    """
     renamed = 0
+    failed: list[tuple[str, str]] = []
     for dirpath, _, filenames in os.walk(root_dir):
         if '.manual' in filenames:
             print(f'  SKIP (manual)  {dirpath}')
@@ -118,6 +123,7 @@ def process(root_dir: str, dry_run: bool) -> int:
             if os.path.exists(new_path):
                 print(f'  SKIP (target exists)  {filename}')
                 print(f'                     -> {new_name}')
+                failed.append((old_path, f'target already exists: {new_name}'))
                 continue
 
             if dry_run:
@@ -132,10 +138,11 @@ def process(root_dir: str, dry_run: bool) -> int:
                     os.rename(old_path, new_path)
                 except OSError as e:
                     print(f'  ERROR: {e}')
+                    failed.append((old_path, str(e)))
                     continue
             renamed += 1
 
-    return renamed
+    return renamed, failed
 
 
 if __name__ == '__main__':
@@ -149,10 +156,15 @@ if __name__ == '__main__':
         print('(dry run — no changes will be made)')
     print()
 
-    count = process(root, dry_run)
+    count, failed = process(root, dry_run)
     label = 'would be renamed' if dry_run else 'renamed'
     print(f'\nDone. {count} file(s) {label}.')
     if count == 0:
         print()
         print('No files matched.  For CJK mojibake (e.g. Iwara files), re-run')
         print('downloadContent.py — it now renames garbled duplicates automatically.')
+    if failed:
+        print(f'\n{len(failed)} file(s) could not be fixed:')
+        for path, reason in failed:
+            print(f'  {path}')
+            print(f'    reason: {reason}')
