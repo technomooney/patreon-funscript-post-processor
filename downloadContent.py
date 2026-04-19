@@ -2080,14 +2080,10 @@ def download_spankbang(driver, url: str, download_dir: str) -> bool:
     driver.get(url)
     time.sleep(3)
 
-    # Dismiss age-gate modal ("Enter" / "Leave") that appears on first visit.
+    # Dismiss age-gate modal (#age-check-yes) that appears on first visit.
     try:
         enter_btn = WebDriverWait(driver, 4).until(
-            EC.element_to_be_clickable((By.XPATH,
-                '//a[contains(@class,"btn_yes") or '
-                '(contains(translate(text(),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz"),"enter") '
-                'and not(contains(translate(text(),"ABCDEFGHIJKLMNOPQRSTUVWXYZ","abcdefghijklmnopqrstuvwxyz"),"leave")))]'
-            ))
+            EC.element_to_be_clickable((By.ID, 'age-check-yes'))
         )
         driver.execute_script('arguments[0].click()', enter_btn)
         time.sleep(1)
