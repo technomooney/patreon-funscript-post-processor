@@ -86,6 +86,29 @@ def _try_encoding_reversal(name: str) -> str | None:
     return None
 
 
+def _is_real_ext(ext: str) -> bool:
+    """Return True if *ext* looks like a genuine file extension (short, ASCII, no spaces)."""
+    return bool(ext) and len(ext) <= 12 and ext.isascii() and ' ' not in ext
+
+
+def _wide_encode(s: str) -> bytearray | None:
+    """
+    Encode *s* to bytes using cp1252 semantics but also accepting Latin-1 values
+    for cp1252's undefined slots (0x81, 0x8D, 0x8F, 0x90, 0x9D).
+    Returns None if any character can't be encoded this way.
+    """
+    buf = bytearray()
+    for ch in s:
+        cp = ord(ch)
+        if cp in _CP1252_TO_BYTE:
+            buf.append(_CP1252_TO_BYTE[cp])
+        elif cp < 0x100:
+            buf.append(cp)
+        else:
+            return None
+    return buf
+
+
 def _try_wide_reversal(stem: str) -> str | None:
     """
     Mojibake reversal that handles cp1252's undefined 0x80–0x9F slots by
@@ -94,20 +117,30 @@ def _try_wide_reversal(stem: str) -> str | None:
     one (e.g. 0x90=U+0090), which makes standard cp1252 encoding fail.
     Example: 'ã€\\x904k' → bytes E3 80 90 34 → '【4k'.
     """
-    buf = bytearray()
-    for ch in stem:
-        cp = ord(ch)
-        if cp in _CP1252_TO_BYTE:
-            buf.append(_CP1252_TO_BYTE[cp])
-        elif cp < 0x100:
-            buf.append(cp)
-        else:
-            return None
+    buf = _wide_encode(stem)
+    if buf is None:
+        return None
     try:
         fixed = buf.decode('utf-8')
     except UnicodeDecodeError:
         return None
     if fixed != stem and len(fixed) < len(stem):
+        return fixed
+    return None
+
+
+def _try_wide_reversal_lossy(s: str) -> str | None:
+    """
+    Like _try_wide_reversal but ignores incomplete UTF-8 sequences at the end.
+    Used for filenames truncated at a filesystem byte limit, where the last CJK
+    character's UTF-8 bytes are cut off.  Requires at least 3 chars saved to
+    confirm genuine mojibake (not just a dropped byte or two).
+    """
+    buf = _wide_encode(s)
+    if buf is None:
+        return None
+    fixed = buf.decode('utf-8', errors='ignore')
+    if fixed != s and len(s) - len(fixed) >= 3:
         return fixed
     return None
 
@@ -140,6 +173,18 @@ def _resolve_new_name(filename: str, folder_name: str) -> tuple[str, str] | None
     fixed_stem = _try_wide_reversal(stem)
     if fixed_stem is not None:
         return fixed_stem + ext, 'wide cp1252 reversal'
+
+    # Strategies 4–5 apply to the FULL filename.  Needed when splitext() treats
+    # a garbled or non-ASCII title segment (after an embedded '.') as the ext,
+    # leaving the stem clean so stem-only strategies find nothing to fix.
+    if not _is_real_ext(ext):
+        fixed_full = _try_wide_reversal(filename)
+        if fixed_full is not None:
+            return fixed_full, 'wide cp1252 reversal (full filename)'
+
+        fixed_full = _try_wide_reversal_lossy(filename)
+        if fixed_full is not None:
+            return fixed_full, 'wide cp1252 reversal (full filename, lossy)'
 
     return None
 
@@ -237,15 +282,21 @@ def find_funscript_misnames(root_dir: str, dry_run: bool) -> list[dict]:
             _, ext = os.path.splitext(filename)
             if ext.lower() in ('.funscript',):
                 continue
-            if ext.lower() not in ('.json', ''):
+            # Accept .json, no-extension, or a long/non-ASCII "extension" that
+            # is really a title segment after an embedded '.' in the filename.
+            if _is_real_ext(ext) and ext.lower() not in ('.json',):
                 continue
 
             old_path = os.path.join(dirpath, filename)
             if not _is_funscript_content(old_path):
                 continue
 
-            stem = os.path.splitext(filename)[0]
-            new_name = stem + '.funscript'
+            # If ext is not a real extension it's part of the title — append
+            # .funscript to the whole filename rather than replacing the ext.
+            if _is_real_ext(ext):
+                new_name = os.path.splitext(filename)[0] + '.funscript'
+            else:
+                new_name = filename + '.funscript'
             new_path = os.path.join(dirpath, new_name)
 
             if os.path.exists(new_path):
