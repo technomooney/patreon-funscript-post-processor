@@ -30,6 +30,7 @@ Usage
 """
 
 import csv
+import json
 import os
 import sys
 from urllib.parse import unquote
@@ -146,6 +147,90 @@ def process(root_dir: str, dry_run: bool) -> tuple[int, list[tuple[str, str]]]:
     return renamed, failed
 
 
+def _reports_dir(root: str) -> str:
+    path = os.path.join(root, '_reports')
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _is_funscript_content(path: str) -> bool:
+    """Return True if *path* contains a valid funscript JSON object."""
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError, ValueError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    # v1 basic / v2 single-axis: top-level "actions" list with pos+at entries
+    actions = data.get('actions')
+    if isinstance(actions, list) and actions:
+        first = actions[0]
+        if isinstance(first, dict) and 'pos' in first and 'at' in first:
+            return True
+    # Multi-axis: "axes" dict where each value is an actions list
+    axes = data.get('axes')
+    if isinstance(axes, dict):
+        for axis_actions in axes.values():
+            if isinstance(axis_actions, list) and axis_actions:
+                first = axis_actions[0]
+                if isinstance(first, dict) and 'pos' in first and 'at' in first:
+                    return True
+    return False
+
+
+def find_funscript_misnames(root_dir: str, dry_run: bool) -> list[dict]:
+    """
+    Scan for .json files and extension-less files that are actually funscripts.
+    Returns report rows: old_path, new_path, status.
+    """
+    report = []
+    for dirpath, _, filenames in os.walk(root_dir):
+        if '.manual' in filenames:
+            continue
+        for filename in filenames:
+            _, ext = os.path.splitext(filename)
+            if ext.lower() in ('.funscript',):
+                continue
+            if ext.lower() not in ('.json', ''):
+                continue
+
+            old_path = os.path.join(dirpath, filename)
+            if not _is_funscript_content(old_path):
+                continue
+
+            stem = os.path.splitext(filename)[0]
+            new_name = stem + '.funscript'
+            new_path = os.path.join(dirpath, new_name)
+
+            if os.path.exists(new_path):
+                print(f'  SKIP (target exists)  {filename}')
+                print(f'                     -> {new_name}')
+                report.append({'old_path': old_path, 'new_path': new_path,
+                                'status': 'skipped: target exists'})
+                continue
+
+            if dry_run:
+                print(f'  WOULD RENAME [funscript fix]')
+                print(f'    {filename}')
+                print(f'    -> {new_name}')
+                report.append({'old_path': old_path, 'new_path': new_path,
+                                'status': 'would rename'})
+            else:
+                print(f'  RENAME [funscript fix]')
+                print(f'    {old_path}')
+                print(f'    -> {new_path}')
+                try:
+                    os.rename(old_path, new_path)
+                    report.append({'old_path': old_path, 'new_path': new_path,
+                                   'status': 'renamed'})
+                except OSError as e:
+                    print(f'  ERROR: {e}')
+                    report.append({'old_path': old_path, 'new_path': new_path,
+                                   'status': f'error: {e}'})
+    return report
+
+
 if __name__ == '__main__':
     args = sys.argv[1:]
     dry_run = '--dry-run' in args
@@ -161,6 +246,7 @@ if __name__ == '__main__':
         print('(dry run — no changes will be made)')
     print()
 
+    print('--- Garbled filename fix ---')
     count, failed = process(root, dry_run)
     label = 'would be renamed' if dry_run else 'renamed'
     print(f'\nDone. {count} file(s) {label}.')
@@ -178,3 +264,17 @@ if __name__ == '__main__':
         for path, reason in failed:
             print(f'  {path}')
             print(f'    reason: {reason}')
+
+    print()
+    print('--- Misnamed funscript fix ---')
+    fs_report = find_funscript_misnames(root, dry_run)
+    fs_label = 'would be renamed' if dry_run else 'renamed'
+    fs_count = sum(1 for r in fs_report if r['status'] in ('renamed', 'would rename'))
+    print(f'\nDone. {fs_count} funscript(s) {fs_label}.')
+    if fs_report:
+        report_path = os.path.join(_reports_dir(root), 'funscript_renames.csv')
+        with open(report_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=['old_path', 'new_path', 'status'])
+            writer.writeheader()
+            writer.writerows(fs_report)
+        print(f'Report written to: {report_path}')
