@@ -1992,6 +1992,35 @@ def _spankbang_normalize_url(url: str) -> str:
     return parsed._replace(netloc=netloc).geturl()
 
 
+def _spankbang_dismiss_age_gate(driver) -> None:
+    """Dismiss the SpankBang age-gate modal if it is visible.
+
+    Calls the page's own accept_warning_modal() JS function, then waits for
+    the modal to disappear before returning.
+    """
+    try:
+        WebDriverWait(driver, 6).until(
+            EC.visibility_of_element_located((By.ID, 'age-check'))
+        )
+    except TimeoutException:
+        return  # modal did not appear
+    try:
+        driver.execute_script('accept_warning_modal()')
+    except WebDriverException:
+        try:
+            btn = driver.find_element(By.ID, 'age-check-yes')
+            driver.execute_script('arguments[0].click()', btn)
+        except WebDriverException:
+            return
+    # Wait for the modal to actually disappear before continuing.
+    try:
+        WebDriverWait(driver, 5).until(
+            EC.invisibility_of_element_located((By.ID, 'age-check'))
+        )
+    except TimeoutException:
+        pass
+
+
 def _spankbang_login(driver) -> bool:
     """Log into spankbang.com via the modal overlay. Returns True if successful."""
     global _spankbang_logged_in
@@ -2006,6 +2035,7 @@ def _spankbang_login(driver) -> bool:
 
     driver.get('https://spankbang.com/')
     time.sleep(2)
+    _spankbang_dismiss_age_gate(driver)
 
     try:
         wait = WebDriverWait(driver, 10)
@@ -2079,22 +2109,7 @@ def download_spankbang(driver, url: str, download_dir: str) -> bool:
 
     driver.get(url)
     time.sleep(3)
-
-    # Dismiss age-gate modal (#age-check) that appears on first visit.
-    # Call the page's own accept_warning_modal() JS function; fall back to a
-    # direct element click if that throws.
-    try:
-        WebDriverWait(driver, 5).until(
-            EC.visibility_of_element_located((By.ID, 'age-check'))
-        )
-        try:
-            driver.execute_script('accept_warning_modal()')
-        except WebDriverException:
-            btn = driver.find_element(By.ID, 'age-check-yes')
-            driver.execute_script('arguments[0].click()', btn)
-        time.sleep(1)
-    except TimeoutException:
-        pass  # modal not present
+    _spankbang_dismiss_age_gate(driver)
 
     try:
         # SpankBang renders quality download links inside a .download section.
