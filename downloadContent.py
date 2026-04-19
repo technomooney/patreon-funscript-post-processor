@@ -2484,8 +2484,10 @@ class _MegaWorker:
             if job is None:
                 self._queue.task_done()
                 break
-            self._process(job)
-            self._queue.task_done()
+            try:
+                self._process(job)
+            finally:
+                self._queue.task_done()
 
     def _process(self, job: dict) -> None:
         # Wait with periodic log lines so the window shows progress.
@@ -2544,7 +2546,7 @@ class _MegaWorker:
         self._log(f'{job["basename"]}: failed (exit {result.returncode}): {err}')
         self._results.put({'success': False, 'link': job['link'],
                            'download_dir': job['download_dir'], 'basename': job['basename'],
-                           'before': before})
+                           'before': before, 'exit_code': result.returncode})
 
     def drain_results(self) -> list[dict]:
         results = []
@@ -2604,7 +2606,12 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
             print(f'  [mega.nz] {_safe(line)}')
 
     if result.returncode == 0:
+        global _last_download_skipped
         _mega_flatten_folders(download_dir, before)
+        after = set(os.listdir(download_dir))
+        new_files = [f for f in (after - before) if os.path.isfile(os.path.join(download_dir, f))]
+        if not new_files:
+            _last_download_skipped = True
         return True
 
     err = _safe(result.stderr.strip()) if result.stderr else '(no output)'
@@ -3404,11 +3411,18 @@ def _write_playlist(base_path: str, newly_downloaded: list[str] | None = None):
             print(f'New-downloads playlist ({len(new_sorted)} videos): {new_path}')
 
 
+def _reports_dir(base_path: str) -> str:
+    """Return (and create) the _reports subfolder inside base_path."""
+    d = os.path.join(base_path, '_reports')
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 def _write_failures_csv(base_path: str, failures: list):
-    """Write failed download entries to failed_downloads.csv in *base_path*."""
+    """Write failed download entries to _reports/failed_downloads.csv."""
     if not failures:
         return
-    csv_path = os.path.join(base_path, 'failed_downloads.csv')
+    csv_path = os.path.join(_reports_dir(base_path), 'failed_downloads.csv')
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=['link', 'funscript_name', 'save_directory', 'domain'])
         writer.writeheader()
@@ -3416,11 +3430,23 @@ def _write_failures_csv(base_path: str, failures: list):
     print(f"\nFailed downloads ({len(failures)}) written to: {csv_path}")
 
 
+def _write_mega_error6_csv(base_path: str, mega_error6: list):
+    """Write mega.nz links that failed with exit 6 to _reports/mega_error6.csv."""
+    if not mega_error6:
+        return
+    csv_path = os.path.join(_reports_dir(base_path), 'mega_error6.csv')
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=['link', 'funscript_name', 'save_directory'])
+        writer.writeheader()
+        writer.writerows(mega_error6)
+    print(f"\nMEGA error-6 links ({len(mega_error6)}) written to: {csv_path}")
+
+
 def _write_manual_folders(base_path: str, manual_folders: list):
-    """Print and write the list of .manual folders to manual_folders.txt."""
+    """Print and write the list of .manual folders to _reports/manual_folders.txt."""
     if not manual_folders:
         return
-    txt_path = os.path.join(base_path, 'manual_folders.txt')
+    txt_path = os.path.join(_reports_dir(base_path), 'manual_folders.txt')
     with open(txt_path, 'w', encoding='utf-8') as f:
         for path in manual_folders:
             f.write(path + '\n')
@@ -3431,10 +3457,10 @@ def _write_manual_folders(base_path: str, manual_folders: list):
 
 
 def _write_many_funscripts_csv(base_path: str, many_funscripts: list):
-    """Write folders with 3+ main funscripts to many_funscripts.csv in *base_path*."""
+    """Write folders with 3+ main funscripts to _reports/many_funscripts.csv."""
     if not many_funscripts:
         return
-    csv_path = os.path.join(base_path, 'many_funscripts.csv')
+    csv_path = os.path.join(_reports_dir(base_path), 'many_funscripts.csv')
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=['folder', 'count', 'funscripts'])
         writer.writeheader()
@@ -3519,10 +3545,10 @@ def _triage_failure(entry: dict, folder: str,
 
 
 def _write_uncertain_csv(base_path: str, uncertain: list):
-    """Write uncertain download entries to uncertain_downloads.csv in *base_path*."""
+    """Write uncertain download entries to _reports/uncertain_downloads.csv."""
     if not uncertain:
         return
-    csv_path = os.path.join(base_path, 'uncertain_downloads.csv')
+    csv_path = os.path.join(_reports_dir(base_path), 'uncertain_downloads.csv')
     fieldnames = ['link', 'funscript_name', 'save_directory', 'domain',
                   'matched_video', 'match_score']
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
@@ -3751,6 +3777,7 @@ def find_and_download(base_path: str):
 
     newly_downloaded: list[str] = []
     uncertain: list[dict] = []
+    mega_error6: list[dict] = []
     total = len(tasks)
     global _last_fetch_original_name, _last_download_skipped
     completed_cleanly = False
@@ -3777,6 +3804,9 @@ def find_and_download(base_path: str):
                 print(f'  [mega.nz] background download failed: {_safe(res["basename"])}')
                 failures.append({'link': res['link'], 'funscript_name': res['basename'],
                                  'save_directory': res['download_dir'], 'domain': 'mega.nz'})
+                if res.get('exit_code') == _MEGA_RATE_LIMIT_EXIT:
+                    mega_error6.append({'link': res['link'], 'funscript_name': res['basename'],
+                                        'save_directory': res['download_dir']})
 
     try:
         for task_idx, task in enumerate(tasks, start=1):
@@ -4006,6 +4036,7 @@ def find_and_download(base_path: str):
                 if row['link'] not in succeeded_links:
                     failures.append(row)
         _write_failures_csv(base_path, failures)
+        _write_mega_error6_csv(base_path, mega_error6)
         _write_uncertain_csv(base_path, uncertain)
         _write_many_funscripts_csv(base_path, many_funscripts)
         _write_playlist(base_path, newly_downloaded)
