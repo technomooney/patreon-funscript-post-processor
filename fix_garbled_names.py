@@ -38,6 +38,18 @@ from urllib.parse import unquote
 # Suffixes that indicate a filename was truncated at a URL / filesystem limit.
 _TRUNCATION_SUFFIXES = ('....', '...', '\u2026')
 
+# cp1252 maps 0x80–0x9F to specific Unicode points; the rest of that byte range
+# passes through as Latin-1.  This inverse table lets us encode those special
+# Unicode code points back to their cp1252 byte values.
+_CP1252_TO_BYTE: dict[int, int] = {
+    0x20AC: 0x80, 0x201A: 0x82, 0x0192: 0x83, 0x201E: 0x84, 0x2026: 0x85,
+    0x2020: 0x86, 0x2021: 0x87, 0x02C6: 0x88, 0x2030: 0x89, 0x0160: 0x8A,
+    0x2039: 0x8B, 0x0152: 0x8C, 0x017D: 0x8E, 0x2018: 0x91, 0x2019: 0x92,
+    0x201C: 0x93, 0x201D: 0x94, 0x2022: 0x95, 0x2013: 0x96, 0x2014: 0x97,
+    0x02DC: 0x98, 0x2122: 0x99, 0x0161: 0x9A, 0x203A: 0x9B, 0x0153: 0x9C,
+    0x017E: 0x9E, 0x0178: 0x9F,
+}
+
 
 def _try_percent_decode(filename: str) -> str | None:
     """
@@ -74,6 +86,32 @@ def _try_encoding_reversal(name: str) -> str | None:
     return None
 
 
+def _try_wide_reversal(stem: str) -> str | None:
+    """
+    Mojibake reversal that handles cp1252's undefined 0x80–0x9F slots by
+    treating them as their raw Latin-1 byte values.  Needed when a CJK UTF-8
+    byte sequence spans a defined cp1252 slot (e.g. 0x80=€) AND an undefined
+    one (e.g. 0x90=U+0090), which makes standard cp1252 encoding fail.
+    Example: 'ã€\\x904k' → bytes E3 80 90 34 → '【4k'.
+    """
+    buf = bytearray()
+    for ch in stem:
+        cp = ord(ch)
+        if cp in _CP1252_TO_BYTE:
+            buf.append(_CP1252_TO_BYTE[cp])
+        elif cp < 0x100:
+            buf.append(cp)
+        else:
+            return None
+    try:
+        fixed = buf.decode('utf-8')
+    except UnicodeDecodeError:
+        return None
+    if fixed != stem and len(fixed) < len(stem):
+        return fixed
+    return None
+
+
 def _resolve_new_name(filename: str, folder_name: str) -> tuple[str, str] | None:
     """
     Try all fix strategies for *filename*.
@@ -97,6 +135,11 @@ def _resolve_new_name(filename: str, folder_name: str) -> tuple[str, str] | None
     fixed_stem = _try_encoding_reversal(stem)
     if fixed_stem is not None:
         return fixed_stem + ext, 'mojibake reversal'
+
+    # --- Strategy 3: wide cp1252 reversal (handles undefined 0x80–0x9F slots) ---
+    fixed_stem = _try_wide_reversal(stem)
+    if fixed_stem is not None:
+        return fixed_stem + ext, 'wide cp1252 reversal'
 
     return None
 
