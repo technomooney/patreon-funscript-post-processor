@@ -194,6 +194,7 @@ SKIP_DOMAINS = {
     'discuss.eroscripts.com',
     'carrd.co',
     'discord.gg',    # invite/server links — not downloadable (CDN links are fine)
+    'discordapp.net',  # not an official Discord domain
 }
 
 
