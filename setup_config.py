@@ -13,11 +13,17 @@ Press Enter at any prompt to keep the value shown in brackets.
 import concurrent.futures
 import getpass
 import hashlib
+import json
 import os
+import platform
+import shutil
 import string
 import sys
+import tarfile
 import tempfile
 import time
+import urllib.request
+import zipfile
 
 SERVICE   = 'patreon-funscript-video-downloader'
 _ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
@@ -403,6 +409,121 @@ def _setup_benchmark() -> None:
 
 
 # ---------------------------------------------------------------------------
+# ffmpeg portable binary setup
+# ---------------------------------------------------------------------------
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_VENV_BIN = os.path.join(_SCRIPT_DIR, '.venv', 'Scripts' if sys.platform == 'win32' else 'bin')
+_FFMPEG_GITHUB_API = 'https://api.github.com/repos/BtbN/ffmpeg-builds/releases/latest'
+
+# BtbN asset name per platform/arch (GPL static builds, no external deps).
+def _ffmpeg_asset_name() -> str | None:
+    machine = platform.machine().lower()
+    if sys.platform == 'linux':
+        return ('ffmpeg-master-latest-linuxarm64-gpl.tar.xz'
+                if ('aarch64' in machine or 'arm64' in machine)
+                else 'ffmpeg-master-latest-linux64-gpl.tar.xz')
+    if sys.platform == 'win32':
+        return 'ffmpeg-master-latest-win64-gpl.zip'
+    return None  # macOS: no BtbN builds; use brew
+
+
+def _ffmpeg_in_venv() -> bool:
+    suffix = '.exe' if sys.platform == 'win32' else ''
+    return (os.path.isfile(os.path.join(_VENV_BIN, f'ffprobe{suffix}')) and
+            os.path.isfile(os.path.join(_VENV_BIN, f'ffmpeg{suffix}')))
+
+
+def _setup_ffmpeg() -> None:
+    """Download portable ffmpeg/ffprobe binaries into .venv/bin (or Scripts on Windows)."""
+    suffix = '.exe' if sys.platform == 'win32' else ''
+    binaries = [f'ffmpeg{suffix}', f'ffprobe{suffix}']
+
+    system_has = shutil.which('ffprobe') is not None
+    venv_has = _ffmpeg_in_venv()
+
+    if system_has and not venv_has:
+        print(f'  ffprobe found on system PATH ({shutil.which("ffprobe")}) — no local copy needed.')
+        return
+
+    if venv_has:
+        redo = _ask_bool('ffmpeg/ffprobe already installed in .venv. Re-download?', current=False)
+        if not redo:
+            return
+
+    asset = _ffmpeg_asset_name()
+    if asset is None:
+        print('  macOS detected — install ffmpeg via Homebrew:  brew install ffmpeg')
+        return
+
+    if not os.path.isdir(_VENV_BIN):
+        print(f'  .venv not found at {_VENV_BIN} — run: python -m venv .venv && pip install -r requirements.txt')
+        return
+
+    print(f'  Fetching latest ffmpeg release from GitHub...')
+    req = urllib.request.Request(
+        _FFMPEG_GITHUB_API,
+        headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'patreon-downloader-setup'},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            release = json.loads(r.read())
+    except Exception as e:
+        print(f'  Could not reach GitHub API: {e}')
+        return
+
+    asset_url = next(
+        (a['browser_download_url'] for a in release.get('assets', []) if a['name'] == asset),
+        None,
+    )
+    if not asset_url:
+        print(f'  Asset not found in latest release: {asset}')
+        return
+
+    tmp_path = os.path.join(tempfile.gettempdir(), asset)
+    print(f'  Downloading {asset} ...')
+    try:
+        urllib.request.urlretrieve(asset_url, tmp_path)
+    except Exception as e:
+        print(f'  Download failed: {e}')
+        return
+
+    print('  Extracting binaries...')
+    try:
+        if asset.endswith('.tar.xz'):
+            with tarfile.open(tmp_path, 'r:xz') as tar:
+                for member in tar.getmembers():
+                    name = os.path.basename(member.name)
+                    if name in binaries:
+                        dest = os.path.join(_VENV_BIN, name)
+                        f = tar.extractfile(member)
+                        if f:
+                            with open(dest, 'wb') as out:
+                                shutil.copyfileobj(f, out)
+                            os.chmod(dest, 0o755)
+                            print(f'  Installed: {dest}')
+        elif asset.endswith('.zip'):
+            with zipfile.ZipFile(tmp_path) as zf:
+                for info in zf.infolist():
+                    name = os.path.basename(info.filename)
+                    if name in binaries:
+                        dest = os.path.join(_VENV_BIN, name)
+                        with zf.open(info) as src, open(dest, 'wb') as out:
+                            shutil.copyfileobj(src, out)
+                        print(f'  Installed: {dest}')
+    except Exception as e:
+        print(f'  Extraction failed: {e}')
+        return
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
+    print('  ffmpeg and ffprobe installed in .venv.')
+
+
+# ---------------------------------------------------------------------------
 # Main setup
 # ---------------------------------------------------------------------------
 
@@ -489,6 +610,13 @@ def main():
             _keyring_set('SPANKBANG_PASSWORD', sb_pass)
     else:
         print('  Skipping spankbang.com.')
+
+    # -------------------------------------------------------------------------
+    # ffmpeg binaries
+    # -------------------------------------------------------------------------
+    print()
+    print('--- ffmpeg binaries ---')
+    _setup_ffmpeg()
 
     # -------------------------------------------------------------------------
     # I/O benchmark

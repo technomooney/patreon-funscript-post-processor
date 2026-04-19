@@ -25,6 +25,14 @@ import urllib3.exceptions
 
 load_dotenv()
 
+# Prepend the venv bin directory to PATH so that ffmpeg/ffprobe installed there
+# by setup_config.py are found by shutil.which even when the venv isn't activated.
+_VENV_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         '.venv',
+                         'Scripts' if sys.platform == 'win32' else 'bin')
+if os.path.isdir(_VENV_BIN) and _VENV_BIN not in os.environ.get('PATH', ''):
+    os.environ['PATH'] = _VENV_BIN + os.pathsep + os.environ.get('PATH', '')
+
 # Ensure stdout is UTF-8 on all platforms so Unicode filenames print cleanly.
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
