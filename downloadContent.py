@@ -2149,70 +2149,52 @@ def _spankbang_pick_quality(driver) -> tuple[str, int]:
 
 
 def download_spankbang(driver, url: str, download_dir: str) -> bool:
-    """Download a spankbang.com video. Regional subdomains are normalised to
-    spankbang.com automatically. Login is required and handled via keyring
-    credentials (SPANKBANG_USERNAME / SPANKBANG_PASSWORD).
+    """Download a spankbang.com video.
+
+    Reads the signed CDN URL directly from the player's video element and
+    substitutes the target resolution — no login or download modal required.
+    Regional subdomains are normalised to spankbang.com automatically.
     """
     url = _spankbang_normalize_url(url)
-
-    if not _spankbang_login(driver):
-        return False
 
     driver.get(url)
     time.sleep(2)
     _spankbang_dismiss_age_gate(driver)
 
     try:
-        wait = WebDriverWait(driver, 15)
+        # Wait for the video element to receive its signed CDN src.
+        for _ in range(20):
+            els = driver.find_elements(By.CSS_SELECTOR, 'video.vjs-tech[src*="sb-cd.com"]')
+            if els and els[0].get_attribute('src'):
+                break
+            time.sleep(0.5)
+        else:
+            print('  [spankbang.com] video src not found')
+            return False
 
-        # Wait up to 10s for the player quality menu to populate.
-        # On slow-loading pages the buttons appear asynchronously.
+        base_src = els[0].get_attribute('src')  # e.g. .../15513831-720p.mp4?secure=...
+
+        # Wait for the player quality menu to populate (also async).
         for _ in range(20):
             items = driver.find_elements(By.CSS_SELECTOR, '#quality-menu button.quality-item[id]')
             if any((el.get_attribute('id') or '') not in ('', 'auto') for el in items):
                 break
             time.sleep(0.5)
 
-        # Read available resolutions from the player quality menu.
         target_cls, resolution = _spankbang_pick_quality(driver)
         if not target_cls:
-            print('  [spankbang.com] could not read quality menu from player')
-            return False
-        print(f'  [spankbang.com] target quality: {resolution}p ({target_cls})')
+            # Quality menu empty — fall back to whatever the player loaded.
+            print('  [spankbang.com] quality menu not found, using player default')
+            video_url = base_src
+        else:
+            # The resolution suffix in the CDN URL matches the quality-menu button id
+            # (e.g. "1080p", "720p", "4k"). Strip the "b_" prefix to get it.
+            res_suffix = target_cls[2:]  # b_1080p → 1080p, b_4k → 4k
+            video_url = re.sub(r'-([\d]+p|4k)\.mp4', f'-{res_suffix}.mp4', base_src)
 
-        # Open the download modal.
-        dl_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'div.dl')))
-        dl_btn.click()
-        wait.until(EC.visibility_of_element_located((By.ID, 'download-remodal')))
-
-        # The options section is always in the DOM but may be hidden by SpankBang's
-        # async login check. Force it visible — buttons are inert until clicked anyway.
-        options_sec = driver.find_elements(By.CSS_SELECTOR, '.download-options-modal')
-        if options_sec and not options_sec[0].is_displayed():
-            driver.execute_script("arguments[0].style.display = 'block'", options_sec[0])
-            time.sleep(0.5)
-
-        btn = driver.find_elements(By.CSS_SELECTOR, f'[data-download-button].{target_cls}')
-        if not btn:
-            print(f'  [spankbang.com] {target_cls} button not found in modal')
-            return False
-
-        # Direct the browser's native download handler to our target directory,
-        # then click the button — SpankBang triggers a browser download, not a
-        # window.open or new tab.
-        set_download_dir(driver, download_dir)
-        before_files = set(os.listdir(download_dir))
-        print(f'  [spankbang.com] downloading {resolution}p...')
-        driver.execute_script('arguments[0].click()', btn[0])
-
-        result = wait_for_download(download_dir, before_files,
-                                   timeout=300, label=f'spankbang {resolution}p')
-        if result:
-            print(f'  [spankbang.com] saved: {os.path.basename(result)}')
-            return True
-
-        print('  [spankbang.com] download timed out')
-        return False
+        print(f'  [spankbang.com] fetching {resolution}p...')
+        return _direct_fetch(video_url, download_dir, '_spankbang_temp',
+                             {'Referer': 'https://spankbang.com/'})
 
     except Exception as e:
         print(f'  [spankbang.com] handler error: {e}')
