@@ -76,37 +76,37 @@ while true; do
     case "$choice" in
         1)
             echo ""
-            .venv/bin/python prefixFix.py
+            .venv/bin/python scripts/prefixFix.py
             break
             ;;
         2)
             echo ""
-            .venv/bin/python downloadContent.py
+            .venv/bin/python scripts/downloadContent.py
             break
             ;;
         3)
             echo ""
-            .venv/bin/python check_funscripts.py
+            .venv/bin/python scripts/check_funscripts.py
             break
             ;;
         4)
             echo ""
-            .venv/bin/python generate_html.py
+            .venv/bin/python scripts/generate_html.py
             break
             ;;
         5)
             echo ""
-            .venv/bin/python sync_new_folders.py
+            .venv/bin/python scripts/sync_new_folders.py
             break
             ;;
         6)
             echo ""
-            .venv/bin/python fix_garbled_names.py
+            .venv/bin/python scripts/fix_garbled_names.py
             break
             ;;
         7)
             echo ""
-            .venv/bin/python dedupe_only.py
+            .venv/bin/python scripts/dedupe_only.py
             break
             ;;
         *)

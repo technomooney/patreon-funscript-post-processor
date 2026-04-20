@@ -46,7 +46,7 @@ echo "Dependencies installed."
 
 # --- Settings and credentials ------------------------------------------------
 
-.venv/bin/python setup_config.py
+.venv/bin/python scripts/setup_config.py
 
 echo "========================================"
 echo "  Setup complete!"

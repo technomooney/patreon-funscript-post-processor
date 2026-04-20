@@ -39,7 +39,7 @@ echo Dependencies installed.
 
 :: --- Settings and credentials ------------------------------------------------
 
-.venv\Scripts\python.exe setup_config.py
+.venv\Scripts\python.exe scripts\setup_config.py
 
 echo ========================================
 echo   Setup complete!

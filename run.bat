@@ -51,37 +51,37 @@ set /p "choice=Choose a program to run (1-7): "
 
 if "%choice%"=="1" (
     echo.
-    .venv\Scripts\python.exe prefixFix.py
+    .venv\Scripts\python.exe scripts\prefixFix.py
     goto done
 )
 if "%choice%"=="2" (
     echo.
-    .venv\Scripts\python.exe downloadContent.py
+    .venv\Scripts\python.exe scripts\downloadContent.py
     goto done
 )
 if "%choice%"=="3" (
     echo.
-    .venv\Scripts\python.exe check_funscripts.py
+    .venv\Scripts\python.exe scripts\check_funscripts.py
     goto done
 )
 if "%choice%"=="4" (
     echo.
-    .venv\Scripts\python.exe generate_html.py
+    .venv\Scripts\python.exe scripts\generate_html.py
     goto done
 )
 if "%choice%"=="5" (
     echo.
-    .venv\Scripts\python.exe sync_new_folders.py
+    .venv\Scripts\python.exe scripts\sync_new_folders.py
     goto done
 )
 if "%choice%"=="6" (
     echo.
-    .venv\Scripts\python.exe fix_garbled_names.py
+    .venv\Scripts\python.exe scripts\fix_garbled_names.py
     goto done
 )
 if "%choice%"=="7" (
     echo.
-    .venv\Scripts\python.exe dedupe_only.py
+    .venv\Scripts\python.exe scripts\dedupe_only.py
     goto done
 )
 
