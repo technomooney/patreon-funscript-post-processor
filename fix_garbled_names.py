@@ -191,13 +191,9 @@ def _resolve_new_name(filename: str, folder_name: str) -> tuple[str, str] | None
     return None
 
 
-def process(root_dir: str, dry_run: bool) -> tuple[int, list[tuple[str, str]]]:
-    """Return (renamed_count, failed_list).
-
-    failed_list entries are (path, reason) for renames that were attempted but failed.
-    """
-    renamed = 0
-    failed: list[tuple[str, str]] = []
+def process(root_dir: str, dry_run: bool) -> list[dict]:
+    """Return report rows: old_path, new_path, strategy, status."""
+    report: list[dict] = []
     for dirpath, _, filenames in os.walk(root_dir):
         if '.manual' in filenames:
             print(f'  SKIP (manual)  {dirpath}')
@@ -215,26 +211,30 @@ def process(root_dir: str, dry_run: bool) -> tuple[int, list[tuple[str, str]]]:
             if os.path.exists(new_path):
                 print(f'  SKIP (target exists)  {filename}')
                 print(f'                     -> {new_name}')
-                failed.append((old_path, f'target already exists: {new_name}'))
+                report.append({'old_path': old_path, 'new_path': new_path,
+                                'strategy': strategy, 'status': 'skipped: target exists'})
                 continue
 
             if dry_run:
                 print(f'  WOULD RENAME [{strategy}]')
                 print(f'    {filename}')
                 print(f'    -> {new_name}')
+                report.append({'old_path': old_path, 'new_path': new_path,
+                                'strategy': strategy, 'status': 'would rename'})
             else:
                 print(f'  RENAME [{strategy}]')
                 print(f'    {old_path}')
                 print(f'    -> {new_path}')
                 try:
                     os.rename(old_path, new_path)
+                    report.append({'old_path': old_path, 'new_path': new_path,
+                                   'strategy': strategy, 'status': 'renamed'})
                 except OSError as e:
                     print(f'  ERROR: {e}')
-                    failed.append((old_path, str(e)))
-                    continue
-            renamed += 1
+                    report.append({'old_path': old_path, 'new_path': new_path,
+                                   'strategy': strategy, 'status': f'error: {e}'})
 
-    return renamed, failed
+    return report
 
 
 def _reports_dir(root: str) -> str:
@@ -673,23 +673,24 @@ if __name__ == '__main__':
 
     print()
     print('--- Garbled filename fix ---')
-    count, failed = process(root, dry_run)
+    garbled_report = process(root, dry_run)
     label = 'would be renamed' if dry_run else 'renamed'
+    count = sum(1 for r in garbled_report if r['status'] in ('renamed', 'would rename'))
+    failed = [r for r in garbled_report if r['status'].startswith('error') or r['status'].startswith('skipped')]
     print(f'\nDone. {count} file(s) {label}.')
     if count == 0:
         print()
         print('No files matched.  For CJK mojibake (e.g. Iwara files), re-run')
         print('downloadContent.py — it now renames garbled duplicates automatically.')
-    if failed:
-        csv_path = os.path.join(_reports_dir(root), 'garbled_names_failed.csv')
+    if garbled_report:
+        csv_path = os.path.join(_reports_dir(root), 'garbled_names.csv')
         with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=['path', 'reason'])
+            writer = csv.DictWriter(f, fieldnames=['old_path', 'new_path', 'strategy', 'status'])
             writer.writeheader()
-            writer.writerows({'path': p, 'reason': r} for p, r in failed)
-        print(f'\n{len(failed)} file(s) could not be fixed — see {csv_path}')
-        for path, reason in failed:
-            print(f'  {path}')
-            print(f'    reason: {reason}')
+            writer.writerows(garbled_report)
+        print(f'Report written to: {csv_path}')
+    if failed:
+        print(f'\n{len(failed)} file(s) skipped or errored — see report for details.')
 
     print()
     print('--- Funscript-to-video name match ---')
