@@ -139,6 +139,8 @@ _session_hashes: dict[str, str] = {}
 # Original filename captured by _direct_fetch from Content-Disposition or URL.
 # Reset before each download attempt; read by find_and_download after the handler returns.
 _last_fetch_original_name: str | None = None
+# Set by download_mega on failure so the caller can include it in the report.
+_last_mega_filename_hint: str = 'unknown'
 
 # Set True by _direct_fetch when a pre-download check determines the file already exists.
 # find_and_download reads this to distinguish "skipped duplicate" from "download failed".
@@ -2270,6 +2272,10 @@ _MEGA_WIN_FLAGS: int = (
     else 0
 )
 
+# Download timeout for mega-get in seconds. Default 30 minutes; override via MEGA_TIMEOUT_MINUTES.
+_env_mega_timeout = os.getenv('MEGA_TIMEOUT_MINUTES', '').strip()
+_MEGA_TIMEOUT: int = int(_env_mega_timeout) * 60 if _env_mega_timeout.isdigit() else 1800
+
 
 def _mega_server_responding() -> bool:
     """Return True if the MEGAcmd server is responding to mega-whoami.
@@ -2539,19 +2545,21 @@ class _MegaWorker:
         try:
             result = subprocess.run(
                 [mega_get, job['link'], job['download_dir']],
-                capture_output=True, text=True, timeout=3600,
+                capture_output=True, text=True, timeout=_MEGA_TIMEOUT,
                 creationflags=_MEGA_WIN_FLAGS,
             )
         except subprocess.TimeoutExpired:
-            self._log(f'{job["basename"]}: timed out after 1 hour')
+            hint = _mega_filename_hint(job['download_dir'], before)
+            self._log(f'{job["basename"]}: timed out after {_MEGA_TIMEOUT // 60} min (file: {hint})')
             self._results.put({'success': False, 'link': job['link'],
                                'download_dir': job['download_dir'], 'basename': job['basename'],
-                               'before': before})
+                               'filename': hint, 'before': before})
             return
         except OSError as e:
             self._log(f'{job["basename"]}: OS error: {e}')
             self._results.put({'success': False, 'link': job['link'],
                                'download_dir': job['download_dir'], 'basename': job['basename'],
+                               'filename': _mega_filename_hint(job['download_dir'], before),
                                'before': before})
             return
 
@@ -2571,10 +2579,11 @@ class _MegaWorker:
             self._queue.put(job)  # re-enqueue; task_done called by _run after _process returns
             return
 
+        hint = _mega_filename_hint(job['download_dir'], before, result.stdout)
         self._log(f'{job["basename"]}: failed (exit {result.returncode}): {err}')
         self._results.put({'success': False, 'link': job['link'],
                            'download_dir': job['download_dir'], 'basename': job['basename'],
-                           'before': before, 'exit_code': result.returncode})
+                           'filename': hint, 'before': before, 'exit_code': result.returncode})
 
     def drain_results(self) -> list[dict]:
         results = []
@@ -2600,6 +2609,29 @@ class _MegaWorker:
                 pass
 
 
+def _mega_filename_hint(download_dir: str, before: set[str], stdout: str = '') -> str:
+    """Return a best-effort filename hint for a failed mega download.
+
+    Checks for partial files that appeared in download_dir since before,
+    then falls back to parsing mega-get stdout for a filename.
+    """
+    try:
+        after = set(os.listdir(download_dir))
+    except OSError:
+        after = set()
+    new_files = [f for f in after - before]
+    if new_files:
+        return ', '.join(new_files)
+    # mega-get stdout often contains lines like 'Downloading: filename.ext'
+    for line in stdout.splitlines():
+        line = line.strip()
+        if line.lower().startswith('downloading'):
+            parts = line.split(':', 1)
+            if len(parts) == 2:
+                return parts[1].strip()
+    return 'unknown'
+
+
 def download_mega(_driver, url: str, download_dir: str) -> bool:
     """Download a mega.nz file using the MEGAcmd mega-get CLI tool.
 
@@ -2614,17 +2646,20 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
     if not _mega_ensure_login():
         return False
 
+    global _last_mega_filename_hint
+    _last_mega_filename_hint = 'unknown'
     before = set(os.listdir(download_dir))
     print('  [mega.nz] running mega-get...')
-    _set_status('  [mega.nz] downloading — this may take several minutes...')
+    _set_status(f'  [mega.nz] downloading — timeout {_MEGA_TIMEOUT // 60} min...')
     try:
         result = subprocess.run(
             [mega_get, url, download_dir],
-            capture_output=True, text=True, timeout=3600,
+            capture_output=True, text=True, timeout=_MEGA_TIMEOUT,
             creationflags=_MEGA_WIN_FLAGS,
         )
     except subprocess.TimeoutExpired:
-        print('  [mega.nz] download timed out after 1 hour')
+        _last_mega_filename_hint = _mega_filename_hint(download_dir, before)
+        print(f'  [mega.nz] download timed out after {_MEGA_TIMEOUT // 60} min (file: {_last_mega_filename_hint})')
         return False
     except OSError as e:
         print(f'  [mega.nz] handler error: {e}')
@@ -2645,9 +2680,11 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
 
     err = _safe(result.stderr.strip()) if result.stderr else '(no output)'
     if result.returncode == _MEGA_RATE_LIMIT_EXIT:
+        _last_mega_filename_hint = _mega_filename_hint(download_dir, before, result.stdout)
         print('  [mega.nz] rate limited — deferring to background worker')
         raise MegaRateLimitedError(list(_MEGA_RATE_LIMIT_DELAYS))
 
+    _last_mega_filename_hint = _mega_filename_hint(download_dir, before, result.stdout)
     print(f'  [mega.nz] mega-get failed (exit {result.returncode}): {err}')
     return False
 
@@ -3469,8 +3506,11 @@ def _write_failures_csv(base_path: str, failures: list):
     if not failures:
         return
     csv_path = os.path.join(_reports_dir(base_path), 'failed_downloads.csv')
+    # Ensure all rows have a 'filename' key (older entries may not)
+    for row in failures:
+        row.setdefault('filename', 'unknown')
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=['link', 'funscript_name', 'save_directory', 'domain'])
+        writer = csv.DictWriter(f, fieldnames=['link', 'filename', 'funscript_name', 'save_directory', 'domain'])
         writer.writeheader()
         writer.writerows(failures)
     print(f"\nFailed downloads ({len(failures)}) written to: {csv_path}")
@@ -3481,8 +3521,10 @@ def _write_mega_error6_csv(base_path: str, mega_error6: list):
     if not mega_error6:
         return
     csv_path = os.path.join(_reports_dir(base_path), 'mega_error6.csv')
+    for row in mega_error6:
+        row.setdefault('filename', 'unknown')
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=['link', 'funscript_name', 'save_directory'])
+        writer = csv.DictWriter(f, fieldnames=['link', 'filename', 'funscript_name', 'save_directory'])
         writer.writeheader()
         writer.writerows(mega_error6)
     print(f"\nMEGA error-6 links ({len(mega_error6)}) written to: {csv_path}")
@@ -3847,12 +3889,14 @@ def find_and_download(base_path: str):
                 tracker.mark_done(res['download_dir'], res['link'])
                 print(f'  [mega.nz] background download finished: {_safe(res["basename"])}')
             else:
-                print(f'  [mega.nz] background download failed: {_safe(res["basename"])}')
+                hint = res.get('filename', 'unknown')
+                print(f'  [mega.nz] background download failed: {_safe(res["basename"])} (file: {_safe(hint)})')
                 failures.append({'link': res['link'], 'funscript_name': res['basename'],
+                                 'filename': hint,
                                  'save_directory': res['download_dir'], 'domain': 'mega.nz'})
                 if res.get('exit_code') == _MEGA_RATE_LIMIT_EXIT:
                     mega_error6.append({'link': res['link'], 'funscript_name': res['basename'],
-                                        'save_directory': res['download_dir']})
+                                        'filename': hint, 'save_directory': res['download_dir']})
 
     try:
         for task_idx, task in enumerate(tasks, start=1):

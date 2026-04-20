@@ -575,6 +575,18 @@ def main():
     _write_env('DEDUP_VERBOSE', 'true' if dedup_verbose else 'false',
                comment='Print one line per file during dedup. Warning: very noisy on large libraries.')
 
+    while True:
+        raw = _ask('mega.nz download timeout in minutes',
+                   current=_read_env('MEGA_TIMEOUT_MINUTES') or '30')
+        try:
+            if int(raw) > 0:
+                _write_env('MEGA_TIMEOUT_MINUTES', raw,
+                           comment='Timeout for a single mega.nz download in minutes. Large files may need more.')
+                break
+        except ValueError:
+            pass
+        print('  Please enter a positive integer.')
+
     mega_hide = _ask_bool(
         'Hide MEGAcmd console window on Windows? (true/false)\n'
         '  (No effect on Linux/macOS — set to false only if you need to debug MEGAcmd output)',
