@@ -30,8 +30,10 @@ Usage
 """
 
 import csv
+import difflib
 import json
 import os
+import re
 import sys
 from urllib.parse import unquote
 
@@ -269,6 +271,48 @@ def _is_funscript_content(path: str) -> bool:
     return False
 
 
+_VIDEO_EXTS = frozenset({'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.ts'})
+
+_RES_PAT = re.compile(r'[_\s]*(2160p?|1080p?|720p?|480p?|4k|8k)[_\s]*$', re.IGNORECASE)
+
+_FS_SUFFIX_LABEL = re.compile(
+    r'[_\s]*[\[(]?\s*(SMOOTH|max[\s_]?interval|maxinterval)\s*[\])]?\s*$',
+    re.IGNORECASE,
+)
+_FS_PREFIX_LABEL = re.compile(
+    r'^(SMOOTH|MAX[\s_]?INTERVAL)\s*[-_]?\s*',
+    re.IGNORECASE,
+)
+
+_LABEL_MAP = {
+    'smooth': ' (SMOOTH)',
+    'max interval': ' (max interval)',
+    'maxinterval': ' (max interval)',
+    'max_interval': ' (max interval)',
+}
+
+
+def _split_fs_label(stem: str) -> tuple[str, str]:
+    """Return (base_stem, canonical_label_suffix) stripping funscript variant labels."""
+    m = _FS_SUFFIX_LABEL.search(stem)
+    if m:
+        raw = m.group(1).lower().replace('_', ' ').strip()
+        return stem[:m.start()].rstrip(), _LABEL_MAP.get(raw, f' ({m.group(1)})')
+    m = _FS_PREFIX_LABEL.match(stem)
+    if m:
+        raw = m.group(1).lower().replace('_', ' ').strip()
+        return stem[m.end():].lstrip(), _LABEL_MAP.get(raw, f' ({m.group(1)})')
+    return stem, ''
+
+
+def _normalize_for_match(stem: str) -> str:
+    """Lowercase, strip resolution, remove bracket wrappers, unify separators."""
+    s = _RES_PAT.sub('', stem)
+    s = re.sub(r'[\[\(]([^\]\)]{1,40})[\]\)]', r'\1', s)
+    s = re.sub(r'[-_]+', ' ', s)
+    return re.sub(r'\s+', ' ', s).strip().lower()
+
+
 def find_funscript_misnames(root_dir: str, dry_run: bool) -> list[dict]:
     """
     Scan for .json files and extension-less files that are actually funscripts.
@@ -282,21 +326,22 @@ def find_funscript_misnames(root_dir: str, dry_run: bool) -> list[dict]:
             _, ext = os.path.splitext(filename)
             if ext.lower() in ('.funscript',):
                 continue
-            # Accept .json, no-extension, or a long/non-ASCII "extension" that
-            # is really a title segment after an embedded '.' in the filename.
-            if _is_real_ext(ext) and ext.lower() not in ('.json',):
+            # Accept .json, .funsc (truncated .funscript), trailing dot, no-extension,
+            # or a long/non-ASCII "extension" that is really a title segment.
+            if _is_real_ext(ext) and ext.lower() not in ('.json', '.funsc') and ext != '.':
                 continue
 
             old_path = os.path.join(dirpath, filename)
             if not _is_funscript_content(old_path):
                 continue
 
-            # If ext is not a real extension it's part of the title — append
-            # .funscript to the whole filename rather than replacing the ext.
-            if _is_real_ext(ext):
+            # Determine new name:
+            #   real ext (.json, .funsc) → replace ext
+            #   trailing dot or no real ext → strip trailing dots, append .funscript
+            if _is_real_ext(ext) and ext != '.':
                 new_name = os.path.splitext(filename)[0] + '.funscript'
             else:
-                new_name = filename + '.funscript'
+                new_name = filename.rstrip('.') + '.funscript'
             new_path = os.path.join(dirpath, new_name)
 
             if os.path.exists(new_path):
@@ -324,6 +369,94 @@ def find_funscript_misnames(root_dir: str, dry_run: bool) -> list[dict]:
                     print(f'  ERROR: {e}')
                     report.append({'old_path': old_path, 'new_path': new_path,
                                    'status': f'error: {e}'})
+    return report
+
+
+def find_funscript_video_mismatches(
+    root_dir: str,
+    dry_run: bool,
+    threshold: float = 0.85,
+    min_report: float = 0.40,
+) -> list[dict]:
+    """
+    Per directory: fuzzy-match .funscript files to video files by normalised name.
+    Renames funscripts scoring >= threshold against the best-matching video.
+    Funscripts below threshold but above min_report are written to the report only.
+    """
+    report: list[dict] = []
+    for dirpath, _, filenames in os.walk(root_dir):
+        if '.manual' in filenames:
+            continue
+
+        video_stems = {
+            f: os.path.splitext(f)[0]
+            for f in filenames
+            if os.path.splitext(f)[1].lower() in _VIDEO_EXTS
+        }
+        funscripts = [f for f in filenames if f.lower().endswith('.funscript')]
+
+        if not video_stems or not funscripts:
+            continue
+
+        norm_videos = {vf: _normalize_for_match(vstem) for vf, vstem in video_stems.items()}
+
+        for fs_name in funscripts:
+            fs_stem = os.path.splitext(fs_name)[0]
+            fs_base, fs_label = _split_fs_label(fs_stem)
+            norm_base = _normalize_for_match(fs_base)
+
+            best_score = 0.0
+            best_video: str | None = None
+            for vf, norm_vstem in norm_videos.items():
+                score = difflib.SequenceMatcher(None, norm_base, norm_vstem).ratio()
+                if score > best_score:
+                    best_score = score
+                    best_video = vf
+
+            if best_video is None or best_score < min_report:
+                continue
+
+            new_name = video_stems[best_video] + fs_label + '.funscript'
+            old_path = os.path.join(dirpath, fs_name)
+            new_path = os.path.join(dirpath, new_name)
+
+            if new_name == fs_name:
+                continue  # already correctly named
+
+            score_str = f'{best_score:.0%}'
+
+            if best_score >= threshold:
+                if os.path.exists(new_path):
+                    print(f'  SKIP (target exists)  {fs_name}')
+                    report.append({'funscript': old_path, 'suggested': new_path,
+                                   'video': best_video, 'score': score_str,
+                                   'status': 'skipped: target exists'})
+                    continue
+                if dry_run:
+                    print(f'  WOULD RENAME [video match {score_str}]')
+                    print(f'    {fs_name}')
+                    print(f'    -> {new_name}')
+                    report.append({'funscript': old_path, 'suggested': new_path,
+                                   'video': best_video, 'score': score_str,
+                                   'status': 'would rename'})
+                else:
+                    print(f'  RENAME [video match {score_str}]')
+                    print(f'    {old_path}')
+                    print(f'    -> {new_path}')
+                    try:
+                        os.rename(old_path, new_path)
+                        report.append({'funscript': old_path, 'suggested': new_path,
+                                       'video': best_video, 'score': score_str,
+                                       'status': 'renamed'})
+                    except OSError as e:
+                        print(f'  ERROR: {e}')
+                        report.append({'funscript': old_path, 'suggested': new_path,
+                                       'video': best_video, 'score': score_str,
+                                       'status': f'error: {e}'})
+            else:
+                report.append({'funscript': old_path, 'suggested': new_path,
+                               'video': best_video, 'score': score_str,
+                               'status': 'uncertain: review manually'})
     return report
 
 
@@ -374,3 +507,18 @@ if __name__ == '__main__':
             writer.writeheader()
             writer.writerows(fs_report)
         print(f'Report written to: {report_path}')
+
+    print()
+    print('--- Funscript-to-video name match ---')
+    vm_report = find_funscript_video_mismatches(root, dry_run)
+    vm_label = 'would be renamed' if dry_run else 'renamed'
+    vm_renamed = sum(1 for r in vm_report if r['status'] in ('renamed', 'would rename'))
+    vm_uncertain = sum(1 for r in vm_report if r['status'].startswith('uncertain'))
+    print(f'\nDone. {vm_renamed} funscript(s) {vm_label}, {vm_uncertain} uncertain (see report).')
+    if vm_report:
+        vm_csv = os.path.join(_reports_dir(root), 'funscript_video_matches.csv')
+        with open(vm_csv, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=['funscript', 'suggested', 'video', 'score', 'status'])
+            writer.writeheader()
+            writer.writerows(vm_report)
+        print(f'Report written to: {vm_csv}')
