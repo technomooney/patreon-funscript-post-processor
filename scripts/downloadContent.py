@@ -119,11 +119,15 @@ def _file_hash(path: str, block_size: int = 1 << 20) -> str:
     h = hashlib.sha256()
     name = os.path.basename(path)
     done = 0
+    last_reported = -1
     with open(path, 'rb') as fh:
         for chunk in iter(lambda: fh.read(block_size), b''):
             h.update(chunk)
             done += len(chunk)
-            _set_status(f'  hashing {_safe(name)}... {done // (1 << 20)} MB')
+            mb = done // (1 << 20)
+            if mb // 50 != last_reported // 50:
+                _set_status(f'  hashing {_safe(name)}... {mb} MB')
+                last_reported = mb
     return h.hexdigest()
 
 
