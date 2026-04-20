@@ -63,9 +63,12 @@ echo ""
 echo "  6) Fix garbled names      — decode percent-encoded or mojibake"
 echo "     filenames; saves unfixable files to garbled_names_failed.csv"
 echo ""
+echo "  7) Dedupe only            — clean leftover temp files and remove"
+echo "     exact duplicate files without running a full download"
+echo ""
 
 while true; do
-    read -rp "Choose a program to run (1-6): " choice
+    read -rp "Choose a program to run (1-7): " choice
     case "$choice" in
         1)
             echo ""
@@ -97,8 +100,13 @@ while true; do
             .venv/bin/python fix_garbled_names.py
             break
             ;;
+        7)
+            echo ""
+            .venv/bin/python dedupe_only.py
+            break
+            ;;
         *)
-            echo "Invalid choice. Please enter 1, 2, 3, 4, 5 or 6."
+            echo "Invalid choice. Please enter 1-7."
             ;;
     esac
 done
