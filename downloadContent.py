@@ -4052,27 +4052,11 @@ def find_and_download(base_path: str):
 
 
 def main():
-    base_path = input("Enter full file path to scan: ").strip()
+    base_path = input("Enter full file path to scan for downloads: ").strip()
     if not os.path.isdir(base_path):
         print(f"Directory not found: {base_path}")
         return
-
-    print()
-    print("What would you like to do?")
-    print("  1. Full download (fetch new posts + dedup)")
-    print("  2. Dedupe only (clean temp files + remove duplicates)")
-    choice = input("Choice [1/2]: ").strip()
-
-    if choice == '2':
-        dedup_existing = os.getenv('DEDUP_EXISTING', 'true').strip().lower() not in ('false', '0', 'no')
-        if dedup_existing:
-            _dedup_existing(base_path)
-        else:
-            print('\nCleaning temp files...')
-            _cleanup_temp_files_recursive(base_path)
-            print('[dedup] skipped (DEDUP_EXISTING=false)')
-    else:
-        find_and_download(base_path)
+    find_and_download(base_path)
 
 
 if __name__ == "__main__":
