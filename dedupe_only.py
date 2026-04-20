@@ -12,7 +12,7 @@ Usage
 import os
 import sys
 
-from downloadContent import _cleanup_temp_files_recursive, _dedup_existing
+from downloadContent import _dedup_existing
 
 if __name__ == '__main__':
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
@@ -26,10 +26,4 @@ if __name__ == '__main__':
         print(f'Directory not found: {base_path}')
         sys.exit(1)
 
-    dedup_existing = os.getenv('DEDUP_EXISTING', 'true').strip().lower() not in ('false', '0', 'no')
-    if dedup_existing:
-        _dedup_existing(base_path)
-    else:
-        print('Cleaning temp files...')
-        _cleanup_temp_files_recursive(base_path)
-        print('[dedup] skipped (DEDUP_EXISTING=false)')
+    _dedup_existing(base_path)
