@@ -394,6 +394,92 @@ def _find_best_match(
     return best_video, best_score, best_n_prefix, best_match_end
 
 
+_SKIP_EXTS = frozenset({
+    '.funscript', '.json', '.srt', '.ass', '.ssa', '.vtt', '.txt',
+    '.csv', '.py', '.md', '.html', '.xml', '.nfo', '.jpg', '.jpeg',
+    '.png', '.gif', '.webp', '.zip', '.rar', '.7z', '.pdf',
+})
+
+
+def _detect_video_ext(path: str) -> str | None:
+    """Read magic bytes and return the correct video extension, or None."""
+    try:
+        with open(path, 'rb') as f:
+            header = f.read(12)
+    except OSError:
+        return None
+    if len(header) < 8:
+        return None
+    # MKV / WebM — EBML magic
+    if header[:4] == b'\x1a\x45\xdf\xa3':
+        return '.mkv'
+    # AVI — RIFF....AVI
+    if header[:4] == b'RIFF' and header[8:12] == b'AVI ':
+        return '.avi'
+    # FLV
+    if header[:3] == b'FLV':
+        return '.flv'
+    # MP4 / M4V / MOV — ISO base media (ftyp/moov/mdat/free/wide/skip box at offset 4)
+    if header[4:8] in {b'ftyp', b'moov', b'mdat', b'free', b'wide', b'skip'}:
+        return '.mp4'
+    return None
+
+
+def find_media_misnames(root_dir: str, dry_run: bool) -> list[dict]:
+    """
+    Scan for files that are actually video but lack or have a wrong extension.
+    Returns report rows: old_path, new_path, status.
+    """
+    report = []
+    for dirpath, _, filenames in os.walk(root_dir):
+        if '.manual' in filenames:
+            continue
+        for filename in filenames:
+            _, ext = os.path.splitext(filename)
+            ext_lower = ext.lower()
+            if ext_lower in _VIDEO_EXTS:
+                continue
+            if ext_lower in _SKIP_EXTS:
+                continue
+
+            old_path = os.path.join(dirpath, filename)
+            detected = _detect_video_ext(old_path)
+            if detected is None:
+                continue
+
+            if _is_real_ext(ext) and ext != '.':
+                new_name = os.path.splitext(filename)[0] + detected
+            else:
+                new_name = filename.rstrip('.') + detected
+            new_path = os.path.join(dirpath, new_name)
+
+            if os.path.exists(new_path):
+                print(f'  SKIP (target exists)  {filename}')
+                report.append({'old_path': old_path, 'new_path': new_path,
+                                'status': 'skipped: target exists'})
+                continue
+
+            if dry_run:
+                print(f'  WOULD RENAME [media content fix]')
+                print(f'    {filename}')
+                print(f'    -> {new_name}')
+                report.append({'old_path': old_path, 'new_path': new_path,
+                                'status': 'would rename'})
+            else:
+                print(f'  RENAME [media content fix]')
+                print(f'    {old_path}')
+                print(f'    -> {new_path}')
+                try:
+                    os.rename(old_path, new_path)
+                    report.append({'old_path': old_path, 'new_path': new_path,
+                                   'status': 'renamed'})
+                except OSError as e:
+                    print(f'  ERROR: {e}')
+                    report.append({'old_path': old_path, 'new_path': new_path,
+                                   'status': f'error: {e}'})
+    return report
+
+
 def find_funscript_misnames(root_dir: str, dry_run: bool) -> list[dict]:
     """
     Scan for .json files and extension-less files that are actually funscripts.
@@ -558,27 +644,21 @@ if __name__ == '__main__':
         print('(dry run — no changes will be made)')
     print()
 
-    print('--- Garbled filename fix ---')
-    count, failed = process(root, dry_run)
-    label = 'would be renamed' if dry_run else 'renamed'
-    print(f'\nDone. {count} file(s) {label}.')
-    if count == 0:
-        print()
-        print('No files matched.  For CJK mojibake (e.g. Iwara files), re-run')
-        print('downloadContent.py — it now renames garbled duplicates automatically.')
-    if failed:
-        csv_path = os.path.join(root, 'garbled_names_failed.csv')
-        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=['path', 'reason'])
+    print('--- Media content fix (wrong/missing video extension) ---')
+    media_report = find_media_misnames(root, dry_run)
+    media_label = 'would be renamed' if dry_run else 'renamed'
+    media_count = sum(1 for r in media_report if r['status'] in ('renamed', 'would rename'))
+    print(f'\nDone. {media_count} file(s) {media_label}.')
+    if media_report:
+        media_csv = os.path.join(_reports_dir(root), 'media_renames.csv')
+        with open(media_csv, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=['old_path', 'new_path', 'status'])
             writer.writeheader()
-            writer.writerows({'path': p, 'reason': r} for p, r in failed)
-        print(f'\n{len(failed)} file(s) could not be fixed — see {csv_path}')
-        for path, reason in failed:
-            print(f'  {path}')
-            print(f'    reason: {reason}')
+            writer.writerows(media_report)
+        print(f'Report written to: {media_csv}')
 
     print()
-    print('--- Misnamed funscript fix ---')
+    print('--- Misnamed funscript fix (wrong/missing .funscript extension) ---')
     fs_report = find_funscript_misnames(root, dry_run)
     fs_label = 'would be renamed' if dry_run else 'renamed'
     fs_count = sum(1 for r in fs_report if r['status'] in ('renamed', 'would rename'))
@@ -590,6 +670,26 @@ if __name__ == '__main__':
             writer.writeheader()
             writer.writerows(fs_report)
         print(f'Report written to: {report_path}')
+
+    print()
+    print('--- Garbled filename fix ---')
+    count, failed = process(root, dry_run)
+    label = 'would be renamed' if dry_run else 'renamed'
+    print(f'\nDone. {count} file(s) {label}.')
+    if count == 0:
+        print()
+        print('No files matched.  For CJK mojibake (e.g. Iwara files), re-run')
+        print('downloadContent.py — it now renames garbled duplicates automatically.')
+    if failed:
+        csv_path = os.path.join(_reports_dir(root), 'garbled_names_failed.csv')
+        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=['path', 'reason'])
+            writer.writeheader()
+            writer.writerows({'path': p, 'reason': r} for p, r in failed)
+        print(f'\n{len(failed)} file(s) could not be fixed — see {csv_path}')
+        for path, reason in failed:
+            print(f'  {path}')
+            print(f'    reason: {reason}')
 
     print()
     print('--- Funscript-to-video name match ---')
