@@ -2873,6 +2873,12 @@ def _cleanup_temp_files(folder: str):
                 print(f'  [cleanup] could not remove {f}: {e}')
 
 
+def _cleanup_temp_files_recursive(base_path: str):
+    """Recursively remove leftover temp files under *base_path*."""
+    for dirpath, _, _ in os.walk(base_path):
+        _cleanup_temp_files(dirpath)
+
+
 def _is_temp_file(filename: str) -> bool:
     """Return True if *filename* looks like an in-progress or leftover temp file."""
     if filename.endswith(('.part', '.crdownload', '.tmp')):
@@ -4043,11 +4049,27 @@ def find_and_download(base_path: str):
 
 
 def main():
-    base_path = input("Enter full file path to scan for downloads: ").strip()
+    base_path = input("Enter full file path to scan: ").strip()
     if not os.path.isdir(base_path):
         print(f"Directory not found: {base_path}")
         return
-    find_and_download(base_path)
+
+    print()
+    print("What would you like to do?")
+    print("  1. Full download (fetch new posts + dedup)")
+    print("  2. Dedupe only (clean temp files + remove duplicates)")
+    choice = input("Choice [1/2]: ").strip()
+
+    if choice == '2':
+        print(f'\nCleaning temp files under: {base_path}')
+        _cleanup_temp_files_recursive(base_path)
+        dedup_existing = os.getenv('DEDUP_EXISTING', 'true').strip().lower() not in ('false', '0', 'no')
+        if dedup_existing:
+            _dedup_existing(base_path)
+        else:
+            print('[dedup] skipped (DEDUP_EXISTING=false)')
+    else:
+        find_and_download(base_path)
 
 
 if __name__ == "__main__":
