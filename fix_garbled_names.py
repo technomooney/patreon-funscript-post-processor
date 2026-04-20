@@ -313,6 +313,93 @@ def _normalize_for_match(stem: str) -> str:
     return re.sub(r'\s+', ' ', s).strip().lower()
 
 
+def _prefix_match(norm_video: str, norm_fs_base: str) -> bool:
+    """True if norm_video is a whole-word prefix of (or equal to) norm_fs_base."""
+    return norm_fs_base == norm_video or norm_fs_base.startswith(norm_video + ' ')
+
+
+def _extract_variant_label(orig_fs_base: str, norm_fs_base: str, norm_video: str) -> str:
+    """
+    Return the original-text suffix of orig_fs_base that follows the matched
+    video-name portion.  Assumes _prefix_match(norm_video, norm_fs_base) is True.
+
+    Uses space-split word counts to map from normalised back to original text,
+    which works correctly as long as variant labels are space-separated from the
+    base (e.g. "example hard", "example (insane)", "example _nutty_").
+    """
+    label_norm = norm_fs_base[len(norm_video):].lstrip()
+    if not label_norm:
+        return ''
+    n_label_words = len(label_norm.split())
+    orig_words = orig_fs_base.split()
+    if n_label_words > 0 and len(orig_words) >= n_label_words:
+        return ' ' + ' '.join(orig_words[-n_label_words:])
+    return ''
+
+
+def _find_best_match(
+    fs_base: str,
+    norm_base: str,
+    norm_videos: dict[str, str],
+) -> tuple[str | None, float, int, bool]:
+    """
+    Find the best matching video for a funscript base name.
+
+    Tries three strategies in order:
+      1. Direct prefix match  (norm_video is whole-word prefix of norm_base)
+      2. Direct fuzzy match   (SequenceMatcher ratio)
+      3. Prefix-stripped match — progressively remove up to _MAX_STRIP leading
+         words from norm_base and repeat strategy 1.  This handles axis/variant
+         labels that appear as prefixes (HARD, SUCK, SIDE, center, etc.).
+
+    Returns (best_video_filename, score, n_words_stripped, is_prefix_match).
+    n_words_stripped is the number of leading words removed from norm_base to
+    achieve the match; 0 means the match was on the full base.
+    """
+    best_score = 0.0
+    best_video: str | None = None
+    best_n_strip = 0
+    best_is_prefix = False
+    best_prefix_len = 0
+
+    words = norm_base.split()
+
+    # Strategy 1 + 2: direct match on full base
+    for vf, norm_vstem in norm_videos.items():
+        if _prefix_match(norm_vstem, norm_base):
+            if len(norm_vstem) > best_prefix_len:
+                best_score = 1.0
+                best_video = vf
+                best_is_prefix = True
+                best_prefix_len = len(norm_vstem)
+        else:
+            score = difflib.SequenceMatcher(None, norm_base, norm_vstem).ratio()
+            if not best_is_prefix and score > best_score:
+                best_score = score
+                best_video = vf
+
+    # Strategy 3: try stripping 1…_MAX_STRIP leading words for axis-label prefixes
+    _MAX_STRIP = min(5, len(words) - 1)
+    for n_strip in range(1, _MAX_STRIP + 1):
+        if best_score >= 1.0:
+            break
+        stripped = ' '.join(words[n_strip:])
+        if not stripped:
+            continue
+        for vf, norm_vstem in norm_videos.items():
+            if _prefix_match(norm_vstem, stripped):
+                if len(norm_vstem) > best_prefix_len or not best_is_prefix:
+                    best_score = 1.0
+                    best_video = vf
+                    best_is_prefix = True
+                    best_prefix_len = len(norm_vstem)
+                    best_n_strip = n_strip
+        if best_score >= 1.0:
+            break
+
+    return best_video, best_score, best_n_strip, best_is_prefix
+
+
 def find_funscript_misnames(root_dir: str, dry_run: bool) -> list[dict]:
     """
     Scan for .json files and extension-less files that are actually funscripts.
@@ -405,18 +492,27 @@ def find_funscript_video_mismatches(
             fs_base, fs_label = _split_fs_label(fs_stem)
             norm_base = _normalize_for_match(fs_base)
 
-            best_score = 0.0
-            best_video: str | None = None
-            for vf, norm_vstem in norm_videos.items():
-                score = difflib.SequenceMatcher(None, norm_base, norm_vstem).ratio()
-                if score > best_score:
-                    best_score = score
-                    best_video = vf
+            best_video, best_score, n_strip, is_prefix = _find_best_match(
+                fs_base, norm_base, norm_videos
+            )
 
             if best_video is None or best_score < min_report:
                 continue
 
-            new_name = video_stems[best_video] + fs_label + '.funscript'
+            video_stem = video_stems[best_video]
+            orig_words = fs_base.split()
+
+            if is_prefix:
+                # Reconstruct: [axis-prefix-label ] + video_stem + [suffix-variant ] + known_label
+                prefix_label = (' '.join(orig_words[:n_strip]) + ' ') if n_strip else ''
+                stripped_base = ' '.join(orig_words[n_strip:]) if n_strip else fs_base
+                norm_stripped = _normalize_for_match(stripped_base)
+                suffix_variant = _extract_variant_label(
+                    stripped_base, norm_stripped, norm_videos[best_video]
+                )
+                new_name = prefix_label + video_stem + suffix_variant + fs_label + '.funscript'
+            else:
+                new_name = video_stem + fs_label + '.funscript'
             old_path = os.path.join(dirpath, fs_name)
             new_path = os.path.join(dirpath, new_name)
 
