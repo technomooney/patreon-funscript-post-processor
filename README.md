@@ -1,4 +1,4 @@
-# Patreon Downloader Post-Processor
+# Patreon Funscript Post-Processor
 
 A toolkit for managing downloaded Patreon content — renaming files, downloading linked media, matching funscripts to videos, and keeping your library clean.
 
