@@ -567,6 +567,14 @@ def main():
     _write_env('DEDUP_EXISTING', 'true' if dedup else 'false',
                comment='Auto-dedup at the start of each download run. Option 7 (dedupe only) always runs regardless of this.')
 
+    dedup_verbose = _ask_bool(
+        'Show verbose per-file output during dedup? (true/false)\n'
+        '  WARNING: produces one line per file — can be very noisy on large libraries',
+        current=_read_env('DEDUP_VERBOSE').lower() not in ('', 'false', '0', 'no'),
+    )
+    _write_env('DEDUP_VERBOSE', 'true' if dedup_verbose else 'false',
+               comment='Print one line per file during dedup. Warning: very noisy on large libraries.')
+
     skip_known = _ask_bool(
         'Skip links listed in failed_downloads.csv? (true/false)',
         current=_read_env('SKIP_KNOWN_FAILURES').lower() not in ('', 'false', '0', 'no'),

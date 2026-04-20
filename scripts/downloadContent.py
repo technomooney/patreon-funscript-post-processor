@@ -3187,6 +3187,7 @@ def _dedup_existing(base_path: str) -> int:
         return fpath, _file_hash(fpath, show_progress=False)
 
     _env_threads = os.getenv('DEDUP_THREADS', '').strip()
+    verbose = os.getenv('DEDUP_VERBOSE', 'false').strip().lower() not in ('false', '0', 'no')
     max_workers = int(_env_threads) if _env_threads.isdigit() else max(1, (os.cpu_count() or 4) - 2)
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -3196,7 +3197,12 @@ def _dedup_existing(base_path: str) -> int:
                     path, h = future.result()
                     hash_to_paths.setdefault(h, []).append(path)
                     completed += 1
-                    _set_status(f'  [dedup] hashing {completed}/{total}...')
+                    size_mb = os.path.getsize(path) / (1 << 20)
+                    if verbose:
+                        _clear_status()
+                        print(f'  [dedup] ({completed}/{total}) {_safe(os.path.basename(path))} — {size_mb:.1f} MB', flush=True)
+                    else:
+                        _set_status(f'  [dedup] hashing {completed}/{total}...')
                     if completed == total:
                         _clear_status()
                         print(f'  [dedup] hashed {total} file(s)', flush=True)

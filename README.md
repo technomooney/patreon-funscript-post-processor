@@ -109,6 +109,7 @@ All settings live in `.env` (created by setup). Key options:
 | `MAX_RESOLUTION` | `1080` | Maximum download resolution |
 | `DEDUP_EXISTING` | `true` | Auto-dedup at the start of each download run. Option 7 always runs regardless of this |
 | `SKIP_KNOWN_FAILURES` | `false` | Skip links listed in `failed_downloads.csv` |
+| `DEDUP_VERBOSE` | `false` | Print one line per file during dedup. Warning: very noisy on large libraries |
 | `DEDUP_THREADS` | (benchmarked) | Parallel threads for hashing during dedup |
 
 ## Supported download sources
