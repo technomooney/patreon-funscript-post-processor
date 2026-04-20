@@ -2,6 +2,24 @@
 
 A toolkit for managing downloaded Patreon content — renaming files, downloading linked media, matching funscripts to videos, and keeping your library clean.
 
+## Prerequisites — initial Patreon download
+
+This tool **post-processes** content already downloaded from Patreon. The initial download must be done with [PatreonDownloader](https://github.com/AlexCSDev/PatreonDownloader).
+
+Run it with these flags so the post-processor has everything it needs:
+
+```
+PatreonDownloader --json --embeds --descriptions --use-sub-directories --url <creator_url>
+```
+
+| Flag | Why it's needed |
+|------|----------------|
+| `--json` | Saves post metadata — the post-processor reads this to find linked media |
+| `--embeds` | Saves embedded content references |
+| `--descriptions` | Saves `description.json` per post — this is what the download script scans |
+| `--use-sub-directories` | Creates one folder per post — required for the folder-based workflow |
+| `--url` | The Patreon creator URL to download from |
+
 ## Features
 
 - **Download linked media** from description.json files via Selenium (supports Patreon-hosted content, iwara.tv, mega.nz, pixeldrain, spankbang, hanime, gofile, rule34, e621, eporner, yt-dlp fallback, and more)
@@ -17,7 +35,7 @@ A toolkit for managing downloaded Patreon content — renaming files, downloadin
 ## Requirements
 
 - Python 3.11+
-- Google Chrome (for Selenium-based downloads)
+- [Brave Browser](https://brave.com) (recommended — built-in ad blocker reduces popup interference during downloads; Chromium works as a fallback)
 - ffmpeg / ffprobe (installed automatically by setup)
 
 ## Setup
@@ -87,7 +105,7 @@ All settings live in `.env` (created by setup). Key options:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BROWSER_HEADLESS` | `true` | Run Chrome in headless mode. Set to `false` if sites block automation |
+| `BROWSER_HEADLESS` | `true` | Run Brave in headless mode. Set to `false` if sites block automation |
 | `MAX_RESOLUTION` | `1080` | Maximum download resolution |
 | `DEDUP_EXISTING` | `true` | Auto-dedup at the start of each download run. Option 7 always runs regardless of this |
 | `SKIP_KNOWN_FAILURES` | `false` | Skip links listed in `failed_downloads.csv` |
