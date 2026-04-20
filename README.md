@@ -146,6 +146,14 @@ All settings live in `.env` (created by setup). Key options:
 
 ---
 
+## Disclaimer
+
+This is a personal project provided **as-is**, without warranty of any kind. The author accepts no responsibility for any data loss, file corruption, or damage that may result from using this software. **Always keep backups of your files before running any automated renaming, deduplication, or download operations.**
+
+Use at your own risk.
+
+---
+
 ## Credits
 
 Originally created by Marty M. Evolved and heavily influenced through collaborative development with [Claude](https://claude.ai) (Anthropic).
