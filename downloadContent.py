@@ -298,10 +298,22 @@ def check_domain(url: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _find_browser() -> str | None:
-    """Return the path to a Chromium-compatible browser, or None if not found."""
-    for name in ('brave', 'brave-browser', 'brave-bin', 'google-chrome', 'chromium', 'chromium-browser'):
+    """Return the path to a Brave (preferred) or Chromium-compatible browser."""
+    # Check PATH names first (Linux / when Brave is on PATH)
+    for name in ('brave', 'brave-browser', 'brave-bin', 'chromium', 'chromium-browser'):
         path = shutil.which(name)
         if path:
+            return path
+    # Hardcoded install locations for Windows and macOS where Brave isn't on PATH
+    candidates = []
+    if sys.platform == 'win32':
+        for base in (os.environ.get('PROGRAMFILES', r'C:\Program Files'),
+                     os.environ.get('LOCALAPPDATA', '')):
+            candidates.append(os.path.join(base, r'BraveSoftware\Brave-Browser\Application\brave.exe'))
+    elif sys.platform == 'darwin':
+        candidates.append('/Applications/Brave Browser.app/Contents/MacOS/Brave Browser')
+    for path in candidates:
+        if os.path.isfile(path):
             return path
     return None
 
@@ -332,7 +344,7 @@ def setup_driver(initial_download_dir: str):
 
     browser = _find_browser()
     if browser is None:
-        raise RuntimeError('No Chromium-compatible browser found. Install Brave, Chrome, or Chromium.')
+        raise RuntimeError('Brave Browser not found. Install it from https://brave.com — or install Chromium as a fallback.')
     print(f'Using browser: {browser} ({"headless" if headless else "windowed"})')
 
     driver = uc.Chrome(options=options, browser_executable_path=browser)

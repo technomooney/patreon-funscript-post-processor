@@ -2,4 +2,6 @@ Pize
 .venv
 .idea
 .env
+.claude
+extensions
 STATUS.md
