@@ -140,3 +140,9 @@ All settings live in `.env` (created by setup). Key options:
 | `_reports/media_renames.csv` | Media extension fix results |
 | `full_folder_playlist.m3u8` | Playlist of all videos in the scanned directory |
 | `new_media_playlist.m3u8` | Playlist of videos downloaded in the last run |
+
+---
+
+## Credits
+
+Originally created by Marty M. Evolved and heavily influenced through collaborative development with [Claude](https://claude.ai) (Anthropic).
