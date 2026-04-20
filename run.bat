@@ -24,7 +24,7 @@ echo   1^) Fix file prefixes -- strip the attachment ID prefix from
 echo      downloaded filenames (run this first)
 echo.
 echo   2^) Download content       -- find links in description.json files
-echo      and download the associated videos
+echo      and download the associated videos and files
 echo.
 echo   3^) Check funscript match  -- find videos missing a funscript and
 echo      report fuzzy-match suggestions
@@ -35,9 +35,19 @@ echo.
 echo   5^) Sync new folders       -- copy folders that are new in the Patreon
 echo      downloader output into the post-processor working directory
 echo.
+echo   6^) Fix garbled names      -- four-pass cleanup pipeline:
+echo      * detect video files with wrong/missing extension (magic bytes)
+echo      * detect funscripts with wrong/missing .funscript extension
+echo      * decode percent-encoded or mojibake filenames
+echo      * fuzzy-match funscript names to their video and rename to match
+echo      All changes written to CSV reports in _reports/
+echo.
+echo   7^) Dedupe only            -- clean leftover temp files and remove
+echo      exact duplicate files without running a full download
+echo.
 
 :ask
-set /p "choice=Choose a program to run (1-5): "
+set /p "choice=Choose a program to run (1-7): "
 
 if "%choice%"=="1" (
     echo.
@@ -64,8 +74,18 @@ if "%choice%"=="5" (
     .venv\Scripts\python.exe sync_new_folders.py
     goto done
 )
+if "%choice%"=="6" (
+    echo.
+    .venv\Scripts\python.exe fix_garbled_names.py
+    goto done
+)
+if "%choice%"=="7" (
+    echo.
+    .venv\Scripts\python.exe dedupe_only.py
+    goto done
+)
 
-echo Invalid choice. Please enter 1, 2, 3, 4 or 5.
+echo Invalid choice. Please enter 1-7.
 goto ask
 
 :done
