@@ -114,7 +114,7 @@ def _get_secret(key: str, default: str = '') -> str:
 # File hashing — used for duplicate detection within a session and on disk.
 # ---------------------------------------------------------------------------
 
-def _file_hash(path: str, block_size: int = 1 << 20) -> str:
+def _file_hash(path: str, block_size: int = 1 << 20, show_progress: bool = True) -> str:
     """Return the SHA-256 hex digest of *path*, reading in 1 MB chunks."""
     h = hashlib.sha256()
     name = os.path.basename(path)
@@ -124,10 +124,11 @@ def _file_hash(path: str, block_size: int = 1 << 20) -> str:
         for chunk in iter(lambda: fh.read(block_size), b''):
             h.update(chunk)
             done += len(chunk)
-            mb = done // (1 << 20)
-            if mb // 50 != last_reported // 50:
-                _set_status(f'  hashing {_safe(name)}... {mb} MB')
-                last_reported = mb
+            if show_progress:
+                mb = done // (1 << 20)
+                if mb // 50 != last_reported // 50:
+                    _set_status(f'  hashing {_safe(name)}... {mb} MB')
+                    last_reported = mb
     return h.hexdigest()
 
 
@@ -3183,7 +3184,7 @@ def _dedup_existing(base_path: str) -> int:
 
     completed = 0
     def _hash_one(fpath: str) -> tuple[str, str]:
-        return fpath, _file_hash(fpath)
+        return fpath, _file_hash(fpath, show_progress=False)
 
     _env_threads = os.getenv('DEDUP_THREADS', '').strip()
     max_workers = int(_env_threads) if _env_threads.isdigit() else max(1, (os.cpu_count() or 4) - 2)
@@ -3195,8 +3196,10 @@ def _dedup_existing(base_path: str) -> int:
                     path, h = future.result()
                     hash_to_paths.setdefault(h, []).append(path)
                     completed += 1
-                    if completed % 25 == 0 or completed == total:
-                        print(f'  hashing {completed}/{total}...', flush=True)
+                    _set_status(f'  [dedup] hashing {completed}/{total}...')
+                    if completed == total:
+                        _clear_status()
+                        print(f'  [dedup] hashed {total} file(s)', flush=True)
             except KeyboardInterrupt:
                 done      = sum(1 for f in futures if f.done())
                 running   = sum(1 for f in futures if f.running())
