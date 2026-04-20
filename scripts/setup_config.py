@@ -575,6 +575,14 @@ def main():
     _write_env('DEDUP_VERBOSE', 'true' if dedup_verbose else 'false',
                comment='Print one line per file during dedup. Warning: very noisy on large libraries.')
 
+    mega_hide = _ask_bool(
+        'Hide MEGAcmd console window on Windows? (true/false)\n'
+        '  (No effect on Linux/macOS — set to false only if you need to debug MEGAcmd output)',
+        current=_read_env('MEGA_HIDE_WINDOW').lower() not in ('false', '0', 'no'),
+    )
+    _write_env('MEGA_HIDE_WINDOW', 'true' if mega_hide else 'false',
+               comment='Suppress MEGAcmd console popup on Windows. Set to false to see MEGAcmd output for debugging.')
+
     skip_known = _ask_bool(
         'Skip links listed in failed_downloads.csv? (true/false)',
         current=_read_env('SKIP_KNOWN_FAILURES').lower() not in ('', 'false', '0', 'no'),

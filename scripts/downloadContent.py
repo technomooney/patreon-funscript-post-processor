@@ -2262,6 +2262,14 @@ def download_yandex_disk(_driver, url: str, download_dir: str) -> bool:
 # Whether MEGAcmd is already logged in for this session.
 _mega_logged_in: bool = False
 
+# On Windows, suppress the MEGAcmd console popup unless MEGA_HIDE_WINDOW=false.
+# CREATE_NO_WINDOW = 0x08000000; safe to pass on Windows, 0 = no effect elsewhere.
+_MEGA_WIN_FLAGS: int = (
+    0x08000000
+    if sys.platform == 'win32' and os.getenv('MEGA_HIDE_WINDOW', 'true').strip().lower() not in ('false', '0', 'no')
+    else 0
+)
+
 
 def _mega_server_responding() -> bool:
     """Return True if the MEGAcmd server is responding to mega-whoami.
@@ -2274,7 +2282,7 @@ def _mega_server_responding() -> bool:
     if mega_whoami is None:
         return False
     try:
-        subprocess.run([mega_whoami], capture_output=True, text=True, timeout=5)
+        subprocess.run([mega_whoami], capture_output=True, text=True, timeout=5, creationflags=_MEGA_WIN_FLAGS)
         return True   # completed = server is up, regardless of exit code
     except subprocess.TimeoutExpired:
         return False
@@ -2303,6 +2311,7 @@ def _mega_ensure_server() -> bool:
         [mega_cmd_server],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        creationflags=_MEGA_WIN_FLAGS,
     )
 
     deadline = time.time() + 30
@@ -2326,7 +2335,7 @@ def _mega_is_logged_in() -> bool:
     if mega_whoami is None:
         return False
     try:
-        r = subprocess.run([mega_whoami], capture_output=True, text=True, timeout=10)
+        r = subprocess.run([mega_whoami], capture_output=True, text=True, timeout=10, creationflags=_MEGA_WIN_FLAGS)
         out = (r.stdout + r.stderr).lower()
         return 'not logged in' not in out and ('account' in out or '@' in out)
     except subprocess.TimeoutExpired:
@@ -2372,6 +2381,7 @@ def _mega_ensure_login() -> bool:
             return subprocess.run(
                 [mega_login, email, password] + extra_args,
                 capture_output=True, text=True, timeout=15,
+                creationflags=_MEGA_WIN_FLAGS,
             )
         except subprocess.TimeoutExpired:
             print('  [mega.nz] login timed out')
@@ -2530,6 +2540,7 @@ class _MegaWorker:
             result = subprocess.run(
                 [mega_get, job['link'], job['download_dir']],
                 capture_output=True, text=True, timeout=3600,
+                creationflags=_MEGA_WIN_FLAGS,
             )
         except subprocess.TimeoutExpired:
             self._log(f'{job["basename"]}: timed out after 1 hour')
@@ -2610,6 +2621,7 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
         result = subprocess.run(
             [mega_get, url, download_dir],
             capture_output=True, text=True, timeout=3600,
+            creationflags=_MEGA_WIN_FLAGS,
         )
     except subprocess.TimeoutExpired:
         print('  [mega.nz] download timed out after 1 hour')
