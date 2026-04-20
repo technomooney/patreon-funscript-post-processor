@@ -560,11 +560,12 @@ def main():
         print('  Please enter a positive integer (e.g. 1080).')
 
     dedup = _ask_bool(
-        'Scan for duplicate videos on startup and remove extras? (true/false)',
+        'Auto-dedup at the start of each download run? (true/false)\n'
+        '  (Note: option 7 in the main menu always runs dedup regardless of this setting)',
         current=_read_env('DEDUP_EXISTING').lower() not in ('false', '0', 'no'),
     )
     _write_env('DEDUP_EXISTING', 'true' if dedup else 'false',
-               comment='Remove duplicate video files on startup. Set to false to skip (faster on large libraries).')
+               comment='Auto-dedup at the start of each download run. Option 7 (dedupe only) always runs regardless of this.')
 
     skip_known = _ask_bool(
         'Skip links listed in failed_downloads.csv? (true/false)',
