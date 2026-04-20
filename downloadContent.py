@@ -3146,7 +3146,10 @@ def _dedup_existing(base_path: str) -> int:
     Controlled by the DEDUP_EXISTING env var (default 'true').
     Set DEDUP_EXISTING=false in .env to skip this scan.
     """
-    print('\n[dedup] Scanning for duplicates (set DEDUP_EXISTING=false to skip)...')
+    print('\n[dedup] Cleaning temp files...')
+    _cleanup_temp_files_recursive(base_path)
+
+    print('[dedup] Scanning for duplicates (set DEDUP_EXISTING=false to skip)...')
 
     # Collect all candidate files first so we can show a total count.
     candidates: list[str] = []
@@ -4061,12 +4064,12 @@ def main():
     choice = input("Choice [1/2]: ").strip()
 
     if choice == '2':
-        print(f'\nCleaning temp files under: {base_path}')
-        _cleanup_temp_files_recursive(base_path)
         dedup_existing = os.getenv('DEDUP_EXISTING', 'true').strip().lower() not in ('false', '0', 'no')
         if dedup_existing:
             _dedup_existing(base_path)
         else:
+            print('\nCleaning temp files...')
+            _cleanup_temp_files_recursive(base_path)
             print('[dedup] skipped (DEDUP_EXISTING=false)')
     else:
         find_and_download(base_path)
