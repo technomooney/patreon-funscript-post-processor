@@ -443,13 +443,19 @@ def wait_for_download(download_dir: str, before_files: set[str],
     """
     Poll *download_dir* until a new fully written file appears.
     Temporary browser download files (.part, .crdownload, .tmp) are ignored.
-    Pass timeout (seconds) to give up after that duration; None waits indefinitely.
-    Pass label (e.g. domain + basename) to show in the status line.
+
+    timeout controls the idle deadline — how long to wait with NO sign of
+    progress (no partial file growing).  Whenever a partial file is detected
+    and is larger than on the previous check, the idle deadline resets, so a
+    genuinely active download is never cancelled no matter how large the file.
+    Pass timeout=None to wait indefinitely even when idle.
+
     Returns the full path of the downloaded file, or None if timed out.
     """
-    deadline = time.time() + timeout if timeout is not None else None
+    idle_deadline = time.time() + timeout if timeout is not None else None
     t0 = time.time()
     prefix = f'  [{label}] ' if label else '  '
+    last_partial_size: int = 0
     while True:
         current: set[str] = set(os.listdir(download_dir))
         new_files = current - before_files
@@ -457,11 +463,16 @@ def wait_for_download(download_dir: str, before_files: set[str],
         partials = [f for f in new_files if f.endswith(('.part', '.crdownload', '.tmp'))]
         if partials:
             try:
-                partial_mb = max(
+                current_size = max(
                     os.path.getsize(os.path.join(download_dir, p)) for p in partials
-                ) / (1 << 20)
+                )
+                partial_mb = current_size / (1 << 20)
                 _set_status(f'{prefix}downloading... {partial_mb:.1f} MB'
                             f' ({int(time.time() - t0)}s)')
+                # Reset the idle deadline whenever the partial file is growing
+                if timeout is not None and current_size > last_partial_size:
+                    idle_deadline = time.time() + timeout
+                last_partial_size = current_size
             except OSError:
                 _set_status(f'{prefix}waiting for download... ({int(time.time() - t0)}s)')
         else:
@@ -473,7 +484,7 @@ def wait_for_download(download_dir: str, before_files: set[str],
         ]
         if complete:
             return os.path.join(download_dir, complete[0])
-        if deadline is not None and time.time() >= deadline:
+        if idle_deadline is not None and time.time() >= idle_deadline:
             return None
         time.sleep(1)
 
