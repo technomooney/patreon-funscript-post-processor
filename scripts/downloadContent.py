@@ -325,6 +325,23 @@ def _find_browser() -> str | None:
     return None
 
 
+def _get_browser_major_version(browser_path: str) -> int | None:
+    """Return the major version number of the browser at *browser_path*, or None on failure."""
+    try:
+        result = subprocess.run(
+            [browser_path, '--version'],
+            capture_output=True, text=True, timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0,
+        )
+        # Output is typically "Brave Browser 147.0.7727.117" or "Chromium 147.0.7727.117"
+        match = re.search(r'(\d+)\.', result.stdout or result.stderr)
+        if match:
+            return int(match.group(1))
+    except Exception:
+        pass
+    return None
+
+
 def setup_driver(initial_download_dir: str):
     """Create an undetected Chrome WebDriver that saves files to *initial_download_dir*."""
     options = uc.ChromeOptions()
@@ -352,9 +369,11 @@ def setup_driver(initial_download_dir: str):
     browser = _find_browser()
     if browser is None:
         raise RuntimeError('Brave Browser not found. Install it from https://brave.com — or install Chromium as a fallback.')
-    print(f'Using browser: {browser} ({"headless" if headless else "windowed"})')
 
-    driver = uc.Chrome(options=options, browser_executable_path=browser)
+    version = _get_browser_major_version(browser)
+    print(f'Using browser: {browser} v{version} ({"headless" if headless else "windowed"})')
+
+    driver = uc.Chrome(options=options, browser_executable_path=browser, version_main=version)
     return driver
 
 
