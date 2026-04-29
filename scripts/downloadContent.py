@@ -4107,7 +4107,7 @@ def find_and_download(base_path: str):
                     continue
 
                 downloaded = wait_for_download(folder, before_files,
-                                              timeout=300,
+                                              timeout=60,
                                               label=f'{domain} — {_safe(basename)}')
 
                 if downloaded is None:
