@@ -1232,62 +1232,112 @@ def _pick_best(candidates: list, resolution_fn) -> tuple:
 # placing a completed file in download_dir.  Returns True on success.
 # ---------------------------------------------------------------------------
 
-def download_gofile(driver, url: str, _download_dir: str) -> bool:
-    """Navigate to a gofile.io share and click the download button."""
-    driver.get(url)
-
+def _gofile_website_token(driver) -> str:
+    """Extract the website token gofile embeds in its global JS bundle."""
     try:
-        time.sleep(1)  # let the JS-heavy page render
+        req = urllib.request.Request(
+            'https://gofile.io/dist/js/global.js',
+            headers={'User-Agent': 'Mozilla/5.0'},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            js = resp.read().decode('utf-8', errors='replace')
+        m = re.search(r'websiteToken\s*[=:]\s*["\']([^"\']{4,})', js)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    # Try reading it from the live page JS context
+    try:
+        token = driver.execute_script(
+            'return (window.appdata && window.appdata.websiteToken) || null'
+        )
+        if token:
+            return str(token)
+    except Exception:
+        pass
+    return 'websiteToken'
 
-        # gofile.io embeds its file-manager state in window.__NUXT__ (Vue/Nuxt app).
-        # Check for an error status before attempting any clicks.
-        try:
-            status = driver.execute_script("""
-                try {
-                    var nuxt = window.__NUXT__;
-                    if (nuxt) {
-                        var s = JSON.stringify(nuxt);
-                        var m = s.match(/"status"\\s*:\\s*"(error-[^"]+)"/);
-                        return m ? m[1] : null;
-                    }
-                } catch(e) {}
-                return null;
-            """)
-            if status:
-                print(f'  [gofile.io] link is invalid — server returned status: {status}')
-                return False
-        except Exception as e:
-            print(f'  [gofile.io] could not read page state: {e}')  # fall through to DOM checks
 
-        # gofile.io renders file rows with a download icon/button per file.
-        # Try the most common selectors; adjust if gofile changes their markup.
-        candidates = driver.find_elements(By.XPATH, (
-            '//*['
-            'contains(@class,"downloadButton") or '
-            'contains(@class,"download-btn") or '
-            '(self::button and contains('
-            '  translate(normalize-space(.),"DOWNLOAD","download"),'
-            '  "download"'
-            '))'
-            ']'
-        ))
-        if candidates:
-            candidates[0].click()
-            return True
+def download_gofile(driver, url: str, download_dir: str) -> bool:
+    """Download files from a gofile.io share via the public API + direct fetch.
 
-        # Fallback: any anchor whose href contains "gofile.io" and "download"
-        links = driver.find_elements(By.XPATH, '//a[contains(@href,"gofile.io")]')
-        for link in links:
-            href = link.get_attribute('href') or ''
-            text = (link.text or '').lower().strip()
-            if 'download' in href.lower() or text == 'download':
-                link.click()
-                return True
+    gofile requires a guest-account token and a website token to authenticate
+    CDN download links; clicking the page button is unreliable because their
+    UI changes frequently and zip-creation jobs leave no .part file to detect.
+    """
+    m = re.search(r'gofile\.io/d/([A-Za-z0-9]+)', url)
+    if not m:
+        print('  [gofile.io] could not parse content ID from URL')
+        return False
+    content_id = m.group(1)
 
+    # Create a guest account to get a token
+    try:
+        req = urllib.request.Request(
+            'https://api.gofile.io/accounts',
+            data=b'',
+            headers={'User-Agent': 'Mozilla/5.0', 'Content-Type': 'application/json'},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            acct = json.loads(resp.read())
+        guest_token = acct['data']['token']
     except Exception as e:
-        print(f"  [gofile.io] handler error: {e}")
+        print(f'  [gofile.io] could not get guest token: {e}')
+        return False
 
-    return False
+    # Navigate so the page JS initialises (needed to read the website token)
+    driver.get(url)
+    time.sleep(2)
+    wt = _gofile_website_token(driver)
+
+    # Fetch the content metadata
+    api_url = (
+        f'https://api.gofile.io/contents/{content_id}'
+        f'?token={guest_token}&wt={wt}'
+    )
+    try:
+        req = urllib.request.Request(
+            api_url,
+            headers={
+                'User-Agent': 'Mozilla/5.0',
+                'Authorization': f'Bearer {guest_token}',
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            meta = json.loads(resp.read())
+    except Exception as e:
+        print(f'  [gofile.io] API error fetching metadata: {e}')
+        return False
+
+    if meta.get('status') != 'ok':
+        print(f'  [gofile.io] API status: {meta.get("status")} — link may be invalid or password-protected')
+        return False
+
+    children = meta['data'].get('children', {})
+    files = [c for c in children.values() if c.get('type') == 'file']
+    if not files:
+        print('  [gofile.io] no downloadable files found in share')
+        return False
+
+    # CDN download links require the guest token as a cookie
+    dl_headers = {
+        'User-Agent': 'Mozilla/5.0',
+        'Cookie': f'accountToken={guest_token}',
+    }
+    triggered = False
+    for file_meta in files:
+        link = file_meta.get('link') or file_meta.get('directLink')
+        name = file_meta.get('name', 'gofile_download')
+        if not link:
+            continue
+        print(f'  [gofile.io] fetching: {name}')
+        ok = _direct_fetch(link, download_dir, '_gofile_temp', dl_headers)
+        if ok:
+            triggered = True
+        elif not _last_download_skipped:
+            print(f'  [gofile.io] fetch failed: {name}')
+
+    return triggered
 
 
 def download_hanime(driver, url: str, download_dir: str) -> bool:
@@ -4046,6 +4096,7 @@ def find_and_download(base_path: str):
                     continue
 
                 downloaded = wait_for_download(folder, before_files,
+                                              timeout=300,
                                               label=f'{domain} — {_safe(basename)}')
 
                 if downloaded is None:
