@@ -70,9 +70,13 @@ echo ""
 echo "  7) Dedupe only            — clean leftover temp files and remove"
 echo "     exact duplicate files without running a full download"
 echo ""
+echo "  8) Audit report           — read .folder_log.json from every post folder"
+echo "     and generate _reports/audit_report.html showing what each script"
+echo "     has done, with per-folder detail and an overall summary"
+echo ""
 
 while true; do
-    read -rp "Choose a program to run (1-7): " choice
+    read -rp "Choose a program to run (1-8): " choice
     case "$choice" in
         1)
             echo ""
@@ -109,8 +113,13 @@ while true; do
             .venv/bin/python scripts/dedupe_only.py
             break
             ;;
+        8)
+            echo ""
+            .venv/bin/python scripts/generate_audit_report.py
+            break
+            ;;
         *)
-            echo "Invalid choice. Please enter 1-7."
+            echo "Invalid choice. Please enter 1-8."
             ;;
     esac
 done

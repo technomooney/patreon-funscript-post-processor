@@ -45,9 +45,13 @@ echo.
 echo   7^) Dedupe only            -- clean leftover temp files and remove
 echo      exact duplicate files without running a full download
 echo.
+echo   8^) Audit report           -- read .folder_log.json from every post folder
+echo      and generate _reports/audit_report.html showing what each script
+echo      has done, with per-folder detail and an overall summary
+echo.
 
 :ask
-set /p "choice=Choose a program to run (1-7): "
+set /p "choice=Choose a program to run (1-8): "
 
 if "%choice%"=="1" (
     echo.
@@ -84,8 +88,13 @@ if "%choice%"=="7" (
     .venv\Scripts\python.exe scripts\dedupe_only.py
     goto done
 )
+if "%choice%"=="8" (
+    echo.
+    .venv\Scripts\python.exe scripts\generate_audit_report.py
+    goto done
+)
 
-echo Invalid choice. Please enter 1-7.
+echo Invalid choice. Please enter 1-8.
 goto ask
 
 :done
