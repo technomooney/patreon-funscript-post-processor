@@ -25,6 +25,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
 import urllib3.exceptions
+import folder_log
 
 load_dotenv()
 
@@ -3453,6 +3454,9 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
         if '.manual' in files:
             manual_folders.append(root)
             continue
+        if folder_log.has_run(root, 'downloadContent'):
+            print(f'[skip] already downloaded: {_safe(os.path.basename(root))}')
+            continue
         if 'description.json' not in files:
             continue
 
@@ -3946,6 +3950,7 @@ def find_and_download(base_path: str):
     newly_downloaded: list[str] = []
     uncertain: list[dict] = []
     mega_error6: list[dict] = []
+    link_statuses: dict[str, dict[str, str]] = {}  # folder → {url → status}
     total = len(tasks)
     global _last_fetch_original_name, _last_download_skipped
     completed_cleanly = False
@@ -3967,10 +3972,12 @@ def find_and_download(base_path: str):
                     _save_downloaded(fpath, res['download_dir'], newly_downloaded,
                                      original_name=orig)
                 tracker.mark_done(res['download_dir'], res['link'])
+                link_statuses.setdefault(res['download_dir'], {})[res['link']] = 'downloaded'
                 print(f'  [mega.nz] background download finished: {_safe(res["basename"])}')
             else:
                 hint = res.get('filename', 'unknown')
                 print(f'  [mega.nz] background download failed: {_safe(res["basename"])} (file: {_safe(hint)})')
+                link_statuses.setdefault(res['download_dir'], {})[res['link']] = 'failed'
                 failures.append({'link': res['link'], 'funscript_name': res['basename'],
                                  'filename': hint,
                                  'save_directory': res['download_dir'], 'domain': 'mega.nz'})
@@ -4001,10 +4008,12 @@ def find_and_download(base_path: str):
                 _last_download_skipped = False
 
                 if tracker.is_done(folder, link):
+                    link_statuses.setdefault(folder, {})[link] = 'previously_done'
                     print(f"  [resume] already done — skipping: {link}")
                     continue
 
                 if link in known_failure_links:
+                    link_statuses.setdefault(folder, {})[link] = 'skipped_known_failure'
                     print(f"  [skip-known-failed-url] previously failed — skipping: {link}")
                     continue
 
@@ -4089,17 +4098,21 @@ def find_and_download(base_path: str):
                             break
 
                 if _link_deferred:
+                    link_statuses.setdefault(folder, {})[link] = 'deferred_mega'
                     continue  # mega retry handed off to background worker
 
                 if _link_failed:
+                    link_statuses.setdefault(folder, {})[link] = 'failed'
                     continue
 
                 if _last_download_skipped:
+                    link_statuses.setdefault(folder, {})[link] = 'skipped_duplicate'
                     tracker.mark_done(folder, link)
                     continue  # pre-download check found a duplicate — not a failure
 
                 if not triggered:
                     print("  Could not trigger download — check the handler for this domain.")
+                    link_statuses.setdefault(folder, {})[link] = 'failed'
                     _triage_failure(
                         {'link': link, 'funscript_name': basename,
                          'save_directory': folder, 'domain': domain},
@@ -4112,6 +4125,7 @@ def find_and_download(base_path: str):
 
                 if downloaded is None:
                     print("  Download did not complete.")
+                    link_statuses.setdefault(folder, {})[link] = 'failed'
                     _triage_failure(
                         {'link': link, 'funscript_name': basename,
                          'save_directory': folder, 'domain': domain},
@@ -4128,6 +4142,7 @@ def find_and_download(base_path: str):
                             os.remove(downloaded)
                         except OSError:
                             pass
+                        link_statuses.setdefault(folder, {})[link] = 'skipped_av_similar'
                         tracker.mark_done(folder, link)
                         continue
 
@@ -4145,6 +4160,7 @@ def find_and_download(base_path: str):
                 kept = _save_downloaded(downloaded, folder, newly_downloaded,
                                         original_name=original_name)
                 tracker.mark_done(folder, link)
+                link_statuses.setdefault(folder, {})[link] = 'downloaded'
                 if kept:
                     saved_for_folder += 1
 
@@ -4196,6 +4212,26 @@ def find_and_download(base_path: str):
     finally:
         driver.quit()
         if completed_cleanly:
+            _failure_folders = {f.get('save_directory') for f in failures}
+            _uncertain_folders = {u.get('save_directory') for u in uncertain}
+            _logged = 0
+            for task in tasks:
+                _folder = task['folder']
+                if _folder in _failure_folders or _folder in _uncertain_folders:
+                    continue
+                if not all(tracker.is_done(_folder, lnk) for lnk in task['links']):
+                    continue
+                _saved = [os.path.basename(f) for f in newly_downloaded
+                          if os.path.abspath(os.path.dirname(f)) == os.path.abspath(_folder)]
+                folder_log.append_run(
+                    _folder, 'downloadContent',
+                    links=[{'url': url, 'status': st}
+                           for url, st in link_statuses.get(_folder, {}).items()],
+                    files_saved=_saved,
+                )
+                _logged += 1
+            if _logged:
+                print(f'\n[folder_log] {_logged} folder(s) logged as complete.')
             tracker.clear()
         # Re-emit skipped known failures so the CSV is never stripped of info.
         # Exclude any that were actually downloaded successfully this session.

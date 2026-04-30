@@ -23,6 +23,7 @@ import os
 import re
 import sys
 from pathlib import Path
+import folder_log
 
 # ---------------------------------------------------------------------------
 # Folder name parsing
@@ -426,6 +427,9 @@ def generate(root_dir: str, dry_run: bool) -> int:
         print('(dry run — no files will be written)\n')
 
     for name, folder in entries:
+        if folder_log.has_run(folder, 'generate_html'):
+            print(f'  skip (done)  {name}')
+            continue
         out_path = os.path.join(folder, 'description.html')
         if dry_run:
             print(f'  WOULD WRITE  {out_path}')
@@ -434,6 +438,7 @@ def generate(root_dir: str, dry_run: bool) -> int:
             with open(out_path, 'w', encoding='utf-8') as f:
                 f.write(page_html)
             print(f'  wrote  {out_path}')
+            folder_log.append_run(folder, 'generate_html')
         written += 1
 
     return written

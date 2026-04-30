@@ -1,6 +1,7 @@
 import os
 import re
 from urllib.parse import unquote
+import folder_log
 
 # Matches the Patreon prefix: one or more non-underscore chars (type), underscore,
 # one or more digits (ID), underscore.  Everything after is the real filename.
@@ -105,7 +106,18 @@ def main():
     filePath, extList = getUserInput()
     print(extList)
     fileList, fileRoots = getFileList(filePath, extList)
-    processAndRename(fileList, fileRoots)
+
+    # Group files by folder so we can skip/log at the folder level.
+    folder_map: dict[str, list[str]] = {}
+    for file, root in zip(fileList, fileRoots):
+        folder_map.setdefault(root, []).append(file)
+
+    for folder in sorted(folder_map):
+        if folder_log.has_run(folder, 'prefixFix'):
+            print(f'  [skip] already processed: {os.path.basename(folder)}')
+            continue
+        renames = processAndRename(folder_map[folder], [folder] * len(folder_map[folder]))
+        folder_log.append_run(folder, 'prefixFix', renames=renames)
 
 
 def getUserInput():
@@ -141,8 +153,9 @@ def getFileList(filePath: str, extList: list):
     return fileList, fileRoots
 
 
-def processAndRename(fileList: list, fileRoots: list):
+def processAndRename(fileList: list, fileRoots: list) -> list[dict]:
     """For each file: percent-decode, repair mojibake if needed, then strip the Patreon prefix."""
+    renames: list[dict] = []
     for index, file in enumerate(fileList):
         original_basename = os.path.basename(file)
         working_name = original_basename
@@ -192,8 +205,10 @@ def processAndRename(fileList: list, fileRoots: list):
         try:
             os.rename(file, dest)
             print(f"  renamed: {original_basename!r}  →  {final_name!r}")
+            renames.append({'from': original_basename, 'to': final_name})
         except OSError as e:
             print(f"  rename failed: {e}")
+    return renames
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ import os
 import re
 import sys
 from urllib.parse import unquote
+import folder_log
 
 # Suffixes that indicate a filename was truncated at a URL / filesystem limit.
 _TRUNCATION_SUFFIXES = ('....', '...', '\u2026')
@@ -191,12 +192,14 @@ def _resolve_new_name(filename: str, folder_name: str) -> tuple[str, str] | None
     return None
 
 
-def process(root_dir: str, dry_run: bool) -> list[dict]:
+def process(root_dir: str, dry_run: bool, skip_folders: set[str] | None = None) -> list[dict]:
     """Return report rows: old_path, new_path, strategy, status."""
     report: list[dict] = []
     for dirpath, _, filenames in os.walk(root_dir):
         if '.manual' in filenames:
             print(f'  SKIP (manual)  {dirpath}')
+            continue
+        if skip_folders and dirpath in skip_folders:
             continue
         folder_name = os.path.basename(dirpath)
         for filename in filenames:
@@ -425,7 +428,7 @@ def _detect_video_ext(path: str) -> str | None:
     return None
 
 
-def find_media_misnames(root_dir: str, dry_run: bool) -> list[dict]:
+def find_media_misnames(root_dir: str, dry_run: bool, skip_folders: set[str] | None = None) -> list[dict]:
     """
     Scan for files that are actually video but lack or have a wrong extension.
     Returns report rows: old_path, new_path, status.
@@ -433,6 +436,8 @@ def find_media_misnames(root_dir: str, dry_run: bool) -> list[dict]:
     report = []
     for dirpath, _, filenames in os.walk(root_dir):
         if '.manual' in filenames:
+            continue
+        if skip_folders and dirpath in skip_folders:
             continue
         for filename in filenames:
             _, ext = os.path.splitext(filename)
@@ -480,7 +485,7 @@ def find_media_misnames(root_dir: str, dry_run: bool) -> list[dict]:
     return report
 
 
-def find_funscript_misnames(root_dir: str, dry_run: bool) -> list[dict]:
+def find_funscript_misnames(root_dir: str, dry_run: bool, skip_folders: set[str] | None = None) -> list[dict]:
     """
     Scan for .json files and extension-less files that are actually funscripts.
     Returns report rows: old_path, new_path, status.
@@ -488,6 +493,8 @@ def find_funscript_misnames(root_dir: str, dry_run: bool) -> list[dict]:
     report = []
     for dirpath, _, filenames in os.walk(root_dir):
         if '.manual' in filenames:
+            continue
+        if skip_folders and dirpath in skip_folders:
             continue
         for filename in filenames:
             _, ext = os.path.splitext(filename)
@@ -544,6 +551,7 @@ def find_funscript_video_mismatches(
     dry_run: bool,
     threshold: float = 0.85,
     min_report: float = 0.40,
+    skip_folders: set[str] | None = None,
 ) -> list[dict]:
     """
     Per directory: fuzzy-match .funscript files to video files by normalised name.
@@ -553,6 +561,8 @@ def find_funscript_video_mismatches(
     report: list[dict] = []
     for dirpath, _, filenames in os.walk(root_dir):
         if '.manual' in filenames:
+            continue
+        if skip_folders and dirpath in skip_folders:
             continue
 
         video_stems = {
@@ -644,8 +654,22 @@ if __name__ == '__main__':
         print('(dry run — no changes will be made)')
     print()
 
+    # Collect folders that already have a completed fix_garbled_names run.
+    skip_set: set[str] = set()
+    for _dp, _dirs, _fnames in os.walk(root):
+        _dirs.sort()
+        if '.manual' in _fnames:
+            _dirs[:] = []
+            continue
+        if folder_log.has_run(_dp, 'fix_garbled_names'):
+            skip_set.add(_dp)
+            _dirs[:] = []  # no need to descend into already-done subtrees
+
+    if skip_set and not dry_run:
+        print(f'[skip] {len(skip_set)} folder(s) already processed — skipping.')
+
     print('--- Media content fix (wrong/missing video extension) ---')
-    media_report = find_media_misnames(root, dry_run)
+    media_report = find_media_misnames(root, dry_run, skip_folders=skip_set)
     media_label = 'would be renamed' if dry_run else 'renamed'
     media_count = sum(1 for r in media_report if r['status'] in ('renamed', 'would rename'))
     print(f'\nDone. {media_count} file(s) {media_label}.')
@@ -659,7 +683,7 @@ if __name__ == '__main__':
 
     print()
     print('--- Misnamed funscript fix (wrong/missing .funscript extension) ---')
-    fs_report = find_funscript_misnames(root, dry_run)
+    fs_report = find_funscript_misnames(root, dry_run, skip_folders=skip_set)
     fs_label = 'would be renamed' if dry_run else 'renamed'
     fs_count = sum(1 for r in fs_report if r['status'] in ('renamed', 'would rename'))
     print(f'\nDone. {fs_count} funscript(s) {fs_label}.')
@@ -673,7 +697,7 @@ if __name__ == '__main__':
 
     print()
     print('--- Garbled filename fix ---')
-    garbled_report = process(root, dry_run)
+    garbled_report = process(root, dry_run, skip_folders=skip_set)
     label = 'would be renamed' if dry_run else 'renamed'
     count = sum(1 for r in garbled_report if r['status'] in ('renamed', 'would rename'))
     failed = [r for r in garbled_report if r['status'].startswith('error') or r['status'].startswith('skipped')]
@@ -694,7 +718,7 @@ if __name__ == '__main__':
 
     print()
     print('--- Funscript-to-video name match ---')
-    vm_report = find_funscript_video_mismatches(root, dry_run)
+    vm_report = find_funscript_video_mismatches(root, dry_run, skip_folders=skip_set)
     vm_label = 'would be renamed' if dry_run else 'renamed'
     vm_renamed = sum(1 for r in vm_report if r['status'] in ('renamed', 'would rename'))
     vm_uncertain = sum(1 for r in vm_report if r['status'].startswith('uncertain'))
@@ -706,3 +730,27 @@ if __name__ == '__main__':
             writer.writeheader()
             writer.writerows(vm_report)
         print(f'Report written to: {vm_csv}')
+
+    # Log per-folder (skip dry-run and already-done folders).
+    if not dry_run:
+        all_reports = media_report + fs_report + garbled_report + vm_report
+
+        def _row_folder(row: dict) -> str:
+            for key in ('old_path', 'funscript'):
+                if key in row:
+                    return os.path.dirname(row[key])
+            return ''
+
+        # Walk root to find all folders that were visited (not skipped).
+        for _dp, _dirs, _fnames in os.walk(root):
+            _dirs.sort()
+            if '.manual' in _fnames or _dp in skip_set:
+                _dirs[:] = []
+                continue
+            _rows = [r for r in all_reports if _row_folder(r) == _dp]
+            _changes = [
+                {k: os.path.basename(v) if k in ('old_path', 'new_path', 'funscript', 'suggested') else v
+                 for k, v in row.items()}
+                for row in _rows
+            ]
+            folder_log.append_run(_dp, 'fix_garbled_names', changes=_changes)
