@@ -27,7 +27,7 @@ import urllib.request
 import zipfile
 
 SERVICE   = 'patreon-funscript-video-downloader'
-_ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+_ENV_PATH = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '.env'))
 
 # Pseudo-filesystem types to ignore when listing drives on Linux/macOS
 _PSEUDO_FS = {

@@ -27,7 +27,7 @@ from selenium.common.exceptions import TimeoutException, WebDriverException
 import urllib3.exceptions
 import folder_log
 
-load_dotenv()
+load_dotenv(os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '.env')))
 
 # Prepend the venv bin directory to PATH so that ffmpeg/ffprobe installed there
 # by setup_config.py are found by shutil.which even when the venv isn't activated.
@@ -3375,7 +3375,7 @@ def _dedup_existing(base_path: str) -> int:
 
 def _update_env_file(key: str, value: str):
     """Update a key=value pair in the .env file, preserving all other lines."""
-    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+    env_path = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '.env'))
     if not os.path.exists(env_path):
         return
     lines = []
