@@ -121,6 +121,9 @@ def _rel(path: str, base: str) -> str:
 def _looks_like_path(val: str) -> bool:
     return val.startswith('/') or (len(val) > 2 and val[1] == ':' and val[2] in '/\\')
 
+def _looks_like_url(val: str) -> bool:
+    return val.startswith(('http://', 'https://'))
+
 
 def _status_cls(status: str) -> str:
     s = status.lower()
@@ -161,19 +164,25 @@ def _render_csv_section(fname: str, rows: list[dict], base: str) -> str:
     # Table header
     th = ''.join(f'<th>{_e(c.replace("_", " "))}</th>' for c in cols)
 
-    # Table rows — auto-detect path columns if not in _CSV_META
+    # Table rows — auto-detect path and URL columns if not in _CSV_META
     trs = []
     for row in rows:
         cells = []
         for col in cols:
             val = row.get(col, '')
             is_path = col in path_cols or (not path_cols and _looks_like_path(val))
+            is_url  = not is_path and _looks_like_url(val)
             display = _rel(val, base) if is_path and val else val
             if col == 'status' and val:
                 cls = _status_cls(val)
-                cells.append(f'<td class="st {cls}" title="{_ea(val)}">{_e(val)}</td>')
-            elif is_path and val:
-                cells.append(f'<td class="rpt-path" title="{_ea(val)}">{_e(display)}</td>')
+                cells.append(f'<td class="st {cls}">{_e(val)}</td>')
+            elif (is_path or is_url) and val:
+                extra = 'rpt-path' if is_path else 'rpt-url'
+                cells.append(
+                    f'<td>'
+                    f'<div class="cell-clip {extra}" title="{_ea(val)}">{_e(display)}</div>'
+                    f'</td>'
+                )
             else:
                 cells.append(f'<td>{_e(display)}</td>')
         trs.append('<tr>' + ''.join(cells) + '</tr>')
@@ -684,20 +693,47 @@ body {
 .rpt-body { padding: .5rem .8rem 1rem; border-top: 1px solid #2e2e40; overflow-x: auto; }
 .rpt-tbl {
     border-collapse: collapse; width: 100%; font-size: .75rem;
-    min-width: 500px;
+    table-layout: fixed;
 }
 .rpt-tbl th {
     text-align: left; color: #606080; font-weight: 600;
     padding: .3rem .6rem; border-bottom: 1px solid #2e2e40;
     white-space: nowrap; background: #1a1a22;
+    overflow: hidden; text-overflow: ellipsis;
 }
 .rpt-tbl td {
     padding: .22rem .6rem; border-bottom: 1px solid #1e1e28;
     vertical-align: top; color: #9090b8;
+    overflow: hidden;
 }
 .rpt-tbl tr:last-child td { border-bottom: none; }
 .rpt-tbl tr:hover td { background: #22222e; }
-.rpt-path { color: #7090a8; word-break: break-all; font-size: .72rem; }
+
+/* Long-content cells: clip with ellipsis, click to expand */
+.cell-clip {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: clamp(140px, 28vw, 420px);
+    cursor: pointer;
+    user-select: text;
+}
+.cell-clip::after {
+    content: ' ⋯';
+    font-size: .65em;
+    color: #404060;
+    vertical-align: middle;
+}
+.cell-clip.expanded {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+    max-width: none;
+    word-break: break-all;
+}
+.cell-clip.expanded::after { content: ''; }
+.rpt-path { color: #7090a8; font-size: .72rem; }
+.rpt-url  { color: #6080a0; font-size: .72rem; }
 .st { white-space: nowrap; font-size: .72rem; }
 .st-ok   { color: #60c060; }
 .st-skip { color: #909060; }
@@ -733,6 +769,11 @@ function copyPath(btn) {
         setTimeout(() => btn.textContent = orig, 1500);
     }).catch(() => {});
 }
+
+document.addEventListener('click', function(e) {
+    const el = e.target.closest('.cell-clip');
+    if (el) el.classList.toggle('expanded');
+});
 """
 
 
