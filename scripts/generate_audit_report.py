@@ -398,10 +398,9 @@ def generate(base: str) -> str:
                 status_tags.append('complete')
             else:
                 status_tags.append('partial')
-        for run in reversed(log):
-            if run.get('script') == 'check_funscripts' and run.get('missing'):
-                status_tags.append('missing-fs')
-                break
+        last_fs_run = next((r for r in reversed(log) if r.get('script') == 'check_funscripts'), None)
+        if last_fs_run and last_fs_run.get('missing'):
+            status_tags.append('missing-fs')
         status_str = ' '.join(status_tags)
 
         file_uri = Path(folder_path).as_uri()
