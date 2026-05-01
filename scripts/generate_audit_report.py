@@ -20,11 +20,12 @@ import time
 import folder_log as _flog
 
 
-_SCRIPTS = ('prefixFix', 'downloadContent', 'fix_garbled_names', 'generate_html')
+_SCRIPTS = ('prefixFix', 'downloadContent', 'fix_garbled_names', 'check_funscripts', 'generate_html')
 _LABELS  = {
     'prefixFix':        'Prefix Fix',
     'downloadContent':  'Download',
     'fix_garbled_names':'Name Fix',
+    'check_funscripts': 'FS Check',
     'generate_html':    'HTML',
 }
 _LINK_STATUS_CLASS = {
@@ -134,6 +135,19 @@ def _render_run(run: dict) -> str:
         else:
             parts.append('<span class="empty-note">No renames needed.</span>')
 
+    elif script == 'check_funscripts':
+        missing = run.get('missing', [])
+        total_v = run.get('total_videos', 0)
+        if missing:
+            parts.append('<div class="run-fs-check">')
+            parts.append(f'<span class="sec-label">{len(missing)} of {total_v} video(s) missing funscript:</span>')
+            parts.append('<ul class="missing-list">')
+            parts.extend(f'<li class="missing-video">{_e(v)}</li>' for v in missing)
+            parts.append('</ul>')
+            parts.append('</div>')
+        else:
+            parts.append(f'<span class="empty-note">All {total_v} video(s) have matching funscripts.</span>')
+
     elif script == 'generate_html':
         parts.append('<span class="empty-note">description.html written.</span>')
 
@@ -160,17 +174,19 @@ def generate(base: str) -> str:
 
     # --- aggregate stats ---
     script_done: dict[str, int] = {s: 0 for s in _SCRIPTS}
-    n_downloaded   = 0
-    n_files_saved  = 0
-    n_renames      = 0
-    n_forced       = 0
-    n_with_log     = 0
+    n_downloaded       = 0
+    n_files_saved      = 0
+    n_renames          = 0
+    n_forced           = 0
+    n_with_log         = 0
+    n_missing_scripts  = 0  # videos missing funscripts (from most recent check_funscripts run)
 
     for e in entries:
         log = e['log']
         if log:
             n_with_log += 1
         scripts_seen: set[str] = set()
+        last_fs_check: dict | None = None
         for run in log:
             s = run.get('script', '')
             scripts_seen.add(s)
@@ -183,6 +199,10 @@ def generate(base: str) -> str:
                 n_renames += len(run.get('renames', []))
             elif s == 'fix_garbled_names':
                 n_renames += sum(1 for c in run.get('changes', []) if c.get('status') == 'renamed')
+            elif s == 'check_funscripts':
+                last_fs_check = run
+        if last_fs_check is not None:
+            n_missing_scripts += len(last_fs_check.get('missing', []))
         for s in scripts_seen:
             if s in script_done:
                 script_done[s] += 1
@@ -197,15 +217,18 @@ def generate(base: str) -> str:
                 f'<div class="stat-lbl">{_e(label)}</div>'
                 f'</div>')
 
+    fs_csv_exists = os.path.exists(os.path.join(_reports_dir(base), 'funscript_check.csv'))
+
     cards_html = ''.join([
-        card(total,         'Total folders'),
-        card(n_with_log,    'Folders logged'),
-        card(n_unlogged,    'Not yet processed', 'warn' if n_unlogged else ''),
+        card(total,             'Total folders'),
+        card(n_with_log,        'Folders logged'),
+        card(n_unlogged,        'Not yet processed', 'warn' if n_unlogged else ''),
         card(script_done['downloadContent'], 'Downloads complete'),
-        card(n_downloaded,  'Files downloaded'),
-        card(n_files_saved, 'Files saved'),
-        card(n_renames,     'Files renamed'),
-        card(n_forced,      'Force-rerun entries', 'warn' if n_forced else ''),
+        card(n_downloaded,      'Files downloaded'),
+        card(n_files_saved,     'Files saved'),
+        card(n_renames,         'Files renamed'),
+        card(n_missing_scripts, 'Missing funscripts', 'warn' if n_missing_scripts else ''),
+        card(n_forced,          'Force-rerun entries', 'warn' if n_forced else ''),
     ])
 
     # --- progress bars ---
@@ -250,8 +273,12 @@ def generate(base: str) -> str:
 
     folders_html = '\n'.join(folder_items)
 
+    fs_csv_link = ('<a class="csv-link" href="funscript_check.csv">funscript_check.csv</a>'
+                   if fs_csv_exists else '')
+
     return _build_page(base=_e(base), generated=_e(now),
-                       cards=cards_html, bars=bars_html, folders=folders_html)
+                       cards=cards_html, bars=bars_html, folders=folders_html,
+                       fs_csv_link=fs_csv_link)
 
 
 # ---------------------------------------------------------------------------
@@ -374,7 +401,19 @@ body {
 .s-downloadContent  { background: #1a2e4a; color: #70a0d8; border: 1px solid #264070; }
 .s-prefixFix        { background: #2a1e40; color: #9070c8; border: 1px solid #40306a; }
 .s-fix_garbled_names{ background: #1e2e1e; color: #70b070; border: 1px solid #2a4a2a; }
+.s-check_funscripts { background: #1a2e3a; color: #60b8c8; border: 1px solid #264860; }
 .s-generate_html    { background: #2e2a1a; color: #c0a040; border: 1px solid #4a4020; }
+
+.run-fs-check { }
+.missing-list { margin: .3rem 0 0 1.2rem; }
+.missing-video { color: #c07060; font-size: .76rem; margin-bottom: .1rem; word-break: break-all; }
+
+.csv-link {
+    font-size: .76rem; color: #6090b0; text-decoration: none;
+    border: 1px solid #2a4060; border-radius: 3px; padding: .15rem .45rem;
+    margin-left: .5rem;
+}
+.csv-link:hover { color: #90c0e0; border-color: #4a6080; }
 
 .badge-forced {
     font-size: .65rem; background: #4a2a1a; color: #d07040;
@@ -427,7 +466,7 @@ function filterFolders(q) {
 """
 
 
-def _build_page(*, base, generated, cards, bars, folders) -> str:
+def _build_page(*, base, generated, cards, bars, folders, fs_csv_link='') -> str:
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -445,7 +484,7 @@ def _build_page(*, base, generated, cards, bars, folders) -> str:
 
 <section class="summary-section">
   <div class="stat-cards">{cards}</div>
-  <div class="prog-section-title">Script coverage</div>
+  <div class="prog-section-title">Script coverage{fs_csv_link}</div>
   {bars}
 </section>
 

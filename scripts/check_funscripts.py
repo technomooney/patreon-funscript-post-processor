@@ -22,6 +22,8 @@ import re
 import sys
 from pathlib import Path
 
+import folder_log
+
 # ---------------------------------------------------------------------------
 # Extension sets
 # ---------------------------------------------------------------------------
@@ -101,6 +103,7 @@ def _fuzzy_score(video_stem: str, funscript_base: str) -> float:
 class FolderResult:
     def __init__(self, folder: str):
         self.folder = folder
+        self.total_videos: int = 0
         self.unmatched_videos: list[dict] = []   # {'video', 'suggestion', 'score'}
 
     @property
@@ -110,8 +113,7 @@ class FolderResult:
 
 def _check_folder(folder: str) -> FolderResult | None:
     """
-    Analyse one folder.  Returns None if the folder has no videos and no
-    funscripts (nothing to report).
+    Analyse one folder.  Returns None if the folder has no videos.
     """
     try:
         entries = os.listdir(folder)
@@ -127,6 +129,7 @@ def _check_folder(folder: str) -> FolderResult | None:
         return None
 
     result = FolderResult(folder)
+    result.total_videos = len(videos)
 
     # Build lookup: base_stem → list of funscript filenames
     # base_stem strips axis suffixes AND parenthetical variant suffixes.
@@ -171,7 +174,7 @@ def _check_folder(folder: str) -> FolderResult | None:
 # Main scan
 # ---------------------------------------------------------------------------
 
-def scan(root_dir: str, write_csv: bool) -> list[FolderResult]:
+def scan(root_dir: str) -> list[FolderResult]:
     root_dir = os.path.abspath(root_dir)
     results = []
 
@@ -180,7 +183,14 @@ def scan(root_dir: str, write_csv: bool) -> list[FolderResult]:
         if '.manual' in filenames:
             continue
         result = _check_folder(dirpath)
-        if result and not result.ok:
+        if result is None:
+            continue
+        folder_log.append_run(
+            dirpath, 'check_funscripts',
+            total_videos=result.total_videos,
+            missing=[item['video'] for item in result.unmatched_videos],
+        )
+        if not result.ok:
             results.append(result)
 
     return results
@@ -208,8 +218,14 @@ def _print_results(results: list[FolderResult]):
     print(f'\n  {total_unmatched} video(s) missing funscripts across {len(results)} folder(s).')
 
 
+def _reports_dir(root: str) -> str:
+    path = os.path.join(root, '_reports')
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
 def _write_csv(root_dir: str, results: list[FolderResult]):
-    csv_path = os.path.join(root_dir, 'funscript_check.csv')
+    csv_path = os.path.join(_reports_dir(root_dir), 'funscript_check.csv')
     rows = []
     for r in results:
         for item in r.unmatched_videos:
@@ -236,12 +252,8 @@ if __name__ == '__main__':
         print(f'Directory not found: {root}')
         sys.exit(1)
 
-    write_csv_input = input('Write CSV report? (y/N): ').strip().lower()
-    write_csv = write_csv_input == 'y'
-
     print(f'\nScanning: {root}\n')
-    results = scan(root, write_csv)
+    results = scan(root)
     _print_results(results)
-    if write_csv:
-        _write_csv(root, results)
+    _write_csv(root, results)
     print()

@@ -485,9 +485,23 @@ def find_media_misnames(root_dir: str, dry_run: bool, skip_folders: set[str] | N
     return report
 
 
+def _could_be_json(path: str) -> bool:
+    """Read the first 16 bytes; return True if the file starts with '{' (after optional BOM/whitespace)."""
+    try:
+        with open(path, 'rb') as f:
+            header = f.read(16)
+    except OSError:
+        return False
+    if header.startswith(b'\xef\xbb\xbf'):  # strip UTF-8 BOM
+        header = header[3:]
+    return header.lstrip(b' \t\r\n').startswith(b'{')
+
+
 def find_funscript_misnames(root_dir: str, dry_run: bool, skip_folders: set[str] | None = None) -> list[dict]:
     """
-    Scan for .json files and extension-less files that are actually funscripts.
+    Scan for files that are actually funscripts but have the wrong or missing extension.
+    Uses a two-stage content check (magic-byte header + full JSON parse) so any
+    extension — .f, .fun, .txt, .json, no extension, etc. — is a candidate.
     Returns report rows: old_path, new_path, status.
     """
     report = []
@@ -498,20 +512,18 @@ def find_funscript_misnames(root_dir: str, dry_run: bool, skip_folders: set[str]
             continue
         for filename in filenames:
             _, ext = os.path.splitext(filename)
-            if ext.lower() in ('.funscript',):
-                continue
-            # Accept .json, .funsc (truncated .funscript), trailing dot, no-extension,
-            # or a long/non-ASCII "extension" that is really a title segment.
-            if _is_real_ext(ext) and ext.lower() not in ('.json', '.funsc') and ext != '.':
+            if ext.lower() == '.funscript':
                 continue
 
             old_path = os.path.join(dirpath, filename)
+            if not _could_be_json(old_path):
+                continue
             if not _is_funscript_content(old_path):
                 continue
 
             # Determine new name:
-            #   real ext (.json, .funsc) → replace ext
-            #   trailing dot or no real ext → strip trailing dots, append .funscript
+            #   real ext (anything short, ASCII, no spaces) → replace ext
+            #   trailing dot or non-real ext → strip trailing dots, append .funscript
             if _is_real_ext(ext) and ext != '.':
                 new_name = os.path.splitext(filename)[0] + '.funscript'
             else:
