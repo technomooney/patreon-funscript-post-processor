@@ -474,6 +474,8 @@ body {
 .page-title { font-size: 1.4rem; font-weight: 700; color: #c8c8f0; }
 .page-meta  { font-size: .75rem; color: #606080; margin-top: .3rem; word-break: break-all; }
 .page-meta .sep { margin: 0 .4rem; }
+.jump-link { color: #6070a0; text-decoration: none; }
+.jump-link:hover { color: #9090c8; text-decoration: underline; }
 
 /* ---- summary section ---- */
 .summary-section { margin-bottom: 2.5rem; }
@@ -747,7 +749,7 @@ def _build_page(*, base, generated, cards, bars, folders, fs_csv_link='', report
 
 <header class="page-header">
   <div class="page-title">Folder Audit Report</div>
-  <div class="page-meta">{base}<span class="sep">·</span>Generated {generated}</div>
+  <div class="page-meta">{base}<span class="sep">·</span>Generated {generated}<span class="sep">·</span><a class="jump-link" href="#reports">Jump to Reports</a></div>
 </header>
 
 <section class="summary-section">
@@ -771,7 +773,7 @@ def _build_page(*, base, generated, cards, bars, folders, fs_csv_link='', report
   {folders}
 </section>
 
-<section class="reports-section">
+<section class="reports-section" id="reports">
   <div class="reports-hdr">
     <span class="reports-title">Reports</span>
   </div>
