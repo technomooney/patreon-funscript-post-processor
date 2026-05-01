@@ -604,6 +604,14 @@ def find_funscript_video_mismatches(
             video_stem = video_stems[best_video]
             orig_words = fs_base.split()
 
+            # Absorb trailing zero-token words (emoji, punctuation, etc.) into the
+            # match window.  They are invisible to the normaliser so they aren't
+            # "real" suffix variants — appending them would duplicate anything
+            # already present in the video stem.
+            if match_end < len(orig_words):
+                if not any(_normalize_for_match(w) for w in orig_words[match_end:]):
+                    match_end = len(orig_words)
+
             # Reconstruct: [prefix-label ] + video_stem + [ suffix-variant] + known_label
             prefix_label = (' '.join(orig_words[:n_prefix]) + ' ') if n_prefix else ''
             suffix_variant = (' ' + ' '.join(orig_words[match_end:])) if match_end < len(orig_words) else ''
