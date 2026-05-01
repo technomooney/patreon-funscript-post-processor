@@ -172,12 +172,13 @@ def _render_csv_section(fname: str, rows: list[dict], base: str) -> str:
             val = row.get(col, '')
             is_path = col in path_cols or (not path_cols and _looks_like_path(val))
             is_url  = not is_path and _looks_like_url(val)
+            is_long = is_path or is_url or len(val) > 80
             display = _rel(val, base) if is_path and val else val
             if col == 'status' and val:
                 cls = _status_cls(val)
                 cells.append(f'<td class="st {cls}">{_e(val)}</td>')
-            elif (is_path or is_url) and val:
-                extra = 'rpt-path' if is_path else 'rpt-url'
+            elif is_long and val:
+                extra = 'rpt-path' if is_path else ('rpt-url' if is_url else '')
                 cells.append(
                     f'<td>'
                     f'<div class="cell-clip {extra}" title="{_ea(val)}">{_e(display)}</div>'
