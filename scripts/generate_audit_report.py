@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 
 import folder_log as _flog
 
@@ -249,9 +250,27 @@ def generate(base: str) -> str:
     # --- per-folder items ---
     folder_items: list[str] = []
     for e in entries:
-        name = e['name']
-        log  = e['log']
+        name        = e['name']
+        log         = e['log']
+        folder_path = e['folder']
         scripts_done_set = {run.get('script') for run in log}
+
+        # Status tags (space-separated) used by the JS filter
+        status_tags: list[str] = []
+        if not log:
+            status_tags.append('no-log')
+        else:
+            if all(s in scripts_done_set for s in _SCRIPTS):
+                status_tags.append('complete')
+            else:
+                status_tags.append('partial')
+        for run in reversed(log):
+            if run.get('script') == 'check_funscripts' and run.get('missing'):
+                status_tags.append('missing-fs')
+                break
+        status_str = ' '.join(status_tags)
+
+        file_uri = Path(folder_path).as_uri()
 
         badges = ''.join(
             f'<span class="fbadge {"fb-done" if s in scripts_done_set else "fb-pend"}" title="{_ea(s)}">'
@@ -262,9 +281,13 @@ def generate(base: str) -> str:
         runs_html = ''.join(_render_run(r) for r in log) if log else '<div class="no-log">No history recorded yet.</div>'
 
         folder_items.append(
-            f'<details class="fi" data-name="{_ea(name.lower())}">'
+            f'<details class="fi" data-name="{_ea(name.lower())}" data-status="{_ea(status_str)}" data-path="{_ea(folder_path)}">'
             f'<summary class="fi-sum">'
             f'<span class="fi-name">{_e(name)}</span>'
+            f'<span class="fi-actions">'
+            f'<a class="btn-open" href="{_ea(file_uri)}" title="Open folder" target="_blank">open</a>'
+            f'<button class="btn-copy" onclick="copyPath(this)" title="Copy path">copy</button>'
+            f'</span>'
             f'<span class="fi-badges">{badges}</span>'
             f'</summary>'
             f'<div class="fi-body">{runs_html}</div>'
@@ -341,17 +364,30 @@ body {
 /* ---- folders section ---- */
 .folders-section { }
 .folders-hdr {
-    display: flex; align-items: center; gap: 1rem;
-    margin-bottom: 1rem;
+    display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+    margin-bottom: .6rem;
 }
 .folders-title { font-size: 1rem; font-weight: 600; color: #a0a0c8; }
 .folder-search {
-    flex: 1; max-width: 320px;
+    flex: 1; min-width: 160px; max-width: 320px;
     background: #22222e; border: 1px solid #38384a; border-radius: 4px;
     padding: .35rem .65rem; color: #d0d0e8; font-size: .82rem;
     outline: none;
 }
 .folder-search:focus { border-color: #5050a0; }
+
+/* ---- status filter buttons ---- */
+.status-filters {
+    display: flex; gap: .35rem; flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+.sf-btn {
+    font-size: .72rem; padding: .22rem .6rem; border-radius: 3px;
+    border: 1px solid #38384a; background: #1e1e28; color: #707090;
+    cursor: pointer; font-family: inherit; white-space: nowrap;
+}
+.sf-btn:hover { color: #a0a0c8; border-color: #50508a; }
+.sf-btn.sf-active { background: #2a2a4a; color: #c0c0e8; border-color: #6060b0; }
 
 /* ---- folder item ---- */
 .fi {
@@ -360,10 +396,22 @@ body {
 }
 .fi[open] { border-color: #44446a; }
 .fi-sum {
-    display: flex; align-items: center; gap: .75rem;
+    display: flex; align-items: center; gap: .5rem;
     padding: .55rem .8rem; cursor: pointer; list-style: none;
     user-select: none;
 }
+
+.fi-actions {
+    display: flex; gap: .25rem; align-items: center;
+    flex-shrink: 0; margin-left: .25rem;
+}
+.btn-open, .btn-copy {
+    font-size: .63rem; padding: .1rem .38rem; border-radius: 3px;
+    border: 1px solid #35354a; background: #1e1e2c; color: #60607a;
+    cursor: pointer; text-decoration: none; white-space: nowrap;
+    font-family: inherit; line-height: 1.4;
+}
+.btn-open:hover, .btn-copy:hover { color: #9090c0; border-color: #5050a0; }
 .fi-sum::-webkit-details-marker { display: none; }
 .fi-sum::before {
     content: '▶'; font-size: .65rem; color: #505070;
@@ -457,11 +505,31 @@ body {
 """
 
 _JS = """
+let _sf = 'all';
+
 function filterFolders(q) {
     q = q.toLowerCase().trim();
     document.querySelectorAll('.fi').forEach(el => {
-        el.style.display = !q || el.dataset.name.includes(q) ? '' : 'none';
+        const nameOk   = !q || el.dataset.name.includes(q);
+        const statusOk = _sf === 'all' || (' ' + el.dataset.status + ' ').includes(' ' + _sf + ' ');
+        el.style.display = nameOk && statusOk ? '' : 'none';
     });
+}
+
+function setStatusFilter(btn) {
+    document.querySelectorAll('.sf-btn').forEach(b => b.classList.remove('sf-active'));
+    btn.classList.add('sf-active');
+    _sf = btn.dataset.filter;
+    filterFolders(document.querySelector('.folder-search').value);
+}
+
+function copyPath(btn) {
+    const path = btn.closest('.fi').dataset.path;
+    navigator.clipboard.writeText(path).then(() => {
+        const orig = btn.textContent;
+        btn.textContent = 'copied';
+        setTimeout(() => btn.textContent = orig, 1500);
+    }).catch(() => {});
 }
 """
 
@@ -492,6 +560,13 @@ def _build_page(*, base, generated, cards, bars, folders, fs_csv_link='') -> str
   <div class="folders-hdr">
     <span class="folders-title">Folders</span>
     <input class="folder-search" type="search" placeholder="Filter folders…" oninput="filterFolders(this.value)">
+  </div>
+  <div class="status-filters">
+    <button class="sf-btn sf-active" data-filter="all"        onclick="setStatusFilter(this)">All</button>
+    <button class="sf-btn"           data-filter="no-log"     onclick="setStatusFilter(this)">Not started</button>
+    <button class="sf-btn"           data-filter="partial"    onclick="setStatusFilter(this)">Partial</button>
+    <button class="sf-btn"           data-filter="complete"   onclick="setStatusFilter(this)">Complete</button>
+    <button class="sf-btn"           data-filter="missing-fs" onclick="setStatusFilter(this)">Missing funscript</button>
   </div>
   {folders}
 </section>
