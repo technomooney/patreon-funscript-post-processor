@@ -11,6 +11,7 @@ Usage
   python generate_audit_report.py [directory]
 """
 
+import csv
 import html
 import json
 import os
@@ -69,6 +70,129 @@ def _collect(base: str) -> list[dict]:
             continue
         entries.append({'name': name, 'folder': folder, 'log': _flog.read(folder)})
     return entries
+
+
+# ---------------------------------------------------------------------------
+# CSV report helpers
+# ---------------------------------------------------------------------------
+
+# Friendly names and special column treatment for known CSVs.
+# path_cols: columns whose values are absolute paths — shown relative to base.
+# order: preferred display order (lower = earlier in the Reports section).
+_CSV_META: dict[str, dict] = {
+    'funscript_check.csv':        {'title': 'Missing Funscripts',          'path_cols': {'folder'},                        'order': 1},
+    'funscript_video_matches.csv':{'title': 'Funscript-to-Video Matches',  'path_cols': {'funscript', 'suggested'},        'order': 2},
+    'garbled_names.csv':          {'title': 'Garbled Name Fixes',          'path_cols': {'old_path', 'new_path'},          'order': 3},
+    'funscript_renames.csv':      {'title': 'Funscript Extension Fixes',   'path_cols': {'old_path', 'new_path'},          'order': 4},
+    'media_renames.csv':          {'title': 'Media Extension Fixes',       'path_cols': {'old_path', 'new_path'},          'order': 5},
+    'failed_downloads.csv':       {'title': 'Failed Downloads',            'path_cols': {'save_directory'},                'order': 6},
+    'uncertain_downloads.csv':    {'title': 'Uncertain Downloads',         'path_cols': {'save_directory'},                'order': 7},
+    'many_funscripts.csv':        {'title': 'Folders with Many Funscripts','path_cols': {'folder'},                        'order': 8},
+    'mega_error6.csv':            {'title': 'Mega Error Log',              'path_cols': set(),                             'order': 9},
+}
+
+
+def _csv_title(fname: str) -> str:
+    meta = _CSV_META.get(fname)
+    if meta:
+        return meta['title']
+    return fname.replace('_', ' ').replace('.csv', '').title()
+
+
+def _read_csv_report(path: str) -> list[dict]:
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, newline='', encoding='utf-8') as f:
+            return list(csv.DictReader(f))
+    except (OSError, csv.Error):
+        return []
+
+
+def _rel(path: str, base: str) -> str:
+    """Return *path* relative to *base* for compact display."""
+    try:
+        r = os.path.relpath(path, base)
+        return r if not r.startswith('..') else os.path.basename(path)
+    except ValueError:
+        return os.path.basename(path)
+
+
+def _looks_like_path(val: str) -> bool:
+    return val.startswith('/') or (len(val) > 2 and val[1] == ':' and val[2] in '/\\')
+
+
+def _status_cls(status: str) -> str:
+    s = status.lower()
+    if s in ('renamed', 'downloaded', 'would rename'):
+        return 'st-ok'
+    if s.startswith('skipped') or s == 'previously_done':
+        return 'st-skip'
+    if s.startswith('error'):
+        return 'st-fail'
+    if s.startswith('uncertain'):
+        return 'st-warn'
+    return 'st-other'
+
+
+def _render_csv_section(fname: str, rows: list[dict], base: str) -> str:
+    if not rows:
+        return ''
+
+    title     = _csv_title(fname)
+    meta      = _CSV_META.get(fname, {})
+    path_cols: set[str] = meta.get('path_cols', set())
+
+    cols = list(rows[0].keys()) if rows else []
+
+    # Count by status for the summary badge
+    has_status = 'status' in cols
+    status_counts: dict[str, int] = {}
+    if has_status:
+        for row in rows:
+            s = row.get('status', '')
+            status_counts[s] = status_counts.get(s, 0) + 1
+        badge_parts = [f'<span class="rpt-badge {_status_cls(s)}">{n} {_e(s)}</span>'
+                       for s, n in sorted(status_counts.items(), key=lambda x: -x[1])]
+    else:
+        badge_parts = [f'<span class="rpt-badge st-other">{len(rows)} rows</span>']
+    badge_html = ' '.join(badge_parts)
+
+    # Table header
+    th = ''.join(f'<th>{_e(c.replace("_", " "))}</th>' for c in cols)
+
+    # Table rows — auto-detect path columns if not in _CSV_META
+    trs = []
+    for row in rows:
+        cells = []
+        for col in cols:
+            val = row.get(col, '')
+            is_path = col in path_cols or (not path_cols and _looks_like_path(val))
+            display = _rel(val, base) if is_path and val else val
+            if col == 'status' and val:
+                cls = _status_cls(val)
+                cells.append(f'<td class="st {cls}" title="{_ea(val)}">{_e(val)}</td>')
+            elif is_path and val:
+                cells.append(f'<td class="rpt-path" title="{_ea(val)}">{_e(display)}</td>')
+            else:
+                cells.append(f'<td>{_e(display)}</td>')
+        trs.append('<tr>' + ''.join(cells) + '</tr>')
+
+    rows_html = '\n'.join(trs)
+
+    return (
+        f'<details class="rpt">'
+        f'<summary class="rpt-sum">'
+        f'<span class="rpt-title">{_e(title)}</span>'
+        f'<span class="rpt-badges">{badge_html}</span>'
+        f'<span class="rpt-fname">{_e(fname)}</span>'
+        f'</summary>'
+        f'<div class="rpt-body">'
+        f'<table class="rpt-tbl"><thead><tr>{th}</tr></thead>'
+        f'<tbody>{rows_html}</tbody></table>'
+        f'</div>'
+        f'</details>'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -299,9 +423,28 @@ def generate(base: str) -> str:
     fs_csv_link = ('<a class="csv-link" href="funscript_check.csv">funscript_check.csv</a>'
                    if fs_csv_exists else '')
 
+    # --- report tables: scan all *.csv files in _reports/ ---
+    rdir = _reports_dir(base)
+    try:
+        csv_files = sorted(
+            (f for f in os.listdir(rdir) if f.endswith('.csv')),
+            key=lambda f: (_CSV_META.get(f, {}).get('order', 99), f)
+        )
+    except OSError:
+        csv_files = []
+
+    report_parts: list[str] = []
+    for fname in csv_files:
+        rows = _read_csv_report(os.path.join(rdir, fname))
+        chunk = _render_csv_section(fname, rows, base)
+        if chunk:
+            report_parts.append(chunk)
+
+    reports_html = '\n'.join(report_parts)
+
     return _build_page(base=_e(base), generated=_e(now),
                        cards=cards_html, bars=bars_html, folders=folders_html,
-                       fs_csv_link=fs_csv_link)
+                       fs_csv_link=fs_csv_link, reports=reports_html)
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +645,63 @@ body {
     padding: .05rem .35rem; color: #9090b8; margin: .1rem .2rem .1rem 0;
     word-break: break-all;
 }
+
+/* ---- reports section ---- */
+.reports-section { margin-top: 2.5rem; border-top: 1px solid #2e2e40; padding-top: 1.5rem; }
+.reports-hdr { margin-bottom: 1rem; }
+.reports-title { font-size: 1rem; font-weight: 600; color: #a0a0c8; }
+
+.rpt {
+    background: #1e1e28; border: 1px solid #2e2e40;
+    border-radius: 5px; margin-bottom: .45rem;
+}
+.rpt[open] { border-color: #44446a; }
+.rpt-sum {
+    display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
+    padding: .5rem .8rem; cursor: pointer; list-style: none; user-select: none;
+}
+.rpt-sum::-webkit-details-marker { display: none; }
+.rpt-sum::before {
+    content: '▶'; font-size: .65rem; color: #505070;
+    transition: transform .15s; flex-shrink: 0;
+}
+.rpt[open] > .rpt-sum::before { transform: rotate(90deg); }
+.rpt-title { font-size: .85rem; color: #c0c0e0; flex-shrink: 0; }
+.rpt-badges { display: flex; gap: .3rem; flex-wrap: wrap; flex: 1; }
+.rpt-badge {
+    font-size: .66rem; padding: .1rem .4rem; border-radius: 3px;
+    white-space: nowrap;
+}
+.rpt-badge.st-ok   { background: #1a3a1a; color: #60c060; border: 1px solid #2a5a2a; }
+.rpt-badge.st-skip { background: #2a2a1e; color: #909060; border: 1px solid #3a3a28; }
+.rpt-badge.st-fail { background: #3a1a1a; color: #c06060; border: 1px solid #5a2a2a; }
+.rpt-badge.st-warn { background: #2e2210; color: #c09040; border: 1px solid #504020; }
+.rpt-badge.st-other{ background: #1e2a2e; color: #6090a0; border: 1px solid #2a3e46; }
+.rpt-fname { font-size: .68rem; color: #404060; flex-shrink: 0; margin-left: auto; }
+
+.rpt-body { padding: .5rem .8rem 1rem; border-top: 1px solid #2e2e40; overflow-x: auto; }
+.rpt-tbl {
+    border-collapse: collapse; width: 100%; font-size: .75rem;
+    min-width: 500px;
+}
+.rpt-tbl th {
+    text-align: left; color: #606080; font-weight: 600;
+    padding: .3rem .6rem; border-bottom: 1px solid #2e2e40;
+    white-space: nowrap; background: #1a1a22;
+}
+.rpt-tbl td {
+    padding: .22rem .6rem; border-bottom: 1px solid #1e1e28;
+    vertical-align: top; color: #9090b8;
+}
+.rpt-tbl tr:last-child td { border-bottom: none; }
+.rpt-tbl tr:hover td { background: #22222e; }
+.rpt-path { color: #7090a8; word-break: break-all; font-size: .72rem; }
+.st { white-space: nowrap; font-size: .72rem; }
+.st-ok   { color: #60c060; }
+.st-skip { color: #909060; }
+.st-fail { color: #c06060; }
+.st-warn { color: #c09040; }
+.st-other{ color: #6090a0; }
 """
 
 _JS = """
@@ -534,7 +734,7 @@ function copyPath(btn) {
 """
 
 
-def _build_page(*, base, generated, cards, bars, folders, fs_csv_link='') -> str:
+def _build_page(*, base, generated, cards, bars, folders, fs_csv_link='', reports='') -> str:
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -569,6 +769,13 @@ def _build_page(*, base, generated, cards, bars, folders, fs_csv_link='') -> str
     <button class="sf-btn"           data-filter="missing-fs" onclick="setStatusFilter(this)">Missing funscript</button>
   </div>
   {folders}
+</section>
+
+<section class="reports-section">
+  <div class="reports-hdr">
+    <span class="reports-title">Reports</span>
+  </div>
+  {reports}
 </section>
 
 <script>{_JS}</script>

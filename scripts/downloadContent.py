@@ -3875,7 +3875,7 @@ def _load_known_failures(base_path: str) -> tuple[set[str], list[dict]]:
     full_rows is the original data to re-emit at the end so no info is lost.
     Returns empty structures when the file is absent or unreadable.
     """
-    csv_path = os.path.join(base_path, 'failed_downloads.csv')
+    csv_path = os.path.join(_reports_dir(base_path), 'failed_downloads.csv')
     if not os.path.isfile(csv_path):
         return set(), []
     links: set[str] = set()
