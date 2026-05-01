@@ -487,6 +487,25 @@ body {
 .jump-link { color: #6070a0; text-decoration: none; }
 .jump-link:hover { color: #9090c8; text-decoration: underline; }
 
+/* ---- tips box ---- */
+.tips-box {
+    background: #1c1c28; border: 1px solid #30304a;
+    border-radius: 5px; margin-bottom: 1.5rem;
+}
+.tips-sum {
+    padding: .45rem .8rem; cursor: pointer; list-style: none;
+    font-size: .78rem; color: #707090; user-select: none;
+}
+.tips-sum::-webkit-details-marker { display: none; }
+.tips-sum::before { content: '▶  '; font-size: .6rem; color: #505070; }
+.tips-box[open] > .tips-sum::before { content: '▼  '; }
+.tips-body { padding: .6rem .9rem 1rem; border-top: 1px solid #2a2a40; }
+.tips-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: .45rem .8rem; }
+.tip { display: flex; flex-direction: column; font-size: .76rem; gap: .1rem; }
+.tip-key { color: #8080b0; font-weight: 600; }
+.tip-val { color: #7070a0; line-height: 1.4; }
+.tip-val b { color: #a0a0c8; font-weight: 600; }
+
 /* ---- summary section ---- */
 .summary-section { margin-bottom: 2.5rem; }
 
@@ -793,6 +812,22 @@ def _build_page(*, base, generated, cards, bars, folders, fs_csv_link='', report
   <div class="page-title">Folder Audit Report</div>
   <div class="page-meta">{base}<span class="sep">·</span>Generated {generated}<span class="sep">·</span><a class="jump-link" href="#reports">Jump to Reports</a></div>
 </header>
+
+<details class="tips-box">
+  <summary class="tips-sum">Usage tips</summary>
+  <div class="tips-body">
+    <div class="tips-grid">
+      <div class="tip"><span class="tip-key">Folders</span><span class="tip-val">Click any folder row to expand its run history.</span></div>
+      <div class="tip"><span class="tip-key">Search</span><span class="tip-val">Type in the search box to filter folders by name.</span></div>
+      <div class="tip"><span class="tip-key">Status filter</span><span class="tip-val">Use the All / Not started / Partial / Complete / Missing funscript buttons to filter the folder list. Works together with the search box.</span></div>
+      <div class="tip"><span class="tip-key">Open folder</span><span class="tip-val">Click <b>open</b> on any folder row to open it in your file manager.</span></div>
+      <div class="tip"><span class="tip-key">Copy path</span><span class="tip-val">Click <b>copy</b> on any folder row to copy the full path to your clipboard.</span></div>
+      <div class="tip"><span class="tip-key">Reports</span><span class="tip-val">Click <b>Jump to Reports</b> in the header to skip straight to the CSV report tables at the bottom.</span></div>
+      <div class="tip"><span class="tip-key">Long cells</span><span class="tip-val">Truncated cells in report tables show <b>⋯</b> — click a cell to expand it in place, click again to collapse.</span></div>
+      <div class="tip"><span class="tip-key">Full path</span><span class="tip-val">Hover over any truncated path or URL cell to see the full value in a tooltip.</span></div>
+    </div>
+  </div>
+</details>
 
 <section class="summary-section">
   <div class="stat-cards">{cards}</div>
