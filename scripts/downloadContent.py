@@ -232,18 +232,23 @@ class MegaRateLimitedError(Exception):
 # Parsing helpers
 # ---------------------------------------------------------------------------
 
-def read_links_file(path: str) -> list[str]:
-    """Read URLs from a .links file: one per line, blank lines and # comments ignored."""
-    links = []
+def read_domain_filter(path: str) -> list[str]:
+    """Read domain patterns from a .links file: one per line, blank lines and # comments ignored."""
+    patterns = []
     try:
         with open(path, encoding='utf-8') as f:
             for line in f:
-                line = line.strip()
+                line = line.strip().lower()
                 if line and not line.startswith('#'):
-                    links.append(line)
+                    patterns.append(line)
     except OSError:
         pass
-    return list(dict.fromkeys(links))
+    return list(dict.fromkeys(patterns))
+
+
+def _domain_matches_filter(url: str, patterns: list[str]) -> bool:
+    domain = get_domain(url).lower()
+    return any(p in domain for p in patterns)
 
 
 def extract_links_from_description(desc_path: str) -> list:
@@ -3474,7 +3479,7 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
             if folder_log.has_run(root, 'downloadContent'):
                 print(f'[skip] already downloaded: {_safe(os.path.basename(root))}')
                 continue
-        if 'description.json' not in files and not has_links_file:
+        if 'description.json' not in files:
             continue
 
         all_funscripts = glob.glob(os.path.join(glob.escape(root), '*.funscript'))
@@ -3496,16 +3501,17 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
         else:
             funscript_basename = os.path.basename(root)
 
+        desc_path = os.path.join(root, 'description.json')
+        links = extract_links_from_description(desc_path)
+
         if has_links_file:
-            links = read_links_file(links_file)
-            print(f'  [.links] {len(links)} link(s) from override file in: {_safe(os.path.basename(root))}')
-        else:
-            desc_path = os.path.join(root, 'description.json')
-            links = extract_links_from_description(desc_path)
+            domain_filter = read_domain_filter(links_file)
+            before = len(links)
+            links = [l for l in links if _domain_matches_filter(l, domain_filter)]
+            print(f'  [.links] domain filter {domain_filter} — {len(links)}/{before} link(s) matched in: {_safe(os.path.basename(root))}')
 
         if not links:
-            if not has_links_file:
-                print(f"[SKIP] No links in: {desc_path}")
+            print(f"[SKIP] No links in: {desc_path}")
             continue
 
         validated_links = []
