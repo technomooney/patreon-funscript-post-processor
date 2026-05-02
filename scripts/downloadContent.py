@@ -232,6 +232,20 @@ class MegaRateLimitedError(Exception):
 # Parsing helpers
 # ---------------------------------------------------------------------------
 
+def read_links_file(path: str) -> list[str]:
+    """Read URLs from a .links file: one per line, blank lines and # comments ignored."""
+    links = []
+    try:
+        with open(path, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    links.append(line)
+    except OSError:
+        pass
+    return list(dict.fromkeys(links))
+
+
 def extract_links_from_description(desc_path: str) -> list:
     """Recursively extract all href values from link marks in a ProseMirror JSON file."""
     with open(desc_path, 'r', encoding='utf-8') as f:
@@ -3454,10 +3468,13 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
         if '.manual' in files:
             manual_folders.append(root)
             continue
-        if folder_log.has_run(root, 'downloadContent'):
-            print(f'[skip] already downloaded: {_safe(os.path.basename(root))}')
-            continue
-        if 'description.json' not in files:
+        links_file = os.path.join(root, '.links')
+        has_links_file = os.path.isfile(links_file)
+        if not has_links_file:
+            if folder_log.has_run(root, 'downloadContent'):
+                print(f'[skip] already downloaded: {_safe(os.path.basename(root))}')
+                continue
+        if 'description.json' not in files and not has_links_file:
             continue
 
         all_funscripts = glob.glob(os.path.join(glob.escape(root), '*.funscript'))
@@ -3479,11 +3496,16 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
         else:
             funscript_basename = os.path.basename(root)
 
-        desc_path = os.path.join(root, 'description.json')
-        links = extract_links_from_description(desc_path)
+        if has_links_file:
+            links = read_links_file(links_file)
+            print(f'  [.links] {len(links)} link(s) from override file in: {_safe(os.path.basename(root))}')
+        else:
+            desc_path = os.path.join(root, 'description.json')
+            links = extract_links_from_description(desc_path)
 
         if not links:
-            print(f"[SKIP] No links in: {desc_path}")
+            if not has_links_file:
+                print(f"[SKIP] No links in: {desc_path}")
             continue
 
         validated_links = []
