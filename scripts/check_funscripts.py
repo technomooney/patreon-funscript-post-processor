@@ -180,8 +180,6 @@ def scan(root_dir: str) -> list[FolderResult]:
 
     for dirpath, dirnames, filenames in os.walk(root_dir):
         dirnames.sort()
-        if '.manual' in filenames:
-            continue
         result = _check_folder(dirpath)
         if result is None:
             continue
