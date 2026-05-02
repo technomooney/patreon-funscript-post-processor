@@ -4289,7 +4289,31 @@ def find_and_download(base_path: str):
         _write_playlist(base_path, newly_downloaded)
 
 
+def _print_handlers():
+    """Print available handler names for use in a .links filter file."""
+    # Build reverse map: handler_name → [domains]
+    by_handler: dict[str, list[str]] = {}
+    for domain, fn in DOMAIN_HANDLERS.items():
+        name = fn.__name__.removeprefix('download_')
+        by_handler.setdefault(name, []).append(domain)
+
+    print('Available handler names for .links filter files:')
+    print()
+    width = max(len(n) for n in by_handler) + 2
+    for name in sorted(by_handler):
+        domains = ', '.join(sorted(by_handler[name]))
+        print(f'  {name:<{width}} {domains}')
+    print(f'  {"ytdlp":<{width}} (fallback for all other domains)')
+    print()
+    print('Put one or more names in a .links file (one per line) inside a folder')
+    print('to download only links handled by those handlers. Matching is by substring,')
+    print('so "yandex" matches "yandex_disk", "rule34" matches both rule34 handlers, etc.')
+
+
 def main():
+    if '--handlers' in sys.argv:
+        _print_handlers()
+        return
     base_path = input("Enter full file path to scan for downloads: ").strip()
     if not os.path.isdir(base_path):
         print(f"Directory not found: {base_path}")
