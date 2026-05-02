@@ -232,8 +232,8 @@ class MegaRateLimitedError(Exception):
 # Parsing helpers
 # ---------------------------------------------------------------------------
 
-def read_domain_filter(path: str) -> list[str]:
-    """Read domain patterns from a .links file: one per line, blank lines and # comments ignored."""
+def read_links_filter(path: str) -> list[str]:
+    """Read handler-name patterns from a .links file: one per line, blank lines and # comments ignored."""
     patterns = []
     try:
         with open(path, encoding='utf-8') as f:
@@ -244,11 +244,6 @@ def read_domain_filter(path: str) -> list[str]:
     except OSError:
         pass
     return list(dict.fromkeys(patterns))
-
-
-def _domain_matches_filter(url: str, patterns: list[str]) -> bool:
-    domain = get_domain(url).lower()
-    return any(p in domain for p in patterns)
 
 
 def extract_links_from_description(desc_path: str) -> list:
@@ -3019,6 +3014,23 @@ DOMAIN_HANDLERS = {
 }
 
 
+def _handler_name_for_url(url: str) -> str:
+    """Return the handler name that would be used for *url*, e.g. 'yandex_disk', 'mega', 'ytdlp'."""
+    try:
+        matched_domain = check_domain(url)
+        handler = DOMAIN_HANDLERS.get(matched_domain)
+        if handler:
+            return handler.__name__.removeprefix('download_')
+    except UnknownDomainError:
+        pass
+    return 'ytdlp'
+
+
+def _link_matches_handler_filter(url: str, patterns: list[str]) -> bool:
+    handler_name = _handler_name_for_url(url)
+    return any(p in handler_name for p in patterns)
+
+
 # ---------------------------------------------------------------------------
 # Main scanning + download logic
 # ---------------------------------------------------------------------------
@@ -3505,10 +3517,10 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
         links = extract_links_from_description(desc_path)
 
         if has_links_file:
-            domain_filter = read_domain_filter(links_file)
+            handler_filter = read_links_filter(links_file)
             before = len(links)
-            links = [l for l in links if _domain_matches_filter(l, domain_filter)]
-            print(f'  [.links] domain filter {domain_filter} — {len(links)}/{before} link(s) matched in: {_safe(os.path.basename(root))}')
+            links = [l for l in links if _link_matches_handler_filter(l, handler_filter)]
+            print(f'  [.links] handler filter {handler_filter} — {len(links)}/{before} link(s) matched in: {_safe(os.path.basename(root))}')
 
         if not links:
             print(f"[SKIP] No links in: {desc_path}")
