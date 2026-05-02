@@ -227,6 +227,40 @@ def _render_rename_row(frm: str, to: str, note: str = '') -> str:
             f'{note_html}'
             f'</div>')
 
+def _render_runs(log: list[dict]) -> str:
+    """Render all runs, collapsing consecutive same-script groups to latest + hidden earlier."""
+    if not log:
+        return '<div class="no-log">No history recorded yet.</div>'
+
+    # Group consecutive same-script runs
+    groups: list[tuple[str, list[dict]]] = []
+    for run in log:
+        script = run.get('script', '?')
+        if groups and groups[-1][0] == script:
+            groups[-1][1].append(run)
+        else:
+            groups.append((script, [run]))
+
+    parts: list[str] = []
+    for script, runs in groups:
+        if len(runs) == 1:
+            parts.append(_render_run(runs[0]))
+        else:
+            label   = _LABELS.get(script, script)
+            n       = len(runs) - 1
+            earlier = ''.join(_render_run(r) for r in runs[:-1])
+            noun    = 'run' if n == 1 else 'runs'
+            parts.append(
+                f'<details class="older-runs">'
+                f'<summary class="older-runs-sum">{n} earlier {_e(label)} {noun}</summary>'
+                f'<div class="older-runs-body">{earlier}</div>'
+                f'</details>'
+            )
+            parts.append(_render_run(runs[-1]))
+
+    return ''.join(parts)
+
+
 def _render_run(run: dict) -> str:
     script  = run.get('script', '?')
     ts      = run.get('timestamp', '')
@@ -411,7 +445,7 @@ def generate(base: str) -> str:
             for s in _SCRIPTS
         )
 
-        runs_html = ''.join(_render_run(r) for r in log) if log else '<div class="no-log">No history recorded yet.</div>'
+        runs_html = _render_runs(log)
 
         folder_items.append(
             f'<details class="fi" data-name="{_ea(name.lower())}" data-status="{_ea(status_str)}" data-path="{_ea(folder_path)}">'
@@ -604,6 +638,21 @@ body {
 .fi-body { padding: .75rem .8rem 1rem; border-top: 1px solid #2e2e40; }
 
 .no-log { font-size: .78rem; color: #505060; font-style: italic; }
+
+/* ---- collapsed older runs ---- */
+.older-runs { margin-bottom: .5rem; }
+.older-runs-sum {
+    display: inline-block; list-style: none;
+    font-size: .68rem; color: #404060; cursor: pointer;
+    padding: .15rem .5rem; border-radius: 3px;
+    border: 1px solid #2a2a3a; background: #1c1c26;
+    user-select: none;
+}
+.older-runs-sum::-webkit-details-marker { display: none; }
+.older-runs-sum::before { content: '▶  '; font-size: .6rem; }
+.older-runs[open] > .older-runs-sum::before { content: '▼  '; }
+.older-runs-sum:hover { color: #7070a0; border-color: #40406a; }
+.older-runs-body { margin-top: .35rem; opacity: .7; }
 
 /* ---- run entry ---- */
 .run-entry {
