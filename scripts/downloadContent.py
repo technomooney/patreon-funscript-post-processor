@@ -17,7 +17,7 @@ import glob
 import urllib.error
 import urllib.request
 from pathlib import Path
-from urllib.parse import urlparse, quote, unquote
+from urllib.parse import urlparse, quote, unquote, parse_qs
 from dotenv import load_dotenv
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
@@ -1702,213 +1702,13 @@ def download_hanimetv(driver, url: str, download_dir: str) -> bool:
 # Cached Bearer token — obtained once per session on first iwara.tv download.
 _iwara_token: str | None = None
 
-# Whether the browser session has already completed the iwara.tv login flow.
-_iwara_browser_logged_in: bool = False
-
-
-def _iwara_browser_login(driver) -> bool:
-    """Log into iwara.tv via the browser UI. Returns True if successful."""
-    global _iwara_browser_logged_in
-    if _iwara_browser_logged_in:
-        return True
-
-    email    = _get_secret('IWARA_EMAIL').strip()
-    password = _get_secret('IWARA_PASSWORD').strip()
-    if not email or not password:
-        print('  [iwara.tv] no credentials — set IWARA_EMAIL and IWARA_PASSWORD via setup_credentials.py')
-        return False
-
-    for attempt in range(3):
-        driver.get('https://www.iwara.tv/login')
-        time.sleep(2)
-
-        page_src = driver.page_source.lower()
-        if 'too many requests' in page_src or '429' in driver.title:
-            wait = [1, 5, 10][attempt]
-            print(f'  [iwara.tv] rate-limited on login page — waiting {wait}s before retry {attempt + 1}/3...')
-            time.sleep(wait)
-            continue
-        break
-    else:
-        print('  [iwara.tv] login page rate-limited after 3 attempts')
-        return False
-
-    # Dismiss age gate if present.
-    try:
-        age_btn = driver.find_element(By.XPATH,
-            '//button[contains(normalize-space(.),"18") or '
-            'contains(normalize-space(.),"Yes") or '
-            'contains(normalize-space(.),"Enter") or '
-            'contains(normalize-space(.),"I am")]'
-        )
-        age_btn.click()
-        time.sleep(1)
-    except WebDriverException:
-        pass
-
-    try:
-        wait = WebDriverWait(driver, 10)
-
-        email_field = wait.until(EC.presence_of_element_located(
-            (By.XPATH, '//input[@type="email" or @name="email" or @autocomplete="email"]')
-        ))
-        email_field.click()
-        time.sleep(0.3)
-        email_field.clear()
-        for char in email:
-            email_field.send_keys(char)
-            time.sleep(0.05)
-
-        pw_field = driver.find_element(By.XPATH, '//input[@type="password"]')
-        pw_field.click()
-        time.sleep(0.3)
-        for char in password:
-            pw_field.send_keys(char)
-            time.sleep(0.05)
-
-        time.sleep(0.5)
-        # Find the submit button scoped to the login form so we don't
-        # accidentally click a navbar/search form's submit button instead.
-        try:
-            login_form = pw_field.find_element(By.XPATH, './ancestor::form')
-            submit = login_form.find_element(By.XPATH, './/button[@type="submit"]')
-        except WebDriverException:
-            # Fallback: pick the last submit button (search is usually first)
-            submits = driver.find_elements(By.XPATH, '//button[@type="submit"]')
-            submit = submits[-1] if submits else driver.find_element(By.XPATH, '//button[@type="submit"]')
-        for submit_attempt in range(3):
-            driver.execute_script('arguments[0].click()', submit)
-
-            # Wait up to 10 s for the URL to change away from the login page.
-            try:
-                WebDriverWait(driver, 10).until(
-                    lambda _: 'login' not in driver.current_url
-                )
-            except WebDriverException:
-                pass
-
-            # If still on the login page, check for a rate-limit response.
-            if 'login' in driver.current_url:
-                page_src = driver.page_source.lower()
-                if 'too many requests' in page_src or '429' in page_src:
-                    wait = [1, 5, 10][submit_attempt]
-                    print(f'  [iwara.tv] rate-limited after submit — waiting {wait}s before retry {submit_attempt + 1}/3...')
-                    time.sleep(wait)
-                    continue
-                # Not a rate-limit — just failed.
-                print(f'  [iwara.tv] login did not redirect — still on: {driver.current_url}')
-                print(f'  [iwara.tv] page title: {driver.title!r}')
-                return False
-            break
-        else:
-            print('  [iwara.tv] login submit rate-limited after 3 attempts')
-            return False
-
-        print('  [iwara.tv] browser login successful')
-
-        _iwara_browser_logged_in = True
-        return True
-    except Exception as e:
-        print(f'  [iwara.tv] browser login failed: {e}')
-        return False
-
-
-def _download_iwara_browser(driver, url: str, download_dir: str) -> bool:
-    """Use the browser to scrape download links when the API quality list is incomplete."""
-    if not _iwara_browser_login(driver):
-        return False
-
-    time.sleep(2)  # Let session establish before navigating.
-    driver.get(url)
-    time.sleep(5)
-    print(f'  [iwara.tv] navigated to video — current URL: {driver.current_url}')
-
-    # If the SPA redirected us away from the video path (e.g. to home/search),
-    # navigate again — the session cookie is usually fully set by now.
-    video_path = urlparse(url).path
-    if urlparse(driver.current_url).path != video_path:
-        print('  [iwara.tv] unexpected redirect, retrying navigation...')
-        driver.get(url)
-        time.sleep(5)
-        print(f'  [iwara.tv] current URL after retry: {driver.current_url}')
-
-    # If the React app shows an error page on first load, a refresh usually fixes it.
-    if 'error' in driver.title.lower():
-        print(f'  [iwara.tv] got error page ({driver.title!r}), refreshing...')
-        driver.refresh()
-        time.sleep(5)
-
-    # Dismiss age gate if it appears on the video page.
-    try:
-        age_btn = driver.find_element(By.XPATH,
-            '//button[contains(normalize-space(.),"18") or '
-            'contains(normalize-space(.),"Yes") or '
-            'contains(normalize-space(.),"Enter") or '
-            'contains(normalize-space(.),"I am")]'
-        )
-        age_btn.click()
-        time.sleep(2)
-    except WebDriverException:
-        pass
-
-    print(f'  [iwara.tv] page title after load: {driver.title!r}')
-
-    # Collect all CDN download/view links rendered by the React app.
-    links = driver.find_elements(By.XPATH,
-        '//a[contains(@href,".iwara.tv/download") or contains(@href,".iwara.tv/view")]'
-    )
-
-    if not links:
-        # Print all hrefs to help diagnose the correct selector.
-        all_hrefs = [el.get_attribute('href') for el in driver.find_elements(By.XPATH, '//a[@href]')]
-        print('  [iwara.tv] no CDN links found — all hrefs on page:')
-        for _href in all_hrefs:
-            print(f'    {_href}')
-        return False
-
-    max_res = int(os.getenv('MAX_RESOLUTION', '1080'))
-
-    def _res_from_href(href: str) -> int:
-        href_lower = href.lower()
-        if 'preview' in href_lower:
-            return 0
-        for _kw in ('source',):
-            if _kw in href_lower:
-                return 9999
-        # filename pattern: ..._1080.mp4, ..._540.mp4, ..._360.mp4
-        m = re.search(r'_(\d+)\.mp4', href_lower)
-        if m:
-            return int(m.group(1))
-        return 1
-
-    scored = [(el, _res_from_href(el.get_attribute('href') or '')) for el in links]
-    scored.sort(key=lambda x: x[1], reverse=True)
-
-    # If source is available and every transcode is below max_res, prefer source —
-    # a lower-resolution transcode is not better than the original.
-    best_transcode = max((r for _, r in scored if r not in (0, 9999)), default=0)
-    source_items = [(el, r) for el, r in scored if r == 9999]
-    if source_items and best_transcode < max_res:
-        chosen_el, chosen_res = source_items[0]
-    else:
-        chosen_el, chosen_res = scored[0]
-        for el, res in scored:
-            if res <= max_res:
-                chosen_el, chosen_res = el, res
-                break
-
-    download_url = chosen_el.get_attribute('href') or ''
-    if download_url.startswith('//'):
-        download_url = 'https:' + download_url
-
-    label = f'{chosen_res}p' if chosen_res not in (0, 9999) else ('source' if chosen_res == 9999 else 'preview')
-    print(f'  [iwara.tv] browser found {label}: {download_url}')
-
-    cdn_headers: dict[str, str] = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Referer': 'https://www.iwara.tv/',
-    }
-    return _direct_fetch(download_url, download_dir, '_iwara_temp', cdn_headers)
+# Browser fallback — disabled; uncomment if the API handler breaks again.
+# _iwara_browser_logged_in: bool = False
+#
+# def _iwara_browser_login(driver) -> bool: ...
+# def _download_iwara_browser(driver, url, download_dir) -> bool: ...
+#
+# (full implementations preserved in git history)
 
 
 def _iwara_login() -> str | None:
@@ -2010,9 +1810,23 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
             'Referer': 'https://www.iwara.tv/',
         }
 
-        # Fetch the quality list — requires Authorization to get all qualities.
+        # The file-list endpoint validates requests via an X-Version header:
+        # SHA-1 of "{last_path_segment}_{expires}_{secret}".
+        # Secret changed with yt-dlp PR #16014 (June 2026).
+        _IWARA_SECRET = 'mSvL05GfEmeEmsEYfGCnVpEjYgTJraJN'
+        fl_parsed = urlparse(file_list_url)
+        fl_qs = parse_qs(fl_parsed.query)
+        fl_path_id = fl_parsed.path.rstrip('/').split('/')[-1]
+        fl_expires = (fl_qs.get('expires') or [''])[0]
+        x_version = hashlib.sha1(
+            f'{fl_path_id}_{fl_expires}_{_IWARA_SECRET}'.encode()
+        ).hexdigest()
+
+        fl_headers = {**api_headers, 'X-Version': x_version}
+
+        # Fetch the quality list — requires Authorization + X-Version.
         try:
-            fl_req = urllib.request.Request(file_list_url, headers=api_headers)
+            fl_req = urllib.request.Request(file_list_url, headers=fl_headers)
             with urllib.request.urlopen(fl_req) as resp:
                 content_type = resp.headers.get('Content-Type', '')
                 raw = resp.read()
@@ -2033,12 +1847,6 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
 
         available = [f.get('name') for f in files]
         print(f'  [iwara.tv] available qualities: {available}')
-
-        # If the API only returns low-quality transcodes (known site bug),
-        # fall back to the browser which renders the full quality list.
-        if all((f.get('name') or '').lower() in ('preview', '360') for f in files):
-            print('  [iwara.tv] API quality list is incomplete — switching to browser')
-            return _download_iwara_browser(_driver, url, download_dir)
 
         # Pick the best quality within MAX_RESOLUTION.
         # Names are e.g. "preview", "360", "540", "720", "1080", "Source".
