@@ -74,9 +74,13 @@ echo "  8) Audit report           — read .folder_log.json from every post fold
 echo "     and generate _reports/audit_report.html showing what each script"
 echo "     has done, with per-folder detail and an overall summary"
 echo ""
+echo "  9) MDemaxis rename fix    — MDemaxis patreon only: rename SMOOTH-prefixed"
+echo "     and _maxinterval-suffixed funscripts to variant naming"
+echo "     (e.g. SMOOTH x.funscript → x (SMOOTH).funscript)"
+echo ""
 
 while true; do
-    read -rp "Choose a program to run (1-8): " choice
+    read -rp "Choose a program to run (1-9): " choice
     case "$choice" in
         1)
             echo ""
@@ -118,8 +122,13 @@ while true; do
             .venv/bin/python scripts/generate_audit_report.py
             break
             ;;
+        9)
+            echo ""
+            .venv/bin/python scripts/MDemaxis_smooth_fix.py
+            break
+            ;;
         *)
-            echo "Invalid choice. Please enter 1-8."
+            echo "Invalid choice. Please enter 1-9."
             ;;
     esac
 done

@@ -49,9 +49,13 @@ echo   8^) Audit report           -- read .folder_log.json from every post folde
 echo      and generate _reports/audit_report.html showing what each script
 echo      has done, with per-folder detail and an overall summary
 echo.
+echo   9^) MDemaxis rename fix    -- MDemaxis patreon only: rename SMOOTH-prefixed
+echo      and _maxinterval-suffixed funscripts to variant naming
+echo      (e.g. SMOOTH x.funscript -^> x (SMOOTH).funscript)
+echo.
 
 :ask
-set /p "choice=Choose a program to run (1-8): "
+set /p "choice=Choose a program to run (1-9): "
 
 if "%choice%"=="1" (
     echo.
@@ -93,8 +97,13 @@ if "%choice%"=="8" (
     .venv\Scripts\python.exe scripts\generate_audit_report.py
     goto done
 )
+if "%choice%"=="9" (
+    echo.
+    .venv\Scripts\python.exe scripts\MDemaxis_smooth_fix.py
+    goto done
+)
 
-echo Invalid choice. Please enter 1-8.
+echo Invalid choice. Please enter 1-9.
 goto ask
 
 :done
