@@ -15,6 +15,7 @@ if not exist ".env" (
 
 :: --- Program selection ------------------------------------------------------
 
+:menu
 echo.
 echo ========================================
 echo   Patreon Downloader Post-Processor
@@ -53,59 +54,78 @@ echo   9^) MDemaxis rename fix    -- MDemaxis patreon only: rename SMOOTH-prefix
 echo      and _maxinterval-suffixed funscripts to variant naming
 echo      (e.g. SMOOTH x.funscript -^> x (SMOOTH).funscript)
 echo.
+echo   q^) Exit
+echo.
 
 :ask
-set /p "choice=Choose a program to run (1-9): "
+set /p "choice=Choose a program to run (1-9, q=exit): "
 
+if /i "%choice%"=="q" goto done
 if "%choice%"=="1" (
     echo.
     .venv\Scripts\python.exe scripts\prefixFix.py
-    goto done
+    echo.
+    pause
+    goto menu
 )
 if "%choice%"=="2" (
     echo.
     .venv\Scripts\python.exe scripts\downloadContent.py
-    goto done
+    echo.
+    pause
+    goto menu
 )
 if "%choice%"=="3" (
     echo.
     .venv\Scripts\python.exe scripts\check_funscripts.py
-    goto done
+    echo.
+    pause
+    goto menu
 )
 if "%choice%"=="4" (
     echo.
     .venv\Scripts\python.exe scripts\generate_html.py
-    goto done
+    echo.
+    pause
+    goto menu
 )
 if "%choice%"=="5" (
     echo.
     .venv\Scripts\python.exe scripts\sync_new_folders.py
-    goto done
+    echo.
+    pause
+    goto menu
 )
 if "%choice%"=="6" (
     echo.
     .venv\Scripts\python.exe scripts\fix_garbled_names.py
-    goto done
+    echo.
+    pause
+    goto menu
 )
 if "%choice%"=="7" (
     echo.
     .venv\Scripts\python.exe scripts\dedupe_only.py
-    goto done
+    echo.
+    pause
+    goto menu
 )
 if "%choice%"=="8" (
     echo.
     .venv\Scripts\python.exe scripts\generate_audit_report.py
-    goto done
+    echo.
+    pause
+    goto menu
 )
 if "%choice%"=="9" (
     echo.
     .venv\Scripts\python.exe scripts\MDemaxis_smooth_fix.py
-    goto done
+    echo.
+    pause
+    goto menu
 )
 
-echo Invalid choice. Please enter 1-9.
+echo Invalid choice. Please enter 1-9 or q to exit.
 goto ask
 
 :done
-echo.
-pause

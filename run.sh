@@ -40,98 +40,106 @@ fi
 
 # --- Program selection ------------------------------------------------------
 
-echo ""
-echo "========================================"
-echo "  Patreon Downloader Post-Processor"
-echo "========================================"
-echo ""
-echo "  1) Fix file prefixes — strip the attachment ID prefix from"
-echo "     downloaded filenames (run this first)"
-echo ""
-echo "  2) Download content       — find links in description.json files"
-echo "     and download the associated videos and files"
-echo ""
-echo "  3) Check funscript match  — find videos missing a funscript and"
-echo "     report fuzzy-match suggestions"
-echo ""
-echo "  4) Generate HTML          — build a description.html visual overview"
-echo "     in each post folder"
-echo ""
-echo "  5) Sync new folders       — copy folders that are new in the Patreon"
-echo "     downloader output into the post-processor working directory"
-echo ""
-echo "  6) Fix garbled names      — four-pass cleanup pipeline:"
-echo "     • detect video files with wrong/missing extension (magic bytes)"
-echo "     • detect funscripts with wrong/missing .funscript extension"
-echo "     • decode percent-encoded or mojibake filenames"
-echo "     • fuzzy-match funscript names to their video and rename to match"
-echo "     All changes written to CSV reports in _reports/"
-echo ""
-echo "  7) Dedupe only            — clean leftover temp files and remove"
-echo "     exact duplicate files without running a full download"
-echo ""
-echo "  8) Audit report           — read .folder_log.json from every post folder"
-echo "     and generate _reports/audit_report.html showing what each script"
-echo "     has done, with per-folder detail and an overall summary"
-echo ""
-echo "  9) MDemaxis rename fix    — MDemaxis patreon only: rename SMOOTH-prefixed"
-echo "     and _maxinterval-suffixed funscripts to variant naming"
-echo "     (e.g. SMOOTH x.funscript → x (SMOOTH).funscript)"
-echo ""
-
 while true; do
-    read -rp "Choose a program to run (1-9): " choice
-    case "$choice" in
-        1)
-            echo ""
-            .venv/bin/python scripts/prefixFix.py
-            break
-            ;;
-        2)
-            echo ""
-            .venv/bin/python scripts/downloadContent.py
-            break
-            ;;
-        3)
-            echo ""
-            .venv/bin/python scripts/check_funscripts.py
-            break
-            ;;
-        4)
-            echo ""
-            .venv/bin/python scripts/generate_html.py
-            break
-            ;;
-        5)
-            echo ""
-            .venv/bin/python scripts/sync_new_folders.py
-            break
-            ;;
-        6)
-            echo ""
-            .venv/bin/python scripts/fix_garbled_names.py
-            break
-            ;;
-        7)
-            echo ""
-            .venv/bin/python scripts/dedupe_only.py
-            break
-            ;;
-        8)
-            echo ""
-            .venv/bin/python scripts/generate_audit_report.py
-            break
-            ;;
-        9)
-            echo ""
-            .venv/bin/python scripts/MDemaxis_smooth_fix.py
-            break
-            ;;
-        *)
-            echo "Invalid choice. Please enter 1-9."
-            ;;
-    esac
-done
+    echo ""
+    echo "========================================"
+    echo "  Patreon Downloader Post-Processor"
+    echo "========================================"
+    echo ""
+    echo "  1) Fix file prefixes — strip the attachment ID prefix from"
+    echo "     downloaded filenames (run this first)"
+    echo ""
+    echo "  2) Download content       — find links in description.json files"
+    echo "     and download the associated videos and files"
+    echo ""
+    echo "  3) Check funscript match  — find videos missing a funscript and"
+    echo "     report fuzzy-match suggestions"
+    echo ""
+    echo "  4) Generate HTML          — build a description.html visual overview"
+    echo "     in each post folder"
+    echo ""
+    echo "  5) Sync new folders       — copy folders that are new in the Patreon"
+    echo "     downloader output into the post-processor working directory"
+    echo ""
+    echo "  6) Fix garbled names      — four-pass cleanup pipeline:"
+    echo "     • detect video files with wrong/missing extension (magic bytes)"
+    echo "     • detect funscripts with wrong/missing .funscript extension"
+    echo "     • decode percent-encoded or mojibake filenames"
+    echo "     • fuzzy-match funscript names to their video and rename to match"
+    echo "     All changes written to CSV reports in _reports/"
+    echo ""
+    echo "  7) Dedupe only            — clean leftover temp files and remove"
+    echo "     exact duplicate files without running a full download"
+    echo ""
+    echo "  8) Audit report           — read .folder_log.json from every post folder"
+    echo "     and generate _reports/audit_report.html showing what each script"
+    echo "     has done, with per-folder detail and an overall summary"
+    echo ""
+    echo "  9) MDemaxis rename fix    — MDemaxis patreon only: rename SMOOTH-prefixed"
+    echo "     and _maxinterval-suffixed funscripts to variant naming"
+    echo "     (e.g. SMOOTH x.funscript → x (SMOOTH).funscript)"
+    echo ""
+    echo "  q) Exit"
+    echo ""
 
-echo ""
-read -rp "Press Enter to close..."
+    while true; do
+        read -rp "Choose a program to run (1-9, q=exit): " choice
+        case "$choice" in
+            q|Q)
+                echo ""
+                exit 0
+                ;;
+            1)
+                echo ""
+                .venv/bin/python scripts/prefixFix.py
+                break
+                ;;
+            2)
+                echo ""
+                .venv/bin/python scripts/downloadContent.py
+                break
+                ;;
+            3)
+                echo ""
+                .venv/bin/python scripts/check_funscripts.py
+                break
+                ;;
+            4)
+                echo ""
+                .venv/bin/python scripts/generate_html.py
+                break
+                ;;
+            5)
+                echo ""
+                .venv/bin/python scripts/sync_new_folders.py
+                break
+                ;;
+            6)
+                echo ""
+                .venv/bin/python scripts/fix_garbled_names.py
+                break
+                ;;
+            7)
+                echo ""
+                .venv/bin/python scripts/dedupe_only.py
+                break
+                ;;
+            8)
+                echo ""
+                .venv/bin/python scripts/generate_audit_report.py
+                break
+                ;;
+            9)
+                echo ""
+                .venv/bin/python scripts/MDemaxis_smooth_fix.py
+                break
+                ;;
+            *)
+                echo "Invalid choice. Please enter 1-9 or q to exit."
+                ;;
+        esac
+    done
+
+    echo ""
+    read -rp "Press Enter to return to menu..."
+done
