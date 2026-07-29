@@ -196,6 +196,16 @@ KNOWN_DOMAINS = [
     'e621.net',
 ]
 
+# mega.nz link handling (password-protected links, task ordering) needs to
+# recognise mega domains outside of the KNOWN_DOMAINS/DOMAIN_HANDLERS lookup.
+_MEGA_DOMAINS = ('mega.nz', 'mega.co.nz')
+
+
+def _is_mega_domain(url: str) -> bool:
+    d = get_domain(url)
+    return any(d == m or d.endswith('.' + m) for m in _MEGA_DOMAINS)
+
+
 # Links to these domains are creator pages / social profiles — no file to download.
 # They are silently skipped without an error.
 SKIP_DOMAINS = {
@@ -246,20 +256,49 @@ def read_links_filter(path: str) -> list[str]:
     return list(dict.fromkeys(patterns))
 
 
-def extract_links_from_description(desc_path: str) -> list:
-    """Recursively extract all href values from link marks in a ProseMirror JSON file."""
-    with open(desc_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+def _walk_description(data) -> tuple[list[dict], str]:
+    """Walk a parsed ProseMirror description doc, collecting links and plain text.
 
-    links = []
+    Handles the two node shapes Patreon uses for links:
+      - inline text runs carrying a 'link' mark (attrs.href), text in node['text']
+      - 'cta' button blocks (attrs.button_link / attrs.button_text)
+
+    Returns (entries, full_text):
+      entries   — [{'href': str, 'text': str}, ...] deduplicated by href (first-seen
+                  order); 'text' is the link's own visible text (button label or
+                  linked run), concatenated across split runs sharing the same href.
+      full_text — every visible text run in the whole document, in order, joined
+                  with spaces.  Used as a fallback when info (e.g. a password) is
+                  written near a link rather than inside its own label — not every
+                  creator puts it in the button.
+    """
+    entries: list[dict] = []
+    index_by_href: dict[str, int] = {}
+    text_parts: list[str] = []
+
+    def add_link(href, text):
+        if not href:
+            return
+        if href in index_by_href:
+            if text:
+                entries[index_by_href[href]]['text'] += text
+            return
+        index_by_href[href] = len(entries)
+        entries.append({'href': href, 'text': text or ''})
 
     def traverse(node):
         if isinstance(node, dict):
+            if node.get('type') == 'cta':
+                attrs = node.get('attrs', {})
+                button_text = attrs.get('button_text')
+                add_link(attrs.get('button_link'), button_text)
+                if button_text:
+                    text_parts.append(button_text)
             for mark in node.get('marks', []):
                 if mark.get('type') == 'link':
-                    href = mark.get('attrs', {}).get('href')
-                    if href:
-                        links.append(href)
+                    add_link(mark.get('attrs', {}).get('href'), node.get('text'))
+            if node.get('type') == 'text' and node.get('text'):
+                text_parts.append(node['text'])
             for value in node.values():
                 if isinstance(value, (dict, list)):
                     traverse(value)
@@ -268,7 +307,38 @@ def extract_links_from_description(desc_path: str) -> list:
                 traverse(item)
 
     traverse(data)
-    return list(dict.fromkeys(links))  # deduplicate, preserve order
+    return entries, ' '.join(text_parts)
+
+
+def extract_link_entries_from_description(desc_path: str) -> list[dict]:
+    """Extract links and their own visible text from a ProseMirror JSON file.
+
+    Returns a list of {'href': str, 'text': str} dicts. See _walk_description
+    for the node shapes handled and what 'text' contains.
+    """
+    with open(desc_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    entries, _ = _walk_description(data)
+    return entries
+
+
+def extract_description_text(desc_path: str) -> str:
+    """Return all visible text from a description.json, in document order.
+
+    Fallback source for info (e.g. a mega.nz password) written near a link
+    rather than inside its own button/link text.
+    """
+    with open(desc_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    _, full_text = _walk_description(data)
+    return full_text
+
+
+def extract_links_from_description(desc_path: str) -> list:
+    """Recursively extract all link hrefs (inline link marks and cta buttons) from a
+    ProseMirror JSON file. See extract_link_entries_from_description for the node
+    shapes handled."""
+    return [entry['href'] for entry in extract_link_entries_from_description(desc_path)]
 
 
 def get_funscript_basename(folder: str):
@@ -1252,6 +1322,26 @@ def _pick_best(candidates: list, resolution_fn) -> tuple:
     return min(scored, key=lambda x: x[1])
 
 
+def _closer_to_target_resolution(new_height: int, old_height: int, max_res: int) -> bool:
+    """Return True if *new_height* fits MAX_RESOLUTION better than *old_height*.
+
+    Same policy as _pick_best: a height at or under the cap wins, and the
+    highest such height wins; if both exceed the cap, the smaller excess wins.
+    An unknown height (0) never beats a known one.
+    """
+    if new_height <= 0:
+        return False
+    if old_height <= 0:
+        return True
+    new_ok = new_height <= max_res
+    old_ok = old_height <= max_res
+    if new_ok != old_ok:
+        return new_ok
+    if new_ok:  # both within the cap — higher is better
+        return new_height > old_height
+    return new_height < old_height  # both exceed the cap — smaller excess is better
+
+
 # ---------------------------------------------------------------------------
 # Per-domain download handlers
 # Each handler receives (driver, url, download_dir) and is responsible for
@@ -1702,13 +1792,213 @@ def download_hanimetv(driver, url: str, download_dir: str) -> bool:
 # Cached Bearer token — obtained once per session on first iwara.tv download.
 _iwara_token: str | None = None
 
-# Browser fallback — disabled; uncomment if the API handler breaks again.
-# _iwara_browser_logged_in: bool = False
-#
-# def _iwara_browser_login(driver) -> bool: ...
-# def _download_iwara_browser(driver, url, download_dir) -> bool: ...
-#
-# (full implementations preserved in git history)
+# Whether the browser session has already completed the iwara.tv login flow.
+_iwara_browser_logged_in: bool = False
+
+
+def _iwara_browser_login(driver) -> bool:
+    """Log into iwara.tv via the browser UI. Returns True if successful."""
+    global _iwara_browser_logged_in
+    if _iwara_browser_logged_in:
+        return True
+
+    email    = _get_secret('IWARA_EMAIL').strip()
+    password = _get_secret('IWARA_PASSWORD').strip()
+    if not email or not password:
+        print('  [iwara.tv] no credentials — set IWARA_EMAIL and IWARA_PASSWORD via setup_credentials.py')
+        return False
+
+    for attempt in range(3):
+        driver.get('https://www.iwara.tv/login')
+        time.sleep(2)
+
+        page_src = driver.page_source.lower()
+        if 'too many requests' in page_src or '429' in driver.title:
+            wait = [1, 5, 10][attempt]
+            print(f'  [iwara.tv] rate-limited on login page — waiting {wait}s before retry {attempt + 1}/3...')
+            time.sleep(wait)
+            continue
+        break
+    else:
+        print('  [iwara.tv] login page rate-limited after 3 attempts')
+        return False
+
+    # Dismiss age gate if present.
+    try:
+        age_btn = driver.find_element(By.XPATH,
+            '//button[contains(normalize-space(.),"18") or '
+            'contains(normalize-space(.),"Yes") or '
+            'contains(normalize-space(.),"Enter") or '
+            'contains(normalize-space(.),"I am")]'
+        )
+        age_btn.click()
+        time.sleep(1)
+    except WebDriverException:
+        pass
+
+    try:
+        wait = WebDriverWait(driver, 10)
+
+        email_field = wait.until(EC.presence_of_element_located(
+            (By.XPATH, '//input[@type="email" or @name="email" or @autocomplete="email"]')
+        ))
+        email_field.click()
+        time.sleep(0.3)
+        email_field.clear()
+        for char in email:
+            email_field.send_keys(char)
+            time.sleep(0.05)
+
+        pw_field = driver.find_element(By.XPATH, '//input[@type="password"]')
+        pw_field.click()
+        time.sleep(0.3)
+        for char in password:
+            pw_field.send_keys(char)
+            time.sleep(0.05)
+
+        time.sleep(0.5)
+        # Find the submit button scoped to the login form so we don't
+        # accidentally click a navbar/search form's submit button instead.
+        try:
+            login_form = pw_field.find_element(By.XPATH, './ancestor::form')
+            submit = login_form.find_element(By.XPATH, './/button[@type="submit"]')
+        except WebDriverException:
+            # Fallback: pick the last submit button (search is usually first)
+            submits = driver.find_elements(By.XPATH, '//button[@type="submit"]')
+            submit = submits[-1] if submits else driver.find_element(By.XPATH, '//button[@type="submit"]')
+        for submit_attempt in range(3):
+            driver.execute_script('arguments[0].click()', submit)
+
+            # Wait up to 10 s for the URL to change away from the login page.
+            try:
+                WebDriverWait(driver, 10).until(
+                    lambda _: 'login' not in driver.current_url
+                )
+            except WebDriverException:
+                pass
+
+            # If still on the login page, check for a rate-limit response.
+            if 'login' in driver.current_url:
+                page_src = driver.page_source.lower()
+                if 'too many requests' in page_src or '429' in page_src:
+                    wait = [1, 5, 10][submit_attempt]
+                    print(f'  [iwara.tv] rate-limited after submit — waiting {wait}s before retry {submit_attempt + 1}/3...')
+                    time.sleep(wait)
+                    continue
+                # Not a rate-limit — just failed.
+                print(f'  [iwara.tv] login did not redirect — still on: {driver.current_url}')
+                print(f'  [iwara.tv] page title: {driver.title!r}')
+                return False
+            break
+        else:
+            print('  [iwara.tv] login submit rate-limited after 3 attempts')
+            return False
+
+        print('  [iwara.tv] browser login successful')
+
+        _iwara_browser_logged_in = True
+        return True
+    except Exception as e:
+        print(f'  [iwara.tv] browser login failed: {e}')
+        return False
+
+
+def _download_iwara_browser(driver, url: str, download_dir: str) -> bool:
+    """Use the browser to scrape download links when the API/yt-dlp paths fail."""
+    if not _iwara_browser_login(driver):
+        return False
+
+    time.sleep(2)  # Let session establish before navigating.
+    driver.get(url)
+    time.sleep(5)
+    print(f'  [iwara.tv] navigated to video — current URL: {driver.current_url}')
+
+    # If the SPA redirected us away from the video path (e.g. to home/search),
+    # navigate again — the session cookie is usually fully set by now.
+    video_path = urlparse(url).path
+    if urlparse(driver.current_url).path != video_path:
+        print('  [iwara.tv] unexpected redirect, retrying navigation...')
+        driver.get(url)
+        time.sleep(5)
+        print(f'  [iwara.tv] current URL after retry: {driver.current_url}')
+
+    # If the React app shows an error page on first load, a refresh usually fixes it.
+    if 'error' in driver.title.lower():
+        print(f'  [iwara.tv] got error page ({driver.title!r}), refreshing...')
+        driver.refresh()
+        time.sleep(5)
+
+    # Dismiss age gate if it appears on the video page.
+    try:
+        age_btn = driver.find_element(By.XPATH,
+            '//button[contains(normalize-space(.),"18") or '
+            'contains(normalize-space(.),"Yes") or '
+            'contains(normalize-space(.),"Enter") or '
+            'contains(normalize-space(.),"I am")]'
+        )
+        age_btn.click()
+        time.sleep(2)
+    except WebDriverException:
+        pass
+
+    print(f'  [iwara.tv] page title after load: {driver.title!r}')
+
+    # Collect all CDN download/view links rendered by the React app.
+    links = driver.find_elements(By.XPATH,
+        '//a[contains(@href,".iwara.tv/download") or contains(@href,".iwara.tv/view")]'
+    )
+
+    if not links:
+        # Print all hrefs to help diagnose the correct selector.
+        all_hrefs = [el.get_attribute('href') for el in driver.find_elements(By.XPATH, '//a[@href]')]
+        print('  [iwara.tv] no CDN links found — all hrefs on page:')
+        for _href in all_hrefs:
+            print(f'    {_href}')
+        return False
+
+    max_res = _get_max_resolution()
+
+    def _res_from_href(href: str) -> int:
+        href_lower = href.lower()
+        if 'preview' in href_lower:
+            return 0
+        for _kw in ('source',):
+            if _kw in href_lower:
+                return 9999
+        # filename pattern: ..._1080.mp4, ..._540.mp4, ..._360.mp4
+        m = re.search(r'_(\d+)\.mp4', href_lower)
+        if m:
+            return int(m.group(1))
+        return 1
+
+    scored = [(el, _res_from_href(el.get_attribute('href') or '')) for el in links]
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    # If source is available and every transcode is below max_res, prefer source —
+    # a lower-resolution transcode is not better than the original.
+    best_transcode = max((r for _, r in scored if r not in (0, 9999)), default=0)
+    source_items = [(el, r) for el, r in scored if r == 9999]
+    if source_items and best_transcode < max_res:
+        chosen_el, chosen_res = source_items[0]
+    else:
+        chosen_el, chosen_res = scored[0]
+        for el, res in scored:
+            if res <= max_res:
+                chosen_el, chosen_res = el, res
+                break
+
+    download_url = chosen_el.get_attribute('href') or ''
+    if download_url.startswith('//'):
+        download_url = 'https:' + download_url
+
+    label = f'{chosen_res}p' if chosen_res not in (0, 9999) else ('source' if chosen_res == 9999 else 'preview')
+    print(f'  [iwara.tv] browser found {label}: {download_url}')
+
+    cdn_headers: dict[str, str] = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Referer': 'https://www.iwara.tv/',
+    }
+    return _direct_fetch(download_url, download_dir, '_iwara_temp', cdn_headers)
 
 
 def _iwara_login() -> str | None:
@@ -1750,8 +2040,13 @@ def _iwara_login() -> str | None:
     return None
 
 
-def download_iwara(_driver, url: str, download_dir: str) -> bool:
-    """Download from iwara.tv via the REST API (requires IWARA_EMAIL / IWARA_PASSWORD in .env)."""
+def _download_iwara_api(_driver, url: str, download_dir: str) -> bool:
+    """Download from iwara.tv via the hand-rolled REST API client (fallback tier 2).
+
+    Requires IWARA_EMAIL / IWARA_PASSWORD in .env. Relies on a reverse-engineered
+    X-Version secret that iwara has changed before — see download_iwara for why
+    yt-dlp's native extractor is tried first.
+    """
     global _iwara_token
 
     try:
@@ -1896,6 +2191,116 @@ def download_iwara(_driver, url: str, download_dir: str) -> bool:
         print(f'  [iwara.tv] handler error: {e}')
 
     return False
+
+
+def _iwara_ytdlp_auth_args() -> list[str]:
+    """Return --username/--password args for yt-dlp if IWARA credentials are set."""
+    email = _get_secret('IWARA_EMAIL').strip()
+    password = _get_secret('IWARA_PASSWORD').strip()
+    if email and password:
+        return ['--username', email, '--password', password]
+    return []
+
+
+def _iwara_ytdlp_formats(ytdlp_prefix: list[str], url: str, auth_args: list[str]) -> list[dict] | None:
+    """Return yt-dlp's reported format list for *url*, or None on failure."""
+    cmd = [*ytdlp_prefix, *auth_args, '--no-warnings', '--no-playlist', '-j', url]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            return None
+        return json.loads(result.stdout).get('formats') or []
+    except (subprocess.SubprocessError, OSError, json.JSONDecodeError):
+        return None
+
+
+def _choose_iwara_format_id(formats: list[dict], max_res: int) -> str | None:
+    """Pick the best yt-dlp format id for iwara, honoring MAX_RESOLUTION.
+
+    yt-dlp reports the true original as format id 'Source' with height=None (no
+    size metadata) alongside numbered transcodes (360, 540, 720, ...) that do
+    report height. Mirrors _download_iwara_api's policy: prefer Source only when
+    every known transcode is still below the cap, otherwise take the highest
+    transcode within the cap. 'preview' is a thumbnail-quality teaser, never a
+    real candidate.
+    """
+    candidates = [f for f in formats if f.get('format_id') and f.get('format_id') != 'preview']
+    if not candidates:
+        return None
+
+    known = {f['format_id']: f['height'] for f in candidates if f.get('height')}
+    source_ids = [f['format_id'] for f in candidates if not f.get('height')]
+    best_known = max(known.values(), default=0)
+
+    if source_ids and best_known < max_res:
+        return source_ids[0]
+    eligible = {fid: h for fid, h in known.items() if h <= max_res}
+    if eligible:
+        return max(eligible, key=eligible.get)
+    if known:
+        return min(known, key=known.get)
+    return source_ids[0] if source_ids else candidates[0]['format_id']
+
+
+def _download_iwara_ytdlp(url: str, download_dir: str) -> bool:
+    """Download an iwara.tv video via yt-dlp's native extractor (fallback tier 1).
+
+    yt-dlp added proper iwara support in the 2026.06.09 release; before that its
+    iwara extractor was broken, which is why this project carries the hand-rolled
+    API client in _download_iwara_api. yt-dlp has no format filter that
+    understands iwara's unsized 'Source' format, so the format list is fetched
+    separately and scored with the same policy as the API handler.
+    """
+    ytdlp_prefix = _ytdlp_cmd()
+    if ytdlp_prefix is None:
+        return False
+
+    auth_args = _iwara_ytdlp_auth_args()
+    formats = _iwara_ytdlp_formats(ytdlp_prefix, url, auth_args)
+    if not formats:
+        print('  [iwara.tv/yt-dlp] could not list formats')
+        return False
+
+    max_res = _get_max_resolution()
+    format_id = _choose_iwara_format_id(formats, max_res)
+    if not format_id:
+        print('  [iwara.tv/yt-dlp] no usable format found')
+        return False
+
+    print(f'  [iwara.tv/yt-dlp] downloading format {format_id}...')
+    output_tmpl = os.path.join(download_dir, '_iwara_ytdlp_temp.%(ext)s')
+    cmd = [
+        *ytdlp_prefix, *auth_args,
+        '--no-playlist', '--no-write-subs', '--no-write-auto-subs', '--no-keep-fragments',
+        '-f', format_id, '-o', output_tmpl, url,
+    ]
+    try:
+        result = subprocess.run(cmd, timeout=3600)
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        print('  [iwara.tv/yt-dlp] timed out after 1 hour')
+    except Exception as e:
+        print(f'  [iwara.tv/yt-dlp] error: {e}')
+    return False
+
+
+def download_iwara(driver, url: str, download_dir: str) -> bool:
+    """Download from iwara.tv, trying progressively more fragile fallbacks.
+
+    1. yt-dlp's native extractor — actively maintained upstream, fixed for iwara
+       in yt-dlp 2026.06.09 (make sure yt-dlp is kept up to date).
+    2. The hand-rolled REST API client — kept in case yt-dlp's extractor breaks
+       again or trips on a specific video.
+    3. Browser automation — last resort if iwara changes its API/auth flow in a
+       way neither of the above can follow.
+    """
+    if _download_iwara_ytdlp(url, download_dir):
+        return True
+    print('  [iwara.tv] yt-dlp path failed — falling back to API client...')
+    if _download_iwara_api(driver, url, download_dir):
+        return True
+    print('  [iwara.tv] API client failed — falling back to browser automation...')
+    return _download_iwara_browser(driver, url, download_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -2162,6 +2567,27 @@ def download_yandex_disk(_driver, url: str, download_dir: str) -> bool:
         print(f'  [disk.yandex] handler error: {e}')
 
     return False
+
+
+# Password for a password-protected mega.nz link, keyed by the link URL itself.
+# Populated in collect_tasks from the post text around each mega link (button
+# label, or the description body as a fallback) and consumed by download_mega.
+_mega_link_passwords: dict[str, str] = {}
+
+# Matches a 'pw'/'pass'/'password' keyword (colon or equals optional) followed
+# by a token with no embedded whitespace/comma/semicolon — e.g. matches
+# 'PW:xxxx,click to download', 'Password: xxxx', 'pw=xxxx'. Keyword-anchored
+# rather than tied to the exact 'PW:x,y' format so it survives the creator
+# tweaking punctuation/wording later.
+_MEGA_PASSWORD_RE = re.compile(r'(?:pw|pass(?:word)?)\s*[:=]\s*([^\s,;]+)', re.IGNORECASE)
+
+
+def _extract_mega_password(text: str) -> str | None:
+    """Best-effort extraction of a mega.nz link password from nearby post text."""
+    if not text:
+        return None
+    m = _MEGA_PASSWORD_RE.search(text)
+    return m.group(1).strip() if m else None
 
 
 # Whether MEGAcmd is already logged in for this session.
@@ -2445,9 +2871,15 @@ class _MegaWorker:
         self._log(f'{job["basename"]}: running mega-get (attempt {attempt_num}/{len(_MEGA_RATE_LIMIT_DELAYS)})...')
         before = set(os.listdir(job['download_dir']))
 
+        cmd = [mega_get]
+        password = _mega_link_passwords.get(job['link'])
+        if password:
+            cmd.append(f'--password={password}')
+        cmd += [job['link'], job['download_dir']]
+
         try:
             result = subprocess.run(
-                [mega_get, job['link'], job['download_dir']],
+                cmd,
                 capture_output=True, text=True, timeout=_MEGA_TIMEOUT,
                 creationflags=_MEGA_WIN_FLAGS,
             )
@@ -2552,11 +2984,18 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
     global _last_mega_filename_hint
     _last_mega_filename_hint = 'unknown'
     before = set(os.listdir(download_dir))
-    print('  [mega.nz] running mega-get...')
+
+    cmd = [mega_get]
+    password = _mega_link_passwords.get(url)
+    if password:
+        cmd.append(f'--password={password}')
+    cmd += [url, download_dir]
+
+    print('  [mega.nz] running mega-get...' + (' (password-protected link)' if password else ''))
     _set_status(f'  [mega.nz] downloading — timeout {_MEGA_TIMEOUT // 60} min...')
     try:
         result = subprocess.run(
-            [mega_get, url, download_dir],
+            cmd,
             capture_output=True, text=True, timeout=_MEGA_TIMEOUT,
             creationflags=_MEGA_WIN_FLAGS,
         )
@@ -3322,7 +3761,8 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
             funscript_basename = os.path.basename(root)
 
         desc_path = os.path.join(root, 'description.json')
-        links = extract_links_from_description(desc_path)
+        entries = extract_link_entries_from_description(desc_path)
+        links = [e['href'] for e in entries]
 
         if has_links_file:
             handler_filter = read_links_filter(links_file)
@@ -3363,6 +3803,28 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
 
         if not validated_links:
             continue
+
+        # mega.nz links may be password-protected. The password is usually in the
+        # link's own text (button label), but not every creator puts it there —
+        # fall back to searching the whole post body.
+        mega_links = [l for l in validated_links if _is_mega_domain(l)]
+        if mega_links:
+            entry_text_by_href = {e['href']: e['text'] for e in entries}
+            full_text: str | None = None
+            for link in mega_links:
+                pw = _extract_mega_password(entry_text_by_href.get(link, ''))
+                if not pw:
+                    if full_text is None:
+                        full_text = extract_description_text(desc_path)
+                    pw = _extract_mega_password(full_text)
+                if pw:
+                    _mega_link_passwords[link] = pw
+
+        # Download mega links first: they're often a lower-quality bundle (e.g.
+        # 540p + funscript) alongside a separate higher-quality source link in the
+        # same post — downloading mega first lets the AV-similarity check compare
+        # the source against it and keep whichever fits MAX_RESOLUTION better.
+        validated_links.sort(key=lambda l: 0 if _is_mega_domain(l) else 1)
 
         # Always download every link using its original filename.
         # Funscript-to-video matching is handled separately by check_funscripts.py.
@@ -3980,11 +4442,32 @@ def find_and_download(base_path: str):
                         folder, failures, uncertain)
                     continue
 
-                # AV similarity check: skip if an existing video in the folder
-                # has the same duration (i.e. same content, different encoding).
+                # AV similarity check: an existing video in the folder with the same
+                # duration is the same content, e.g. a mega.nz 540p bundle downloaded
+                # first and then a separate higher-quality source link for the same
+                # post. Keep whichever resolution fits MAX_RESOLUTION better, renaming
+                # the survivor to the existing file's name so it still matches the
+                # funscript.
                 if _peek_is_video(downloaded):
                     similar = _is_av_similar(downloaded, folder)
                     if similar:
+                        max_res = _get_max_resolution()
+                        new_h = (_video_quality(downloaded) or {}).get('height', 0)
+                        old_h = (_video_quality(similar) or {}).get('height', 0)
+                        if _closer_to_target_resolution(new_h, old_h, max_res):
+                            kept_name = os.path.basename(similar)
+                            print(f'  [replace] {_safe(os.path.basename(downloaded))} ({new_h}p) fits '
+                                  f'MAX_RESOLUTION better than existing {_safe(kept_name)} ({old_h}p) — replacing')
+                            try:
+                                os.remove(similar)
+                            except OSError:
+                                pass
+                            dest_path = os.path.join(folder, kept_name)
+                            os.rename(downloaded, dest_path)
+                            newly_downloaded.append(dest_path)
+                            link_statuses.setdefault(folder, {})[link] = 'replaced_better_quality'
+                            tracker.mark_done(folder, link)
+                            continue
                         print(f'  [SKIP] AV-similar to existing video: {_safe(os.path.basename(similar))}')
                         try:
                             os.remove(downloaded)
