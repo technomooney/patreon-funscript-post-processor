@@ -1,4 +1,5 @@
 @echo off
+setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
 if not exist ".venv" (
@@ -15,12 +16,25 @@ if not exist ".env" (
 
 :: --- Program selection ------------------------------------------------------
 
+set "DEPS_MARKER=.venv\.deps_updated_at"
+set "DEPS_MAX_AGE_DAYS=7"
+
 :menu
 echo.
 echo ========================================
 echo   Patreon Downloader Post-Processor
 echo ========================================
 echo.
+if exist "%DEPS_MARKER%" (
+    for /f %%D in ('powershell -NoProfile -Command "[math]::Floor(((Get-Date) - (Get-Date (Get-Content '%DEPS_MARKER%'))).TotalDays)"') do set DEPS_AGE_DAYS=%%D
+    if !DEPS_AGE_DAYS! GTR %DEPS_MAX_AGE_DAYS% (
+        echo   [deps] Dependencies are !DEPS_AGE_DAYS! day^(s^) old -- choose 'u' below to update.
+        echo.
+    )
+) else (
+    echo   [deps] Dependency update status unknown -- choose 'u' below to update.
+    echo.
+)
 echo   1^) Fix file prefixes -- strip the attachment ID prefix from
 echo      downloaded filenames (run this first)
 echo.
@@ -68,9 +82,8 @@ if /i "%choice%"=="q" goto done
 if /i "%choice%"=="u" (
     echo.
     .venv\Scripts\pip.exe install --quiet --upgrade pip
-    .venv\Scripts\pip.exe install --quiet --upgrade -r requirements.txt
-    echo Updating yt-dlp to latest version...
-    .venv\Scripts\pip.exe install --quiet --upgrade yt-dlp
+    .venv\Scripts\python.exe scripts\update_deps.py
+    powershell -NoProfile -Command "Get-Date -Format o" > "%DEPS_MARKER%"
     echo Dependencies updated.
     echo.
     pause

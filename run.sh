@@ -40,12 +40,25 @@ fi
 
 # --- Program selection ------------------------------------------------------
 
+DEPS_MARKER=".venv/.deps_updated_at"
+DEPS_MAX_AGE_DAYS=7
+
 while true; do
     echo ""
     echo "========================================"
     echo "  Patreon Downloader Post-Processor"
     echo "========================================"
     echo ""
+    if [ -f "$DEPS_MARKER" ]; then
+        deps_age_days=$(( ($(date +%s) - $(cat "$DEPS_MARKER")) / 86400 ))
+        if [ "$deps_age_days" -gt "$DEPS_MAX_AGE_DAYS" ]; then
+            echo "  [deps] Dependencies are $deps_age_days day(s) old — choose 'u' below to update."
+            echo ""
+        fi
+    else
+        echo "  [deps] Dependency update status unknown — choose 'u' below to update."
+        echo ""
+    fi
     echo "  1) Fix file prefixes — strip the attachment ID prefix from"
     echo "     downloaded filenames (run this first)"
     echo ""
@@ -96,9 +109,8 @@ while true; do
             u|U)
                 echo ""
                 .venv/bin/pip install --quiet --upgrade pip
-                .venv/bin/pip install --quiet --upgrade -r requirements.txt
-                echo "Updating yt-dlp to latest version..."
-                .venv/bin/pip install --quiet --upgrade yt-dlp
+                .venv/bin/python scripts/update_deps.py
+                date +%s > "$DEPS_MARKER"
                 echo "Dependencies updated."
                 break
                 ;;

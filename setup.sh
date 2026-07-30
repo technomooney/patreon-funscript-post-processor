@@ -40,9 +40,10 @@ fi
 echo "Installing dependencies..."
 .venv/bin/pip install --quiet --upgrade pip
 .venv/bin/pip install --quiet -r requirements.txt
-echo "Updating yt-dlp to latest version..."
-.venv/bin/pip install --quiet --upgrade yt-dlp
+echo "Checking for newer dependency versions (only ones at least a week old — see scripts/update_deps.py)..."
+.venv/bin/python scripts/update_deps.py
 echo "Dependencies installed."
+date +%s > .venv/.deps_updated_at
 
 # --- Settings and credentials ------------------------------------------------
 

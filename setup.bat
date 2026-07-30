@@ -33,9 +33,10 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-echo Updating yt-dlp to latest version...
-.venv\Scripts\pip install --quiet --upgrade yt-dlp
+echo Checking for newer dependency versions (only ones at least a week old -- see scripts\update_deps.py)...
+.venv\Scripts\python.exe scripts\update_deps.py
 echo Dependencies installed.
+powershell -NoProfile -Command "Get-Date -Format o" > .venv\.deps_updated_at
 
 :: --- Settings and credentials ------------------------------------------------
 
