@@ -54,13 +54,28 @@ echo   9^) MDemaxis rename fix    -- MDemaxis patreon only: rename SMOOTH-prefix
 echo      and _maxinterval-suffixed funscripts to variant naming
 echo      (e.g. SMOOTH x.funscript -^> x (SMOOTH).funscript)
 echo.
+echo   u^) Update dependencies    -- upgrade pip packages in the venv (incl. yt-dlp,
+echo      undetected-chromedriver, selenium) -- run this if downloads start failing
+echo      after a site or browser update
+echo.
 echo   q^) Exit
 echo.
 
 :ask
-set /p "choice=Choose a program to run (1-9, q=exit): "
+set /p "choice=Choose a program to run (1-9, u=update deps, q=exit): "
 
 if /i "%choice%"=="q" goto done
+if /i "%choice%"=="u" (
+    echo.
+    .venv\Scripts\pip.exe install --quiet --upgrade pip
+    .venv\Scripts\pip.exe install --quiet --upgrade -r requirements.txt
+    echo Updating yt-dlp to latest version...
+    .venv\Scripts\pip.exe install --quiet --upgrade yt-dlp
+    echo Dependencies updated.
+    echo.
+    pause
+    goto menu
+)
 if "%choice%"=="1" (
     echo.
     .venv\Scripts\python.exe scripts\prefixFix.py

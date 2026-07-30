@@ -79,15 +79,28 @@ while true; do
     echo "     and _maxinterval-suffixed funscripts to variant naming"
     echo "     (e.g. SMOOTH x.funscript → x (SMOOTH).funscript)"
     echo ""
+    echo "  u) Update dependencies    — upgrade pip packages in the venv (incl. yt-dlp,"
+    echo "     undetected-chromedriver, selenium) — run this if downloads start failing"
+    echo "     after a site or browser update"
+    echo ""
     echo "  q) Exit"
     echo ""
 
     while true; do
-        read -rp "Choose a program to run (1-9, q=exit): " choice
+        read -rp "Choose a program to run (1-9, u=update deps, q=exit): " choice
         case "$choice" in
             q|Q)
                 echo ""
                 exit 0
+                ;;
+            u|U)
+                echo ""
+                .venv/bin/pip install --quiet --upgrade pip
+                .venv/bin/pip install --quiet --upgrade -r requirements.txt
+                echo "Updating yt-dlp to latest version..."
+                .venv/bin/pip install --quiet --upgrade yt-dlp
+                echo "Dependencies updated."
+                break
                 ;;
             1)
                 echo ""
