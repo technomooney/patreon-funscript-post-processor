@@ -10,6 +10,7 @@ import json
 import mimetypes
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -427,29 +428,76 @@ def _get_browser_major_version(browser_path: str) -> int | None:
     return None
 
 
-def setup_driver(initial_download_dir: str):
-    """Create an undetected Chrome WebDriver that saves files to *initial_download_dir*."""
-    options = uc.ChromeOptions()
-    prefs = {
-        'download.default_directory': os.path.abspath(initial_download_dir),
-        'download.prompt_for_download': False,
-        'download.directory_upgrade': True,
-        'safebrowsing.enabled': True,
-        'credentials_enable_service': False,
-        'profile.password_manager_enabled': False,
-    }
-    options.add_experimental_option('prefs', prefs)
+def _cached_chromedriver(version: int) -> str | None:
+    """Return the path to an already-patched chromedriver matching *version*, if cached.
 
+    undetected_chromedriver deletes and re-downloads+re-patches its chromedriver
+    binary on *every single launch* unless given an explicit driver_executable_path
+    — see Patcher.auto() in its source. That unconditional network round-trip
+    (and the file being unlinked/rewritten while a just-finished launch's process
+    may still reference it) is a real source of intermittent launch failures:
+    hangs, "chrome not reachable", dropped connections. If a binary matching the
+    browser's version is already cached and patched, reuse it directly instead —
+    this makes Patcher.auto() take its fast "already patched, skip" path with no
+    network call at all.
+    """
+    try:
+        patcher = uc.Patcher()
+    except Exception:
+        return None
+    path = patcher.executable_path
+    if not os.path.isfile(path):
+        return None
+    try:
+        result = subprocess.run(
+            [path, '--version'], capture_output=True, text=True, timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    match = re.search(r'ChromeDriver (\d+)\.', result.stdout)
+    if not match or int(match.group(1)) != version:
+        return None
+    if not patcher.is_binary_patched(path):
+        return None
+    return path
+
+
+def setup_driver(initial_download_dir: str):
+    """Create an undetected Chrome WebDriver that saves files to *initial_download_dir*.
+
+    The first launch occasionally fails with a transient crash — chromedriver's
+    local HTTP server dropping the connection mid-handshake, or the browser not
+    answering the debug port in time — even when the browser and chromedriver
+    versions match. A plain relaunch usually succeeds, so this retries a few
+    times before giving up.
+    """
     headless = os.getenv('BROWSER_HEADLESS', 'false').strip().lower() == 'true'
-    if headless:
-        options.add_argument('--headless=new')
-        # Make headless Chrome look as close to a real browser as possible.
-        # Cloudflare and similar bot-detection systems fingerprint window size,
-        # the automation flag, and WebGL renderer strings.
-        options.add_argument('--window-size=1920,1080')
-        options.add_argument('--disable-blink-features=AutomationControlled')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--no-sandbox')
+
+    def _build_options() -> uc.ChromeOptions:
+        # ChromeOptions can't be reused across uc.Chrome() calls (it raises if
+        # you try), so each retry attempt needs a fresh instance.
+        options = uc.ChromeOptions()
+        prefs = {
+            'download.default_directory': os.path.abspath(initial_download_dir),
+            'download.prompt_for_download': False,
+            'download.directory_upgrade': True,
+            'safebrowsing.enabled': True,
+            'credentials_enable_service': False,
+            'profile.password_manager_enabled': False,
+        }
+        options.add_experimental_option('prefs', prefs)
+
+        if headless:
+            options.add_argument('--headless=new')
+            # Make headless Chrome look as close to a real browser as possible.
+            # Cloudflare and similar bot-detection systems fingerprint window size,
+            # the automation flag, and WebGL renderer strings.
+            options.add_argument('--window-size=1920,1080')
+            options.add_argument('--disable-blink-features=AutomationControlled')
+            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--no-sandbox')
+        return options
 
     browser = _find_browser()
     if browser is None:
@@ -458,8 +506,39 @@ def setup_driver(initial_download_dir: str):
     version = _get_browser_major_version(browser)
     print(f'Using browser: {browser} v{version} ({"headless" if headless else "windowed"})')
 
-    driver = uc.Chrome(options=options, browser_executable_path=browser, version_main=version)
-    return driver
+    # chromedriver unconditionally launches the browser with --test-type
+    # (baked into the chromedriver binary itself for every WebDriver session —
+    # not something selenium/undetected_chromedriver expose a way to suppress).
+    # Some Brave builds (confirmed: 150.1.92.144) have a real, intermittent
+    # crash-on-launch tied to that flag — it doesn't reproduce every time, but
+    # can streak several failures in a row, hence the generous attempt count.
+    max_attempts = 5
+    for attempt in range(1, max_attempts + 1):
+        # Recomputed each attempt: a prior failed attempt may have still
+        # downloaded and patched the binary before the launch itself failed,
+        # so a retry can skip the network fetch too.
+        cached_driver = _cached_chromedriver(version) if version else None
+
+        # A stuck launch (browser never answers the debug port) can otherwise
+        # hang forever — the handshake has no timeout of its own — so bound it
+        # with the socket default timeout, which turns a hang into a retryable
+        # TimeoutError instead.
+        prev_socket_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(60)
+        try:
+            kwargs = dict(options=_build_options(), browser_executable_path=browser, version_main=version)
+            if cached_driver:
+                kwargs['driver_executable_path'] = cached_driver
+            return uc.Chrome(**kwargs)
+        except (WebDriverException, urllib3.exceptions.ProtocolError,
+                urllib3.exceptions.MaxRetryError, TimeoutError) as e:
+            if attempt == max_attempts:
+                raise
+            print(f'  [browser] launch attempt {attempt}/{max_attempts} failed '
+                  f'({e.__class__.__name__}) — retrying...')
+            time.sleep(3)
+        finally:
+            socket.setdefaulttimeout(prev_socket_timeout)
 
 
 def _ensure_driver_alive(driver, folder: str):
@@ -476,7 +555,8 @@ def _ensure_driver_alive(driver, folder: str):
     try:
         _ = driver.current_url   # lightweight probe — no navigation
         return driver
-    except (WebDriverException, urllib3.exceptions.MaxRetryError, urllib3.exceptions.ReadTimeoutError):
+    except (WebDriverException, urllib3.exceptions.MaxRetryError, urllib3.exceptions.ReadTimeoutError,
+            urllib3.exceptions.ProtocolError):
         print('  [browser] driver not responding — restarting...')
         try:
             driver.quit()
