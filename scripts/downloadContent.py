@@ -3158,7 +3158,23 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
     _last_mega_filename_hint = 'unknown'
     before = set(os.listdir(download_dir))
 
+    # -m: for a FOLDER link, merge into an existing destination folder instead
+    # of re-downloading everything from scratch. Matters when a large folder
+    # download (e.g. one of Pize's monthly mega FOLDER bundles, see
+    # _mega_flatten_folders) times out partway through and gets retried —
+    # without -m, mega-get would re-fetch the whole folder since
+    # _mega_flatten_folders already renamed the partial one away.
+    #
+    # Deliberately NOT applied to file links — verified live that it breaks
+    # file dedup: mega-get normally recognizes an already-downloaded file (by
+    # content) and does nothing, but with -m against a directory that already
+    # has content, it instead created a duplicate sibling FILE one level
+    # above download_dir (literally "<download_dir> (1)"), invisible to the
+    # before/after os.listdir(download_dir) diff this function relies on to
+    # detect what was downloaded. Confirmed absent without -m.
     cmd = [mega_get]
+    if '/folder/' in urlparse(url).path:
+        cmd.append('-m')
     password = _mega_link_passwords.get(url)
     if password:
         cmd.append(f'--password={password}')
