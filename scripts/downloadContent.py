@@ -3879,6 +3879,30 @@ def _match_links_to_funscripts(links: list[str], funscript_paths: list[str]) -> 
     return result
 
 
+def _previously_seen_links(folder: str) -> set[str]:
+    """Return every link URL recorded by the most recent 'downloadContent'
+    folder_log entry for *folder*, or an empty set if there isn't one.
+
+    Some creators edit an existing post to append new content later instead
+    of publishing a new one — e.g. Pize's monthly "collection" posts, which
+    add a new mega.nz folder link each month rather than making a new post.
+    A plain has_run() skip would leave those new links undiscovered forever
+    once the folder's first run completes, so collect_tasks doesn't rely on
+    detecting "this is an archival post" at all — it just diffs the links
+    currently in description.json against what folder_log actually recorded
+    last time, and only re-skips if nothing's new. Generalizes past monthly
+    cadence to any creator who edits a post to add a link later, yearly or
+    otherwise.
+    """
+    records = [r for r in folder_log.read(folder) if r.get('script') == 'downloadContent']
+    if not records:
+        return set()
+    return {
+        entry['url'] for entry in records[-1].get('links', [])
+        if isinstance(entry, dict) and entry.get('url')
+    }
+
+
 def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list, list, list, list]:
     """
     Walk *base_path* looking for folders that contain a description.json and,
@@ -3907,8 +3931,14 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
             continue
         links_file = os.path.join(root, '.links')
         has_links_file = os.path.isfile(links_file)
-        if not has_links_file:
-            if folder_log.has_run(root, 'downloadContent'):
+        # previously_seen non-empty means: this folder already completed a
+        # downloadContent run, but don't skip it outright yet — the current
+        # links get diffed against it further down, and only an unchanged
+        # set actually skips. See _previously_seen_links().
+        previously_seen: set[str] = set()
+        if not has_links_file and folder_log.has_run(root, 'downloadContent'):
+            previously_seen = _previously_seen_links(root)
+            if not previously_seen:
                 print(f'[skip] already downloaded: {_safe(os.path.basename(root))}')
                 continue
         if 'description.json' not in files:
@@ -3976,6 +4006,18 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
 
         if not validated_links:
             continue
+
+        # This folder already completed a downloadContent run, but the post
+        # has since gained links that weren't there before (e.g. Pize's
+        # monthly collection posts get a new month's mega folder link
+        # appended in place) — only the genuinely new ones need downloading.
+        if previously_seen:
+            new_links = [l for l in validated_links if l not in previously_seen]
+            if not new_links:
+                print(f'[skip] already downloaded: {_safe(os.path.basename(root))}')
+                continue
+            print(f'  [recheck] {len(new_links)} new link(s) since last run in: {_safe(os.path.basename(root))}')
+            validated_links = new_links
 
         # mega.nz links may be password-protected. The password is usually in the
         # link's own text (button label), but not every creator puts it there —
