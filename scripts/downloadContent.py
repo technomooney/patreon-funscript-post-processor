@@ -463,6 +463,61 @@ def _cached_chromedriver(version: int) -> str | None:
     return path
 
 
+def _stripped_test_type_browser(browser: str) -> str:
+    """Return a path to launch *browser* through that filters chromedriver's
+    hardcoded --test-type=webdriver flag out of the command line.
+
+    chromedriver unconditionally injects --test-type=webdriver into every
+    WebDriver session it starts — baked into the binary itself, not something
+    selenium/undetected_chromedriver expose a way to suppress. Confirmed by
+    isolating flags one at a time: Brave 151.1.93.129 segfaults on
+    --test-type=webdriver alone (crashpad's ELF snapshot code faults trying
+    to read the crashing process), while --remote-debugging-port and the
+    rest of the normal launch flags are fine on their own. This is no longer
+    the occasional flake earlier builds had — it's a 100% crash on this
+    build, so retries alone (see max_attempts below) can't get past it.
+
+    There's no way to stop chromedriver from passing the flag, so instead we
+    hand it a small wrapper script as the "browser" to exec: the wrapper
+    drops --test-type from argv and then execs the real browser with
+    everything else untouched. Cached on disk and only rewritten if the
+    target browser path changes.
+
+    Windows isn't covered — the crash is in crashpad's ELF-specific snapshot
+    code (Linux/macOS only), so Windows builds aren't expected to hit it.
+    """
+    if sys.platform == 'win32':
+        return browser
+
+    try:
+        cache_dir = os.path.dirname(uc.Patcher().executable_path)
+    except Exception:
+        cache_dir = tempfile.gettempdir()
+    wrapper_path = os.path.join(cache_dir, 'brave_test_type_wrapper.sh')
+
+    script = (
+        '#!/bin/sh\n'
+        '# Auto-generated — strips chromedriver\'s hardcoded --test-type flag\n'
+        '# before exec\'ing the real browser. See _stripped_test_type_browser().\n'
+        'args=""\n'
+        'for a in "$@"; do\n'
+        '  case "$a" in\n'
+        '    --test-type|--test-type=*) continue ;;\n'
+        '  esac\n'
+        '  args="$args \\"$a\\""\n'
+        'done\n'
+        f'eval exec "{browser}" $args\n'
+    )
+    try:
+        if not os.path.isfile(wrapper_path) or open(wrapper_path).read() != script:
+            with open(wrapper_path, 'w') as f:
+                f.write(script)
+            os.chmod(wrapper_path, 0o755)
+        return wrapper_path
+    except OSError:
+        return browser
+
+
 def setup_driver(initial_download_dir: str):
     """Create an undetected Chrome WebDriver that saves files to *initial_download_dir*.
 
@@ -506,12 +561,14 @@ def setup_driver(initial_download_dir: str):
     version = _get_browser_major_version(browser)
     print(f'Using browser: {browser} v{version} ({"headless" if headless else "windowed"})')
 
-    # chromedriver unconditionally launches the browser with --test-type
-    # (baked into the chromedriver binary itself for every WebDriver session —
-    # not something selenium/undetected_chromedriver expose a way to suppress).
-    # Some Brave builds (confirmed: 150.1.92.144) have a real, intermittent
-    # crash-on-launch tied to that flag — it doesn't reproduce every time, but
-    # can streak several failures in a row, hence the generous attempt count.
+    # Launch through a wrapper that strips chromedriver's hardcoded --test-type
+    # flag — see _stripped_test_type_browser() for why. Falls back to the real
+    # browser path unchanged on Windows or if the wrapper can't be written.
+    launch_browser = _stripped_test_type_browser(browser)
+
+    # Kept as a safety net for other transient launch failures (a stuck debug
+    # port, a dropped connection mid-handshake) — no longer load-bearing for
+    # the --test-type crash now that the wrapper above avoids it outright.
     max_attempts = 5
     for attempt in range(1, max_attempts + 1):
         # Recomputed each attempt: a prior failed attempt may have still
@@ -526,7 +583,7 @@ def setup_driver(initial_download_dir: str):
         prev_socket_timeout = socket.getdefaulttimeout()
         socket.setdefaulttimeout(60)
         try:
-            kwargs = dict(options=_build_options(), browser_executable_path=browser, version_main=version)
+            kwargs = dict(options=_build_options(), browser_executable_path=launch_browser, version_main=version)
             if cached_driver:
                 kwargs['driver_executable_path'] = cached_driver
             return uc.Chrome(**kwargs)
