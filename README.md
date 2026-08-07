@@ -113,6 +113,7 @@ All settings live in `.env` (created by setup). Key options:
 | `MEGA_TIMEOUT_MINUTES` | `30` | Timeout for a single mega.nz download in minutes. Increase for very large files |
 | `MEGA_HIDE_WINDOW` | `true` | Suppress MEGAcmd console popup on Windows. Set to `false` to see MEGAcmd output for debugging |
 | `DEDUP_THREADS` | (benchmarked) | Parallel threads for hashing during dedup |
+| `DISCORD_PASSWORD_FALLBACK` | `true` | Fall back to a creator's configured Discord channel for a mega.nz password missing from the post text. See `creator_profiles.py` |
 
 ## Supported download sources
 

@@ -2727,6 +2727,42 @@ def _extract_mega_password(text: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
+# Cache of Discord-fetched passwords, keyed by creator (the lowercased
+# top-level scanned folder name — description.json carries no creator field
+# of its own, and this codebase already treats "the folder you scan" as one
+# creator, e.g. Pize/). Populated at most once per creator per run: the
+# browser launch/login/scrape is comparatively expensive and the answer
+# doesn't change between mega links from the same creator in a single run.
+_discord_password_cache: dict[str, str | None] = {}
+
+
+def _fetch_discord_password_cached(creator_key: str) -> str | None:
+    """Look up *creator_key*'s latest Discord-posted password, once per run.
+
+    Lazily imports discord_passwords — it imports this module in turn (to
+    reuse _find_browser/_stripped_test_type_browser/_cached_chromedriver), so
+    a top-level import here would be circular. Set
+    DISCORD_PASSWORD_FALLBACK=false to skip this entirely, e.g. for an
+    unattended batch run where popping a browser window for a first-time
+    interactive Discord login isn't wanted.
+    """
+    if creator_key in _discord_password_cache:
+        return _discord_password_cache[creator_key]
+
+    if os.getenv('DISCORD_PASSWORD_FALLBACK', 'true').strip().lower() in ('false', '0', 'no'):
+        _discord_password_cache[creator_key] = None
+        return None
+
+    try:
+        import discord_passwords
+        password = discord_passwords.fetch_latest_password(creator_key)
+    except Exception as e:
+        print(f'  [discord] password lookup failed for "{creator_key}": {e}')
+        password = None
+    _discord_password_cache[creator_key] = password
+    return password
+
+
 # Whether MEGAcmd is already logged in for this session.
 _mega_logged_in: bool = False
 
@@ -3943,17 +3979,22 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
 
         # mega.nz links may be password-protected. The password is usually in the
         # link's own text (button label), but not every creator puts it there —
-        # fall back to searching the whole post body.
+        # fall back to searching the whole post body, and if it's genuinely not
+        # in the post at all, fall back further to the creator's configured
+        # Discord channel (see discord_passwords.py / creator_profiles.py).
         mega_links = [l for l in validated_links if _is_mega_domain(l)]
         if mega_links:
             entry_text_by_href = {e['href']: e['text'] for e in entries}
             full_text: str | None = None
+            creator_key = os.path.basename(os.path.normpath(base_path)).strip().lower()
             for link in mega_links:
                 pw = _extract_mega_password(entry_text_by_href.get(link, ''))
                 if not pw:
                     if full_text is None:
                         full_text = extract_description_text(desc_path)
                     pw = _extract_mega_password(full_text)
+                if not pw:
+                    pw = _fetch_discord_password_cached(creator_key)
                 if pw:
                     _mega_link_passwords[link] = pw
 
@@ -4679,6 +4720,11 @@ def find_and_download(base_path: str):
 
     finally:
         driver.quit()
+        # Close the Discord browser too, if _fetch_discord_password_cached ever
+        # opened one this run — checked via sys.modules rather than a top-level
+        # import so runs that never needed a Discord password don't pay for it.
+        if 'discord_passwords' in sys.modules:
+            sys.modules['discord_passwords'].close()
         if completed_cleanly:
             _failure_folders = {f.get('save_directory') for f in failures}
             _uncertain_folders = {u.get('save_directory') for u in uncertain}

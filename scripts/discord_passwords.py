@@ -179,12 +179,32 @@ def fetch_latest_password(creator_key: str, max_messages: int = 50) -> str | Non
     if not ensure_login(driver):
         return None
 
+    message_xpath = '//*[@data-list-id="chat-messages"]//*[@id and contains(@id, "message-content-")]'
     url = f"https://discord.com/channels/{discord_cfg['guild_id']}/{discord_cfg['channel_id']}"
     try:
         driver.get(url)
+        # Waiting for the chat-messages *container* alone isn't enough — it
+        # mounts before Discord's virtualized list has actually rendered any
+        # message children into it, so a find_elements() run right after can
+        # legitimately see zero (or a partial batch of) messages depending on
+        # timing (caught live: identical code returned 8 messages one run and
+        # 0 the next). Wait for at least one message element specifically,
+        # then let the count settle before trusting it's the full batch.
         WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.XPATH, '//*[@data-list-id="chat-messages"]'))
+            EC.presence_of_element_located((By.XPATH, message_xpath))
         )
+        stable_checks = 0
+        last_count = -1
+        for _ in range(20):  # ~6s max
+            count = len(driver.find_elements(By.XPATH, message_xpath))
+            if count == last_count:
+                stable_checks += 1
+                if stable_checks >= 2:
+                    break
+            else:
+                stable_checks = 0
+                last_count = count
+            time.sleep(0.3)
     except WebDriverException:
         print('  [discord] browser window was closed before the channel could load.')
         return None
@@ -193,9 +213,7 @@ def fetch_latest_password(creator_key: str, max_messages: int = 50) -> str | Non
         return None
 
     # Messages render newest-at-bottom; scan from the end for the first match.
-    messages = driver.find_elements(
-        By.XPATH, '//*[@data-list-id="chat-messages"]//*[@id and contains(@id, "message-content-")]'
-    )
+    messages = driver.find_elements(By.XPATH, message_xpath)
     for el in reversed(messages[-max_messages:]):
         text = el.text or ''
         match = _PASSWORD_RE.search(text)
