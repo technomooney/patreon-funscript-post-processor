@@ -6,3 +6,5 @@ Pize
 extensions
 STATUS.md
 pyrightconfig.json
+.creators.json
+.discord_browser_profile
