@@ -794,6 +794,27 @@ def _name_from_response(response, url: str) -> str | None:
     return None
 
 
+_ILLEGAL_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def _sanitize_filename_stem(name: str) -> str:
+    """Strip characters illegal in Windows/Linux filenames and collapse whitespace."""
+    cleaned = _ILLEGAL_FILENAME_CHARS.sub('', name)
+    return re.sub(r'\s+', ' ', cleaned).strip()
+
+
+def _page_title_override(title: str, site_suffix_re: re.Pattern) -> str | None:
+    """Turn a browser page <title> into an override_name for _direct_fetch.
+
+    Strips a trailing site-name suffix (e.g. ' - Hanime1.me'), sanitizes the
+    result for filesystem use, and appends a harmless placeholder extension
+    so downstream Path(...).stem calls don't truncate at an internal dot in
+    the real title (e.g. 'Vol. 2'). Returns None if nothing usable is left.
+    """
+    cleaned = _sanitize_filename_stem(site_suffix_re.sub('', title or ''))
+    return f'{cleaned}.title' if cleaned else None
+
+
 def _truncate_filename(name: str, max_bytes: int = 255) -> str:
     """Shorten *name* so the UTF-8-encoded form fits within *max_bytes*.
 
@@ -1353,7 +1374,8 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
     return None
 
 
-def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: dict[str, str]) -> bool:
+def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: dict[str, str],
+                   override_name: str | None = None) -> bool:
     """Download *video_url* straight to *download_dir* using urllib, no browser needed.
 
     Writes to a .part file while in progress so that wait_for_download ignores
@@ -1361,6 +1383,12 @@ def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: 
     This ensures an interrupted download is never mistaken for a finished one.
     The file extension is taken from the Content-Disposition header when present
     so that non-video files (e.g. .funscript, .zip) keep their original extension.
+
+    override_name, when given, is used as the saved filename's stem instead of
+    whatever Content-Disposition/the URL provides. Needed for CDNs that serve
+    the video from an opaque token/hash URL with no real title in the response
+    — without an override the file would be saved under that hash forever,
+    which check_funscripts/fix_garbled_names can never fuzzy-match to anything.
     """
     global _last_fetch_original_name, _last_download_skipped, _precheck_replace_target
     _last_download_skipped = False
@@ -1379,7 +1407,7 @@ def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: 
     req = urllib.request.Request(video_url, headers=headers)
     with urllib.request.urlopen(req) as response:
         ext = _ext_from_response(response, video_url)
-        _last_fetch_original_name = _name_from_response(response, video_url)
+        _last_fetch_original_name = override_name or _name_from_response(response, video_url)
         size_mb = int(response.headers.get('Content-Length', 0)) / 1024 / 1024
         if size_mb:
             print(f'  file size: {size_mb:.1f} MB')
@@ -1594,12 +1622,23 @@ def download_gofile(driver, url: str, download_dir: str) -> bool:
     return triggered
 
 
+_HANIME_TITLE_SUFFIX_RE = re.compile(r'\s*[-|–]\s*hanime1\.me\s*$', re.IGNORECASE)
+
+
 def download_hanime(driver, url: str, download_dir: str) -> bool:
     """Navigate to a hanime1.me watch page and download the highest available resolution."""
     driver.get(url)
 
     try:
         wait = WebDriverWait(driver, 5)
+
+        # Capture the watch page's title before navigating away — the CDN
+        # data-url below is an opaque token link with no real title in its
+        # response, so this is the only point the actual video title is
+        # available to name the saved file with. Without it, the file gets
+        # saved under that token/hash and can never be fuzzy-matched to a
+        # funscript by check_funscripts/fix_garbled_names.
+        title_override = _page_title_override(driver.title, _HANIME_TITLE_SUFFIX_RE)
 
         # Wait for the download anchor to be present — headless mode renders
         # slower so a fixed sleep is not reliable here.
@@ -1646,7 +1685,8 @@ def download_hanime(driver, url: str, download_dir: str) -> bool:
         # The data-url contains a self-contained token, so no browser session is needed.
         # Downloading via urllib avoids the browser opening the mp4 inline.
         print(f'  [hanime] fetching {resolution}p...')
-        return _direct_fetch(video_url, download_dir, '_hanime_temp', {'Referer': 'https://hanime1.me/'})
+        return _direct_fetch(video_url, download_dir, '_hanime_temp', {'Referer': 'https://hanime1.me/'},
+                              override_name=title_override)
 
     except CloudflareBlockedError:
         raise  # let find_and_download handle the retry prompt
