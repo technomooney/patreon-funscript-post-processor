@@ -1805,10 +1805,17 @@ def download_rule34video(driver, url: str, download_dir: str) -> bool:
     return False
 
 
-def _pixeldrain_headers() -> dict[str, str]:
-    """Build request headers for the pixeldrain API, adding auth if a key is configured."""
+def _pixeldrain_headers(anonymous: bool = False) -> dict[str, str]:
+    """Build request headers for the pixeldrain API, adding auth if a key is configured.
+
+    *anonymous* forces no Authorization header even if a key is configured —
+    used to retry after a 401, since a stored key can be invalid/revoked/
+    expired while the file itself is still public (confirmed live: a full
+    production run got HTTP 401 on every single pixeldrain link with the
+    then-configured key, while the identical files succeeded anonymously).
+    """
     headers: dict[str, str] = {'Referer': 'https://pixeldrain.com/'}
-    api_key = _get_secret('PIXELDRAIN_API_KEY').strip()
+    api_key = '' if anonymous else _get_secret('PIXELDRAIN_API_KEY').strip()
     if api_key:
         token = base64.b64encode(f':{api_key}'.encode()).decode()
         headers['Authorization'] = f'Basic {token}'
@@ -1826,34 +1833,52 @@ def _expand_pixeldrain_list(url: str) -> list[str]:
         return [url]
 
     list_id = path_parts[1]
-    try:
-        api_url = f'https://pixeldrain.com/api/list/{list_id}'
-        req = urllib.request.Request(api_url, headers=_pixeldrain_headers())
-        with urllib.request.urlopen(req) as resp:
-            data = json.loads(resp.read())
-        files = data.get('files', [])
-        if files:
-            expanded = [f'https://pixeldrain.com/u/{f["id"]}' for f in files if f.get('id')]
-            print(f'  [pixeldrain.com] list {list_id} expanded to {len(expanded)} file(s)')
-            return expanded
-        print(f'  [pixeldrain.com] list {list_id} is empty')
-    except Exception as e:
-        print(f'  [pixeldrain.com] could not expand list {list_id}: {e}')
+    api_url = f'https://pixeldrain.com/api/list/{list_id}'
+    for anonymous in (False, True):
+        try:
+            req = urllib.request.Request(api_url, headers=_pixeldrain_headers(anonymous))
+            with urllib.request.urlopen(req) as resp:
+                data = json.loads(resp.read())
+            files = data.get('files', [])
+            if files:
+                expanded = [f'https://pixeldrain.com/u/{f["id"]}' for f in files if f.get('id')]
+                print(f'  [pixeldrain.com] list {list_id} expanded to {len(expanded)} file(s)')
+                return expanded
+            print(f'  [pixeldrain.com] list {list_id} is empty')
+            return [url]
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and not anonymous:
+                print(f'  [pixeldrain.com] list {list_id}: authenticated request failed (401) — retrying anonymously...')
+                continue
+            print(f'  [pixeldrain.com] could not expand list {list_id}: {e}')
+            break
+        except Exception as e:
+            print(f'  [pixeldrain.com] could not expand list {list_id}: {e}')
+            break
 
     return [url]
 
 
 def download_pixeldrain(_driver, url: str, download_dir: str) -> bool:
     """Download a pixeldrain.com file directly via its public API (no browser needed)."""
-    try:
-        # Page URL: /u/<id> → API URL: /api/file/<id>
-        file_id = urlparse(url).path.rstrip('/').split('/')[-1]
-        video_url = f'https://pixeldrain.com/api/file/{file_id}'
-        print(f'  [pixeldrain.com] fetching {file_id}...')
-        return _direct_fetch(video_url, download_dir, '_pixeldrain_temp', _pixeldrain_headers())
+    # Page URL: /u/<id> → API URL: /api/file/<id>
+    file_id = urlparse(url).path.rstrip('/').split('/')[-1]
+    video_url = f'https://pixeldrain.com/api/file/{file_id}'
+    for anonymous in (False, True):
+        try:
+            print(f'  [pixeldrain.com] fetching {file_id}' + (' (anonymous retry)...' if anonymous else '...'))
+            return _direct_fetch(video_url, download_dir, '_pixeldrain_temp', _pixeldrain_headers(anonymous))
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and not anonymous:
+                print('  [pixeldrain.com] authenticated request failed (401) — retrying anonymously...')
+                continue
+            print(f'  [pixeldrain.com] handler error: {e}')
+            break
+        except Exception as e:
+            print(f'  [pixeldrain.com] handler error: {e}')
+            break
 
-    except Exception as e:
-        print(f'  [pixeldrain.com] handler error: {e}')
+    return False
 
     return False
 
