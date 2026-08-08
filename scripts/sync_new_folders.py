@@ -3,6 +3,8 @@ import os
 import shutil
 from collections import defaultdict
 
+import action_log
+
 _JUNK_NAMES = {'thumbs.db', 'desktop.ini'}
 _FUNSCRIPT_EXT = '.funscript'
 
@@ -128,6 +130,7 @@ def sync_new_folders(source, destination):
                 print(f"  [{i}/{len(new_folders)}] {folder}")
                 try:
                     shutil.copytree(src_path, dst_path)
+                    action_log.record('copytree', dst=dst_path)
                     copied += 1
                 except OSError as e:
                     print(f"    ERROR: {e}")
@@ -201,6 +204,7 @@ def sync_existing_folders(source, destination, common_folders):
         try:
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
             shutil.copy2(src_full, dest_path)
+            action_log.record('copy', dst=dest_path)
             copied += 1
         except OSError as e:
             print(f"    ERROR: {e}")
@@ -238,8 +242,10 @@ def main():
         print("Source and destination are the same directory — nothing to do.")
         return
 
+    action_log.start('sync_new_folders', destination)
     common_folders = sync_new_folders(source, destination)
     sync_existing_folders(source, destination, common_folders)
+    action_log.finish()
 
 
 if __name__ == "__main__":
