@@ -36,6 +36,7 @@ import os
 import re
 import sys
 from urllib.parse import unquote
+import action_log
 import folder_log
 
 # Suffixes that indicate a filename was truncated at a URL / filesystem limit.
@@ -230,6 +231,7 @@ def process(root_dir: str, dry_run: bool, skip_folders: set[str] | None = None) 
                 print(f'    -> {new_path}')
                 try:
                     os.rename(old_path, new_path)
+                    action_log.record('rename', old_path=old_path, new_path=new_path)
                     report.append({'old_path': old_path, 'new_path': new_path,
                                    'strategy': strategy, 'status': 'renamed'})
                 except OSError as e:
@@ -496,6 +498,7 @@ def find_media_misnames(root_dir: str, dry_run: bool, skip_folders: set[str] | N
                 print(f'    -> {new_path}')
                 try:
                     os.rename(old_path, new_path)
+                    action_log.record('rename', old_path=old_path, new_path=new_path)
                     report.append({'old_path': old_path, 'new_path': new_path,
                                    'status': 'renamed'})
                 except OSError as e:
@@ -569,6 +572,7 @@ def find_funscript_misnames(root_dir: str, dry_run: bool, skip_folders: set[str]
                 print(f'    -> {new_path}')
                 try:
                     os.rename(old_path, new_path)
+                    action_log.record('rename', old_path=old_path, new_path=new_path)
                     report.append({'old_path': old_path, 'new_path': new_path,
                                    'status': 'renamed'})
                 except OSError as e:
@@ -673,6 +677,7 @@ def find_funscript_video_mismatches(
                     print(f'    -> {new_path}')
                     try:
                         os.rename(old_path, new_path)
+                        action_log.record('rename', old_path=old_path, new_path=new_path)
                         report.append({'funscript': old_path, 'suggested': new_path,
                                        'video': best_video, 'score': score_str,
                                        'status': 'renamed'})
@@ -702,6 +707,9 @@ if __name__ == '__main__':
     if dry_run:
         print('(dry run — no changes will be made)')
     print()
+
+    if not dry_run:
+        action_log.start('fix_garbled_names', root)
 
     # Collect folders that already have a completed fix_garbled_names run.
     skip_set: set[str] = set()
@@ -803,3 +811,5 @@ if __name__ == '__main__':
                 for row in _rows
             ]
             folder_log.append_run(_dp, 'fix_garbled_names', changes=_changes)
+
+        action_log.finish()
