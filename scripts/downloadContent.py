@@ -1805,6 +1805,25 @@ def download_rule34video(driver, url: str, download_dir: str) -> bool:
     return False
 
 
+# Printed once per run, not once per link — a dead key affects every
+# pixeldrain link in the run, and this project's pixeldrain code never logs
+# the account out itself, so a 401 here means the key was invalidated
+# outside this tool (regenerated/revoked on the pixeldrain account, or hit
+# whatever undocumented expiration policy pixeldrain applies).
+_pixeldrain_key_warned = False
+
+
+def _warn_pixeldrain_key_once() -> None:
+    global _pixeldrain_key_warned
+    if _pixeldrain_key_warned:
+        return
+    _pixeldrain_key_warned = True
+    print('  [pixeldrain.com] your PIXELDRAIN_API_KEY appears to be invalid, revoked, or expired '
+          '(pixeldrain rejected it with 401) — falling back to anonymous access for the rest of this run. '
+          'That covers public files fine, but private ones will still fail. Generate a fresh key at '
+          'pixeldrain.com and re-run setup to update it if you need private-file access.')
+
+
 def _pixeldrain_headers(anonymous: bool = False) -> dict[str, str]:
     """Build request headers for the pixeldrain API, adding auth if a key is configured.
 
@@ -1848,7 +1867,7 @@ def _expand_pixeldrain_list(url: str) -> list[str]:
             return [url]
         except urllib.error.HTTPError as e:
             if e.code == 401 and not anonymous:
-                print(f'  [pixeldrain.com] list {list_id}: authenticated request failed (401) — retrying anonymously...')
+                _warn_pixeldrain_key_once()
                 continue
             print(f'  [pixeldrain.com] could not expand list {list_id}: {e}')
             break
@@ -1870,7 +1889,7 @@ def download_pixeldrain(_driver, url: str, download_dir: str) -> bool:
             return _direct_fetch(video_url, download_dir, '_pixeldrain_temp', _pixeldrain_headers(anonymous))
         except urllib.error.HTTPError as e:
             if e.code == 401 and not anonymous:
-                print('  [pixeldrain.com] authenticated request failed (401) — retrying anonymously...')
+                _warn_pixeldrain_key_once()
                 continue
             print(f'  [pixeldrain.com] handler error: {e}')
             break
