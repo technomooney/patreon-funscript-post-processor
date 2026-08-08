@@ -78,11 +78,15 @@ echo   c^) Update credentials     -- re-enter any service login/API key (pixeldr
 echo      iwara.tv, mega.nz, spankbang.com) without re-answering every other setup
 echo      question -- run this if a saved credential expires or gets revoked
 echo.
+echo   r^) Undo last action       -- reverse the most recent renames/copies/dedupe
+echo      from options 1, 3, 5, 6, 7, or 9 (one level deep -- running any of them
+echo      again replaces what 'last action' means)
+echo.
 echo   q^) Exit
 echo.
 
 :ask
-set /p "choice=Choose a program to run (1-9, u=update deps, c=update creds, q=exit): "
+set /p "choice=Choose a program to run (1-9, u=update deps, c=update creds, r=undo last, q=exit): "
 
 if /i "%choice%"=="q" goto done
 if /i "%choice%"=="u" (
@@ -98,6 +102,13 @@ if /i "%choice%"=="u" (
 if /i "%choice%"=="c" (
     echo.
     .venv\Scripts\python.exe scripts\setup_config.py --credentials
+    echo.
+    pause
+    goto menu
+)
+if /i "%choice%"=="r" (
+    echo.
+    .venv\Scripts\python.exe scripts\undo_last_action.py
     echo.
     pause
     goto menu
@@ -166,7 +177,7 @@ if "%choice%"=="9" (
     goto menu
 )
 
-echo Invalid choice. Please enter 1-9, u, c, or q to exit.
+echo Invalid choice. Please enter 1-9, u, c, r, or q to exit.
 goto ask
 
 :done

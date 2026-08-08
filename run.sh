@@ -102,11 +102,15 @@ while true; do
     echo "     iwara.tv, mega.nz, spankbang.com) without re-answering every other setup"
     echo "     question — run this if a saved credential expires or gets revoked"
     echo ""
+    echo "  r) Undo last action       — reverse the most recent renames/copies/dedupe"
+    echo "     from options 1, 3, 5, 6, 7, or 9 (one level deep — running any of them"
+    echo "     again replaces what 'last action' means)"
+    echo ""
     echo "  q) Exit"
     echo ""
 
     while true; do
-        read -rp "Choose a program to run (1-9, u=update deps, c=update creds, q=exit): " choice
+        read -rp "Choose a program to run (1-9, u=update deps, c=update creds, r=undo last, q=exit): " choice
         case "$choice" in
             q|Q)
                 echo ""
@@ -123,6 +127,11 @@ while true; do
             c|C)
                 echo ""
                 .venv/bin/python scripts/setup_config.py --credentials
+                break
+                ;;
+            r|R)
+                echo ""
+                .venv/bin/python scripts/undo_last_action.py
                 break
                 ;;
             1)
@@ -171,7 +180,7 @@ while true; do
                 break
                 ;;
             *)
-                echo "Invalid choice. Please enter 1-9, u, c, or q to exit."
+                echo "Invalid choice. Please enter 1-9, u, c, r, or q to exit."
                 ;;
         esac
     done
