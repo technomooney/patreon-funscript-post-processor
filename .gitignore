@@ -8,3 +8,4 @@ STATUS.md
 pyrightconfig.json
 .creators.json
 .discord_browser_profile
+.last_action.json
