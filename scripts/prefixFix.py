@@ -1,6 +1,7 @@
 import os
 import re
 from urllib.parse import unquote
+import action_log
 import folder_log
 
 # Matches the Patreon prefix: one or more non-underscore chars (type), underscore,
@@ -112,12 +113,14 @@ def main():
     for file, root in zip(fileList, fileRoots):
         folder_map.setdefault(root, []).append(file)
 
+    action_log.start('prefixFix', os.path.abspath(filePath))
     for folder in sorted(folder_map):
         if folder_log.has_run(folder, 'prefixFix'):
             print(f'  [skip] already processed: {os.path.basename(folder)}')
             continue
         renames = processAndRename(folder_map[folder], [folder] * len(folder_map[folder]))
         folder_log.append_run(folder, 'prefixFix', renames=renames)
+    action_log.finish()
 
 
 def getUserInput():
@@ -204,6 +207,7 @@ def processAndRename(fileList: list, fileRoots: list) -> list[dict]:
 
         try:
             os.rename(file, dest)
+            action_log.record('rename', old_path=file, new_path=dest)
             print(f"  renamed: {original_basename!r}  →  {final_name!r}")
             renames.append({'from': original_basename, 'to': final_name})
         except OSError as e:
