@@ -294,18 +294,38 @@ _LABEL_MAP = {
     'max_interval': ' (max interval)',
 }
 
+# Multi-axis funscript suffixes, e.g. 'example.roll.funscript'. Each is a
+# distinct file from the root/primary script — must never be collapsed onto
+# the plain video name during a rename. Keep in sync with check_funscripts.py's
+# _AXIS_SUFFIXES.
+_AXIS_SUFFIXES = ('.surge', '.pitch', '.roll', '.twist', '.sway')
+
+
+def _split_fs_axis(stem: str) -> tuple[str, str]:
+    """Return (base_stem, axis_suffix) stripping a trailing multi-axis suffix.
+
+    e.g. 'example.roll' → ('example', '.roll')
+    """
+    lower = stem.lower()
+    for suffix in _AXIS_SUFFIXES:
+        if lower.endswith(suffix):
+            return stem[:-len(suffix)], stem[-len(suffix):]
+    return stem, ''
+
 
 def _split_fs_label(stem: str) -> tuple[str, str]:
-    """Return (base_stem, canonical_label_suffix) stripping funscript variant labels."""
+    """Return (base_stem, canonical_label_suffix) stripping funscript variant
+    labels — bracketed labels like (SMOOTH) and multi-axis suffixes like .roll."""
+    stem, axis = _split_fs_axis(stem)
     m = _FS_SUFFIX_LABEL.search(stem)
     if m:
         raw = m.group(1).lower().replace('_', ' ').strip()
-        return stem[:m.start()].rstrip(), _LABEL_MAP.get(raw, f' ({m.group(1)})')
+        return stem[:m.start()].rstrip(), _LABEL_MAP.get(raw, f' ({m.group(1)})') + axis
     m = _FS_PREFIX_LABEL.match(stem)
     if m:
         raw = m.group(1).lower().replace('_', ' ').strip()
-        return stem[m.end():].lstrip(), _LABEL_MAP.get(raw, f' ({m.group(1)})')
-    return stem, ''
+        return stem[m.end():].lstrip(), _LABEL_MAP.get(raw, f' ({m.group(1)})') + axis
+    return stem, axis
 
 
 def _normalize_for_match(stem: str) -> str:
@@ -591,6 +611,15 @@ def find_funscript_video_mismatches(
 
         for fs_name in funscripts:
             fs_stem = os.path.splitext(fs_name)[0]
+
+            # If the funscript's name already contains a video's full name —
+            # variant label, axis suffix and all — it's already correctly
+            # matched. Leave it alone rather than risk the fuzzy-reconstruction
+            # logic below rewriting it into something worse.
+            norm_fs_stem = _normalize_for_match(fs_stem)
+            if any(norm_vstem and norm_vstem in norm_fs_stem for norm_vstem in norm_videos.values()):
+                continue
+
             fs_base, fs_label = _split_fs_label(fs_stem)
             norm_base = _normalize_for_match(fs_base)
 
