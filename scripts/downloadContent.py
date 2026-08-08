@@ -1945,17 +1945,116 @@ def _expand_pixeldrain_list(url: str) -> list[str]:
         return [url]
 
 
+def _pixeldrain_api_url(url: str) -> tuple[str, str]:
+    """Map a pixeldrain page URL to its API URL, returning (api_url, label).
+
+    Two URL shapes route here (same domain, different sharing feature):
+      /u/<id>        single-file share -> /api/file/<id>
+      /d/<id>/<path> filesystem share  -> /api/filesystem/<id>/<path>
+                       (path can be nested, e.g. /d/xyz/subfolder/movie.mp4 —
+                       confirmed live: pixeldrain resolves this API shape
+                       directly to the raw file, byte-identical to the web
+                       page, no separate metadata lookup needed)
+    The path is kept exactly as given (still percent-encoded) rather than
+    parsed/rejoined, since urlparse().path never decodes it in the first
+    place and re-encoding risks mismatching what pixeldrain expects.
+    """
+    path = urlparse(url).path.strip('/')
+    parts = path.split('/', 1)
+    if parts[0] == 'd' and len(parts) > 1:
+        api_url = f'https://pixeldrain.com/api/filesystem/{parts[1]}'
+    else:
+        file_id = path.rstrip('/').split('/')[-1]
+        api_url = f'https://pixeldrain.com/api/file/{file_id}'
+    label = api_url.rsplit('/', 1)[-1] or api_url
+    return api_url, label
+
+
+def _pixeldrain_filesystem_stat(fs_path: str) -> dict | None:
+    """GET /api/filesystem/<path>?stat — directory/file metadata, or None on failure."""
+    try:
+        req = urllib.request.Request(
+            f'https://pixeldrain.com/api/filesystem/{fs_path}?stat',
+            headers={'Referer': 'https://pixeldrain.com/'},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+    except Exception:
+        return None
+
+
+def _pixeldrain_filesystem_funscript_gate(api_url: str, download_dir: str) -> str | None:
+    """For a pixeldrain filesystem-share video, decide whether it's worth downloading at
+    all. Returns a human-readable skip reason if it should be skipped (no funscript
+    found for it, locally or in its pixeldrain directory) — this project exists to match
+    funscripts to video, and a filesystem share can hold many sibling files at once
+    (unlike a plain /u/<id> link), so it's worth checking before spending bandwidth on
+    what might be a large video with nothing to match it to. Returns None if the
+    download should proceed. A matching remote funscript is downloaded here (small,
+    cheap) rather than just noted, so the download that follows has something to pair
+    with even when the post folder didn't already have one.
+    """
+    # Bare .funscript is the common case, but this creator (confirmed: Pize) often
+    # ships the funscript bundled inside an archive instead (e.g. "(Soothing).rar",
+    # "(Moderate) [alt2].rar" alongside the video) — treat those as "already have
+    # one" too rather than false-negative into skipping a video that's actually fine.
+    _funscript_exts = ('.funscript', '.rar', '.zip', '.7z')
+    if any(f.lower().endswith(_funscript_exts) for f in os.listdir(download_dir)):
+        return None  # already have a funscript (or an archive likely containing one) — proceed
+
+    # 'https://pixeldrain.com/api/filesystem/<id>/<dir>/<file>' -> '<id>/<dir>/<file>'
+    fs_path = api_url.removeprefix('https://pixeldrain.com/api/filesystem/')
+    parent_path, sep, filename = fs_path.rpartition('/')
+    if not sep:
+        return None  # file sits at the share root, nothing to list against — don't block it
+
+    target_stem = Path(unquote(filename)).stem
+    data = _pixeldrain_filesystem_stat(parent_path)
+    if data is None:
+        return None  # couldn't check — don't block the download over an API hiccup
+
+    for child in data.get('children', []):
+        name = child.get('name', '')
+        if child.get('type') != 'file' or not name.lower().endswith('.funscript'):
+            continue
+        if Path(name).stem != target_stem:
+            continue
+        child_url = "https://pixeldrain.com/api/filesystem/" + child.get('path', '').lstrip('/')
+        print(f'  [pixeldrain.com] found a matching funscript in the share ({name}) — fetching it too...')
+        try:
+            req = urllib.request.Request(child_url, headers={'Referer': 'https://pixeldrain.com/'})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                content = resp.read()
+            dest = os.path.join(download_dir, name)
+            if not os.path.exists(dest):
+                with open(dest, 'wb') as f:
+                    f.write(content)
+        except Exception as e:
+            print(f'  [pixeldrain.com] could not fetch the matching funscript: {e}')
+        return None  # proceed with the video regardless of whether the funscript fetch worked
+
+    display_name = Path(unquote(filename)).name
+    return (f'no .funscript found for "{display_name}" — locally or in its pixeldrain directory — '
+            'skipping to avoid downloading a video with nothing to match it to')
+
+
 def download_pixeldrain(_driver, url: str, download_dir: str) -> bool:
     """Download a pixeldrain.com file directly via its public API (no browser needed)."""
-    # Page URL: /u/<id> → API URL: /api/file/<id>
-    file_id = urlparse(url).path.rstrip('/').split('/')[-1]
-    video_url = f'https://pixeldrain.com/api/file/{file_id}'
+    video_url, label = _pixeldrain_api_url(url)
 
-    headers = _pixeldrain_initial_headers(file_id)
+    if '/api/filesystem/' in video_url:
+        skip_reason = _pixeldrain_filesystem_funscript_gate(video_url, download_dir)
+        if skip_reason:
+            print(f'  [pixeldrain.com] {skip_reason}')
+            global _last_download_skipped
+            _last_download_skipped = True
+            return False
+
+    headers = _pixeldrain_initial_headers(label)
     if headers is None:
         return False
     try:
-        print(f'  [pixeldrain.com] fetching {file_id}...')
+        print(f'  [pixeldrain.com] fetching {label}...')
         return _direct_fetch(video_url, download_dir, '_pixeldrain_temp', headers)
     except urllib.error.HTTPError as e:
         if e.code != 401 or 'Authorization' not in headers:
@@ -1965,7 +2064,7 @@ def download_pixeldrain(_driver, url: str, download_dir: str) -> bool:
         if retry_headers is None:
             return False
         try:
-            print(f'  [pixeldrain.com] fetching {file_id} (retry)...')
+            print(f'  [pixeldrain.com] fetching {label} (retry)...')
             return _direct_fetch(video_url, download_dir, '_pixeldrain_temp', retry_headers)
         except Exception as e2:
             print(f'  [pixeldrain.com] handler error: {e2}')
@@ -1973,8 +2072,6 @@ def download_pixeldrain(_driver, url: str, download_dir: str) -> bool:
     except Exception as e:
         print(f'  [pixeldrain.com] handler error: {e}')
         return False
-
-    return False
 
     return False
 
