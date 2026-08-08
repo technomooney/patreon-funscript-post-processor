@@ -66,7 +66,9 @@ while true; do
     echo "     and download the associated videos and files"
     echo ""
     echo "  3) Check funscript match  — find videos missing a funscript and"
-    echo "     report fuzzy-match suggestions"
+    echo "     report fuzzy-match suggestions, cross-checked against video/funscript"
+    echo "     duration; can auto-rename a lone unmatched video to its funscript's"
+    echo "     name when duration confirms it unambiguously (asks first)"
     echo ""
     echo "  4) Generate HTML          — build a description.html visual overview"
     echo "     in each post folder"
@@ -84,7 +86,8 @@ while true; do
     echo "     All changes written to CSV reports in _reports/"
     echo ""
     echo "  7) Dedupe only            — clean leftover temp files and remove"
-    echo "     exact duplicate files without running a full download"
+    echo "     exact duplicate files (moved to .trash, undoable) without running"
+    echo "     a full download"
     echo ""
     echo "  8) Audit report           — read .folder_log.json from every post folder"
     echo "     and generate _reports/audit_report.html showing what each script"
@@ -102,7 +105,7 @@ while true; do
     echo "     iwara.tv, mega.nz, spankbang.com) without re-answering every other setup"
     echo "     question — run this if a saved credential expires or gets revoked"
     echo ""
-    echo "  r) Undo last action       — reverse the most recent renames/copies/dedupe"
+    echo "  z) Undo last action       — reverse the most recent renames/copies/dedupe"
     echo "     from options 1, 3, 5, 6, 7, or 9 (one level deep — running any of them"
     echo "     again replaces what 'last action' means)"
     echo ""
@@ -110,7 +113,7 @@ while true; do
     echo ""
 
     while true; do
-        read -rp "Choose a program to run (1-9, u=update deps, c=update creds, r=undo last, q=exit): " choice
+        read -rp "Choose a program to run (1-9, u=update deps, c=update creds, z=undo last, q=exit): " choice
         case "$choice" in
             q|Q)
                 echo ""
@@ -129,7 +132,7 @@ while true; do
                 .venv/bin/python scripts/setup_config.py --credentials
                 break
                 ;;
-            r|R)
+            z|Z)
                 echo ""
                 .venv/bin/python scripts/undo_last_action.py
                 break
@@ -180,7 +183,7 @@ while true; do
                 break
                 ;;
             *)
-                echo "Invalid choice. Please enter 1-9, u, c, r, or q to exit."
+                echo "Invalid choice. Please enter 1-9, u, c, z, or q to exit."
                 ;;
         esac
     done

@@ -42,7 +42,9 @@ echo   2^) Download content       -- find links in description.json files
 echo      and download the associated videos and files
 echo.
 echo   3^) Check funscript match  -- find videos missing a funscript and
-echo      report fuzzy-match suggestions
+echo      report fuzzy-match suggestions, cross-checked against video/funscript
+echo      duration; can auto-rename a lone unmatched video to its funscript's
+echo      name when duration confirms it unambiguously (asks first)
 echo.
 echo   4^) Generate HTML          -- build a description.html visual overview
 echo      in each post folder
@@ -60,7 +62,8 @@ echo      * fuzzy-match funscript names to their video and rename to match
 echo      All changes written to CSV reports in _reports/
 echo.
 echo   7^) Dedupe only            -- clean leftover temp files and remove
-echo      exact duplicate files without running a full download
+echo      exact duplicate files (moved to .trash, undoable) without running
+echo      a full download
 echo.
 echo   8^) Audit report           -- read .folder_log.json from every post folder
 echo      and generate _reports/audit_report.html showing what each script
@@ -78,7 +81,7 @@ echo   c^) Update credentials     -- re-enter any service login/API key (pixeldr
 echo      iwara.tv, mega.nz, spankbang.com) without re-answering every other setup
 echo      question -- run this if a saved credential expires or gets revoked
 echo.
-echo   r^) Undo last action       -- reverse the most recent renames/copies/dedupe
+echo   z^) Undo last action       -- reverse the most recent renames/copies/dedupe
 echo      from options 1, 3, 5, 6, 7, or 9 (one level deep -- running any of them
 echo      again replaces what 'last action' means)
 echo.
@@ -86,7 +89,7 @@ echo   q^) Exit
 echo.
 
 :ask
-set /p "choice=Choose a program to run (1-9, u=update deps, c=update creds, r=undo last, q=exit): "
+set /p "choice=Choose a program to run (1-9, u=update deps, c=update creds, z=undo last, q=exit): "
 
 if /i "%choice%"=="q" goto done
 if /i "%choice%"=="u" (
@@ -106,7 +109,7 @@ if /i "%choice%"=="c" (
     pause
     goto menu
 )
-if /i "%choice%"=="r" (
+if /i "%choice%"=="z" (
     echo.
     .venv\Scripts\python.exe scripts\undo_last_action.py
     echo.
@@ -177,7 +180,7 @@ if "%choice%"=="9" (
     goto menu
 )
 
-echo Invalid choice. Please enter 1-9, u, c, r, or q to exit.
+echo Invalid choice. Please enter 1-9, u, c, z, or q to exit.
 goto ask
 
 :done
