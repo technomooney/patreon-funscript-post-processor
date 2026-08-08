@@ -72,11 +72,15 @@ echo   u^) Update dependencies    -- upgrade pip packages in the venv (incl. yt-
 echo      undetected-chromedriver, selenium) -- run this if downloads start failing
 echo      after a site or browser update
 echo.
+echo   c^) Update credentials     -- re-enter any service login/API key (pixeldrain,
+echo      iwara.tv, mega.nz, spankbang.com) without re-answering every other setup
+echo      question -- run this if a saved credential expires or gets revoked
+echo.
 echo   q^) Exit
 echo.
 
 :ask
-set /p "choice=Choose a program to run (1-9, u=update deps, q=exit): "
+set /p "choice=Choose a program to run (1-9, u=update deps, c=update creds, q=exit): "
 
 if /i "%choice%"=="q" goto done
 if /i "%choice%"=="u" (
@@ -85,6 +89,13 @@ if /i "%choice%"=="u" (
     .venv\Scripts\python.exe scripts\update_deps.py
     powershell -NoProfile -Command "Get-Date -Format o" > "%DEPS_MARKER%"
     echo Dependencies updated.
+    echo.
+    pause
+    goto menu
+)
+if /i "%choice%"=="c" (
+    echo.
+    .venv\Scripts\python.exe scripts\setup_config.py --credentials
     echo.
     pause
     goto menu
@@ -153,7 +164,7 @@ if "%choice%"=="9" (
     goto menu
 )
 
-echo Invalid choice. Please enter 1-9 or q to exit.
+echo Invalid choice. Please enter 1-9, u, c, or q to exit.
 goto ask
 
 :done

@@ -96,11 +96,15 @@ while true; do
     echo "     undetected-chromedriver, selenium) — run this if downloads start failing"
     echo "     after a site or browser update"
     echo ""
+    echo "  c) Update credentials     — re-enter any service login/API key (pixeldrain,"
+    echo "     iwara.tv, mega.nz, spankbang.com) without re-answering every other setup"
+    echo "     question — run this if a saved credential expires or gets revoked"
+    echo ""
     echo "  q) Exit"
     echo ""
 
     while true; do
-        read -rp "Choose a program to run (1-9, u=update deps, q=exit): " choice
+        read -rp "Choose a program to run (1-9, u=update deps, c=update creds, q=exit): " choice
         case "$choice" in
             q|Q)
                 echo ""
@@ -112,6 +116,11 @@ while true; do
                 .venv/bin/python scripts/update_deps.py
                 date +%s > "$DEPS_MARKER"
                 echo "Dependencies updated."
+                break
+                ;;
+            c|C)
+                echo ""
+                .venv/bin/python scripts/setup_config.py --credentials
                 break
                 ;;
             1)
@@ -160,7 +169,7 @@ while true; do
                 break
                 ;;
             *)
-                echo "Invalid choice. Please enter 1-9 or q to exit."
+                echo "Invalid choice. Please enter 1-9, u, c, or q to exit."
                 ;;
         esac
     done

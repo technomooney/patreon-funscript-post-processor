@@ -616,6 +616,36 @@ def main():
     # -------------------------------------------------------------------------
     # Credentials  (keyring, with .env fallback)
     # -------------------------------------------------------------------------
+    _configure_credentials()
+
+    # -------------------------------------------------------------------------
+    # ffmpeg binaries
+    # -------------------------------------------------------------------------
+    print()
+    print('--- ffmpeg binaries ---')
+    _setup_ffmpeg()
+
+    # -------------------------------------------------------------------------
+    # I/O benchmark
+    # -------------------------------------------------------------------------
+    print()
+    print('--- Disk I/O benchmark ---')
+    _setup_benchmark()
+
+    print()
+    print('Done.')
+    print(f'  .env: {_ENV_PATH}')
+    print()
+
+
+def _configure_credentials() -> None:
+    """Prompt for every service's credentials, keeping whatever isn't re-entered.
+
+    Split out from main() so a stale/expired credential (e.g. a pixeldrain
+    API key rejected with 401 mid-run — see _warn_pixeldrain_key_once() in
+    downloadContent.py) can be fixed on its own via `--credentials`, without
+    re-answering the unrelated settings/ffmpeg/benchmark prompts too.
+    """
     print()
     print('--- Credentials ---')
 
@@ -659,25 +689,16 @@ def main():
     else:
         print('  Skipping spankbang.com.')
 
-    # -------------------------------------------------------------------------
-    # ffmpeg binaries
-    # -------------------------------------------------------------------------
-    print()
-    print('--- ffmpeg binaries ---')
-    _setup_ffmpeg()
-
-    # -------------------------------------------------------------------------
-    # I/O benchmark
-    # -------------------------------------------------------------------------
-    print()
-    print('--- Disk I/O benchmark ---')
-    _setup_benchmark()
-
-    print()
-    print('Done.')
-    print(f'  .env: {_ENV_PATH}')
-    print()
-
 
 if __name__ == '__main__':
-    main()
+    if '--credentials' in sys.argv:
+        print()
+        print('==============================================')
+        print('  Update credentials  (press Enter to keep current values)')
+        print('==============================================')
+        _configure_credentials()
+        print()
+        print('Done.')
+        print()
+    else:
+        main()
