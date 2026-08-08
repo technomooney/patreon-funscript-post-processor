@@ -14,6 +14,8 @@ Usage: python MDemaxis_smooth_fix.py [directory]
 import os
 import sys
 
+import action_log
+
 
 def _resolve_new_name(filename: str) -> tuple[str, str] | None:
     """
@@ -66,6 +68,7 @@ def process(root_dir: str, extensions: list[str]) -> int:
             print(f"    -> {new_path}")
             try:
                 os.rename(old_path, new_path)
+                action_log.record('rename', old_path=old_path, new_path=new_path)
                 renamed += 1
             except OSError as e:
                 print(f"  ERROR: {e}")
@@ -95,5 +98,7 @@ if __name__ == "__main__":
     print(f"\nProcessing: {root}")
     print(f"Extensions: {', '.join(extensions)}\n")
 
+    action_log.start('MDemaxis_smooth_fix', root)
     count = process(root, extensions)
+    action_log.finish()
     print(f"\nDone. {count} file(s) renamed.")
