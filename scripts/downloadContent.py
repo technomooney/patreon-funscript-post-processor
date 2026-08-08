@@ -1805,33 +1805,67 @@ def download_rule34video(driver, url: str, download_dir: str) -> bool:
     return False
 
 
-# Printed once per run, not once per link — a dead key affects every
-# pixeldrain link in the run, and this project's pixeldrain code never logs
-# the account out itself, so a 401 here means the key was invalidated
-# outside this tool (regenerated/revoked on the pixeldrain account, or hit
-# whatever undocumented expiration policy pixeldrain applies).
-_pixeldrain_key_warned = False
+def _pixeldrain_allow_anonymous() -> bool:
+    """Whether PIXELDRAIN_ALLOW_ANONYMOUS opts into pixeldrain's free/anonymous tier.
+
+    Deliberately opt-in, not a silent fallback: anonymous pixeldrain access is
+    capped at roughly 6GB/day — a real limit, not just a degraded-quality
+    tier — so falling back to it automatically on every key failure could
+    burn through that budget without the user ever deciding to use it.
+    """
+    return os.getenv('PIXELDRAIN_ALLOW_ANONYMOUS', 'false').strip().lower() in ('true', '1', 'yes')
 
 
-def _warn_pixeldrain_key_once() -> None:
-    global _pixeldrain_key_warned
-    if _pixeldrain_key_warned:
-        return
-    _pixeldrain_key_warned = True
+# This run's resolution of a dead pixeldrain key, decided at most once (not
+# once per link — a dead key affects every pixeldrain link in the run).
+# None = not yet hit a 401 this run (or a key isn't configured at all).
+# 'retry' = a replacement key was entered and saved; use it normally.
+# 'anonymous' = no replacement given, but PIXELDRAIN_ALLOW_ANONYMOUS is set.
+# 'skip' = no replacement given and anonymous isn't opted into.
+_pixeldrain_401_resolution: str | None = None
+
+
+def _resolve_pixeldrain_401() -> str:
+    """First 401 in a run with a configured key: ask for a replacement key interactively
+    rather than silently falling back to anonymous. Cached for the rest of the run —
+    this project's pixeldrain code never logs the account out itself, so a 401 means the
+    key was invalidated outside this tool (regenerated/revoked on the pixeldrain account,
+    or hit whatever undocumented expiration policy pixeldrain applies), and re-asking per
+    link would just repeat the same dead-end.
+    """
+    global _pixeldrain_401_resolution
+    if _pixeldrain_401_resolution is not None:
+        return _pixeldrain_401_resolution
+
     print('  [pixeldrain.com] your PIXELDRAIN_API_KEY appears to be invalid, revoked, or expired '
-          '(pixeldrain rejected it with 401) — falling back to anonymous access for the rest of this run. '
-          'That covers public files fine, but private ones will still fail. Generate a fresh key at '
-          'pixeldrain.com and re-run setup to update it if you need private-file access.')
+          '(pixeldrain rejected it with 401).')
+    new_key = input('  [pixeldrain.com] enter a replacement API key now, or press Enter to skip: ').strip()
+    if new_key:
+        try:
+            import keyring
+            keyring.set_password(_KEYRING_SERVICE, 'PIXELDRAIN_API_KEY', new_key)
+            print('  [pixeldrain.com] key saved — retrying with it.')
+            _pixeldrain_401_resolution = 'retry'
+        except Exception as e:
+            print(f'  [pixeldrain.com] could not save the key ({e}) — skipping pixeldrain downloads for this run.')
+            _pixeldrain_401_resolution = 'skip'
+    elif _pixeldrain_allow_anonymous():
+        print("  [pixeldrain.com] PIXELDRAIN_ALLOW_ANONYMOUS is set — falling back to anonymous access "
+              "(pixeldrain's ~6GB/day anonymous limit applies) for the rest of this run.")
+        _pixeldrain_401_resolution = 'anonymous'
+    else:
+        print('  [pixeldrain.com] skipping pixeldrain downloads for the rest of this run. Run '
+              '`scripts/setup_config.py --credentials` to update the key, or set '
+              'PIXELDRAIN_ALLOW_ANONYMOUS=true in .env to allow the free/anonymous fallback instead '
+              "(subject to pixeldrain's ~6GB/day anonymous limit).")
+        _pixeldrain_401_resolution = 'skip'
+    return _pixeldrain_401_resolution
 
 
 def _pixeldrain_headers(anonymous: bool = False) -> dict[str, str]:
     """Build request headers for the pixeldrain API, adding auth if a key is configured.
 
-    *anonymous* forces no Authorization header even if a key is configured —
-    used to retry after a 401, since a stored key can be invalid/revoked/
-    expired while the file itself is still public (confirmed live: a full
-    production run got HTTP 401 on every single pixeldrain link with the
-    then-configured key, while the identical files succeeded anonymously).
+    *anonymous* forces no Authorization header even if a key is configured.
     """
     headers: dict[str, str] = {'Referer': 'https://pixeldrain.com/'}
     api_key = '' if anonymous else _get_secret('PIXELDRAIN_API_KEY').strip()
@@ -1839,6 +1873,29 @@ def _pixeldrain_headers(anonymous: bool = False) -> dict[str, str]:
         token = base64.b64encode(f':{api_key}'.encode()).decode()
         headers['Authorization'] = f'Basic {token}'
     return headers
+
+
+def _pixeldrain_initial_headers(context: str) -> dict[str, str] | None:
+    """Headers for the first attempt of a pixeldrain request, or None if the request
+    should be skipped outright (no key configured and anonymous access isn't opted into).
+    """
+    if _get_secret('PIXELDRAIN_API_KEY').strip():
+        return _pixeldrain_headers()
+    if _pixeldrain_allow_anonymous():
+        return _pixeldrain_headers(anonymous=True)
+    print(f'  [pixeldrain.com] {context}: no API key configured and PIXELDRAIN_ALLOW_ANONYMOUS is not set '
+          '— skipping. Run `scripts/setup_config.py --credentials` to configure one or the other.')
+    return None
+
+
+def _pixeldrain_retry_headers() -> dict[str, str] | None:
+    """Headers to retry a 401 with, or None to give up — see _resolve_pixeldrain_401()."""
+    resolution = _resolve_pixeldrain_401()
+    if resolution == 'retry':
+        return _pixeldrain_headers()
+    if resolution == 'anonymous':
+        return _pixeldrain_headers(anonymous=True)
+    return None
 
 
 def _expand_pixeldrain_list(url: str) -> list[str]:
@@ -1853,29 +1910,39 @@ def _expand_pixeldrain_list(url: str) -> list[str]:
 
     list_id = path_parts[1]
     api_url = f'https://pixeldrain.com/api/list/{list_id}'
-    for anonymous in (False, True):
-        try:
-            req = urllib.request.Request(api_url, headers=_pixeldrain_headers(anonymous))
-            with urllib.request.urlopen(req) as resp:
-                data = json.loads(resp.read())
-            files = data.get('files', [])
-            if files:
-                expanded = [f'https://pixeldrain.com/u/{f["id"]}' for f in files if f.get('id')]
-                print(f'  [pixeldrain.com] list {list_id} expanded to {len(expanded)} file(s)')
-                return expanded
+
+    def _fetch(headers: dict[str, str]) -> list[str]:
+        req = urllib.request.Request(api_url, headers=headers)
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read())
+        files = data.get('files', [])
+        if not files:
             print(f'  [pixeldrain.com] list {list_id} is empty')
             return [url]
-        except urllib.error.HTTPError as e:
-            if e.code == 401 and not anonymous:
-                _warn_pixeldrain_key_once()
-                continue
-            print(f'  [pixeldrain.com] could not expand list {list_id}: {e}')
-            break
-        except Exception as e:
-            print(f'  [pixeldrain.com] could not expand list {list_id}: {e}')
-            break
+        expanded = [f'https://pixeldrain.com/u/{f["id"]}' for f in files if f.get('id')]
+        print(f'  [pixeldrain.com] list {list_id} expanded to {len(expanded)} file(s)')
+        return expanded
 
-    return [url]
+    headers = _pixeldrain_initial_headers(f'list {list_id}')
+    if headers is None:
+        return [url]
+    try:
+        return _fetch(headers)
+    except urllib.error.HTTPError as e:
+        if e.code != 401 or 'Authorization' not in headers:
+            print(f'  [pixeldrain.com] could not expand list {list_id}: {e}')
+            return [url]
+        retry_headers = _pixeldrain_retry_headers()
+        if retry_headers is None:
+            return [url]
+        try:
+            return _fetch(retry_headers)
+        except Exception as e2:
+            print(f'  [pixeldrain.com] could not expand list {list_id}: {e2}')
+            return [url]
+    except Exception as e:
+        print(f'  [pixeldrain.com] could not expand list {list_id}: {e}')
+        return [url]
 
 
 def download_pixeldrain(_driver, url: str, download_dir: str) -> bool:
@@ -1883,19 +1950,29 @@ def download_pixeldrain(_driver, url: str, download_dir: str) -> bool:
     # Page URL: /u/<id> → API URL: /api/file/<id>
     file_id = urlparse(url).path.rstrip('/').split('/')[-1]
     video_url = f'https://pixeldrain.com/api/file/{file_id}'
-    for anonymous in (False, True):
+
+    headers = _pixeldrain_initial_headers(file_id)
+    if headers is None:
+        return False
+    try:
+        print(f'  [pixeldrain.com] fetching {file_id}...')
+        return _direct_fetch(video_url, download_dir, '_pixeldrain_temp', headers)
+    except urllib.error.HTTPError as e:
+        if e.code != 401 or 'Authorization' not in headers:
+            print(f'  [pixeldrain.com] handler error: {e}')
+            return False
+        retry_headers = _pixeldrain_retry_headers()
+        if retry_headers is None:
+            return False
         try:
-            print(f'  [pixeldrain.com] fetching {file_id}' + (' (anonymous retry)...' if anonymous else '...'))
-            return _direct_fetch(video_url, download_dir, '_pixeldrain_temp', _pixeldrain_headers(anonymous))
-        except urllib.error.HTTPError as e:
-            if e.code == 401 and not anonymous:
-                _warn_pixeldrain_key_once()
-                continue
-            print(f'  [pixeldrain.com] handler error: {e}')
-            break
-        except Exception as e:
-            print(f'  [pixeldrain.com] handler error: {e}')
-            break
+            print(f'  [pixeldrain.com] fetching {file_id} (retry)...')
+            return _direct_fetch(video_url, download_dir, '_pixeldrain_temp', retry_headers)
+        except Exception as e2:
+            print(f'  [pixeldrain.com] handler error: {e2}')
+            return False
+    except Exception as e:
+        print(f'  [pixeldrain.com] handler error: {e}')
+        return False
 
     return False
 

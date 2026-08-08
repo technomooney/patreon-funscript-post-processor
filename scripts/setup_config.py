@@ -651,10 +651,23 @@ def _configure_credentials() -> None:
 
     print()
     print('Pixeldrain  (API key at https://pixeldrain.com/user/api)')
-    print('  Leave blank to download as anonymous (public files only).')
-    api_key = _ask('API key', current=_keyring_get('PIXELDRAIN_API_KEY'))
+    current_pd_key = _keyring_get('PIXELDRAIN_API_KEY')
+    api_key = _ask('API key', current=current_pd_key)
     if api_key:
         _keyring_set('PIXELDRAIN_API_KEY', api_key)
+    elif not current_pd_key:
+        # Genuinely never configured (not just "keeping the existing key" via
+        # a blank answer) — ask explicitly rather than silently defaulting to
+        # anonymous. Pixeldrain's anonymous tier is capped at ~6GB/day, a
+        # real limit, not just a degraded-quality fallback.
+        print('  No pixeldrain API key set.')
+        allow_anon = _ask_bool(
+            "  Allow free/anonymous pixeldrain downloads instead? (Capped at ~6GB/day by "
+            "pixeldrain.) Choose false to skip pixeldrain links entirely.",
+            current=_read_env('PIXELDRAIN_ALLOW_ANONYMOUS').lower() in ('true', '1', 'yes'),
+        )
+        _write_env('PIXELDRAIN_ALLOW_ANONYMOUS', 'true' if allow_anon else 'false',
+                   comment="Allow pixeldrain downloads with no API key, subject to pixeldrain's ~6GB/day anonymous limit.")
 
     print()
     print('iwara.tv  (required for 18+ content; leave blank to skip)')
