@@ -95,23 +95,19 @@ def trash_path(root_dir: str, original_path: str) -> str:
     return os.path.join(root_dir, TRASH_DIRNAME, rel)
 
 
-def purge_previous_trash(root_dir: str, script: str) -> None:
-    """Permanently delete leftover trash from a previous run of *script* under
-    *root_dir*, if any is still sitting there unclaimed by an undo.
+def purge_previous_trash(root_dir: str) -> None:
+    """Permanently delete leftover trash under *root_dir*, if any.
 
-    Call this at the start of any soft-deleting run, before touching files —
-    once a new run starts, the old journal stops being "the last action" and
-    can never be undone, so its trash is dead weight; this reclaims the disk
-    space it was quietly holding onto.
+    Call this only once the caller is certain it's about to record at least
+    one soft_delete and call finish() — i.e. certain the persisted journal
+    (whatever it currently points to, including this same script/root) is
+    about to be overwritten and stop being the undo target anyway. Calling
+    it any earlier risks nuking a still-valid previous run's only copy of
+    its trashed files before we know this run has anything to replace it
+    with.
     """
     trash_dir = os.path.join(root_dir, TRASH_DIRNAME)
     if not os.path.isdir(trash_dir):
-        return
-    last = read_last()
-    # Only purge trash that isn't the current undo target — if the last
-    # journaled run was this same script over this same root and it's still
-    # the pending undo target, leave its trash alone.
-    if last and last.get('script') == script and last.get('root_dir') == root_dir:
         return
     try:
         shutil.rmtree(trash_dir)

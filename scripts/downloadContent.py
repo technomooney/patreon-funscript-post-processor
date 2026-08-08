@@ -26,6 +26,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
 import urllib3.exceptions
+import action_log
 import folder_log
 
 load_dotenv(os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '.env')))
@@ -3973,11 +3974,15 @@ def _dedup_existing(base_path: str) -> int:
     """Hash every file under *base_path* and remove exact duplicates.
 
     For each set of identical files the oldest (earliest mtime) is kept;
-    all others are deleted.  Returns the number of files removed.
+    all others are moved into a '.trash' folder (recoverable via the
+    undo-last-action menu option) rather than deleted outright. Returns the
+    number of files removed.
 
     Controlled by the DEDUP_EXISTING env var (default 'true').
     Set DEDUP_EXISTING=false in .env to skip this scan.
     """
+    action_log.start('dedupe_only', base_path)
+
     print('\n[dedup] Cleaning temp files...')
     _cleanup_temp_files_recursive(base_path)
 
@@ -3987,6 +3992,8 @@ def _dedup_existing(base_path: str) -> int:
     candidates: list[str] = []
     for root, dirs, files in os.walk(base_path):
         dirs.sort()
+        if action_log.TRASH_DIRNAME in dirs:
+            dirs.remove(action_log.TRASH_DIRNAME)  # don't re-dedup our own trash
         for f in sorted(files):
             if _is_temp_file(f):
                 continue
@@ -4037,19 +4044,32 @@ def _dedup_existing(base_path: str) -> int:
         return 0
 
     removed = 0
-    for paths in hash_to_paths.values():
-        if len(paths) < 2:
-            continue
-        paths.sort(key=os.path.getmtime)   # oldest first
-        keeper = paths[0]
-        for dup in paths[1:]:
-            print(f'  [dedup] keeping  {_safe(os.path.basename(keeper))}')
-            print(f'  [dedup] removing {_safe(os.path.basename(dup))}  ({_safe(os.path.dirname(dup))})')
-            try:
-                os.remove(dup)
-                removed += 1
-            except OSError as e:
-                print(f'  [dedup] could not remove: {e}')
+    has_duplicates = any(len(paths) >= 2 for paths in hash_to_paths.values())
+    if has_duplicates:
+        # We're about to make changes and overwrite the undo journal for this
+        # script+root, so any trash a previous un-undone run left behind is
+        # now unreachable — reclaim it. Deferred to here (not the top of the
+        # function) so a run that finds nothing to remove never touches a
+        # still-valid previous run's trash.
+        action_log.purge_previous_trash(base_path)
+
+    try:
+        for paths in hash_to_paths.values():
+            if len(paths) < 2:
+                continue
+            paths.sort(key=os.path.getmtime)   # oldest first
+            keeper = paths[0]
+            for dup in paths[1:]:
+                print(f'  [dedup] keeping  {_safe(os.path.basename(keeper))}')
+                print(f'  [dedup] removing {_safe(os.path.basename(dup))}  ({_safe(os.path.dirname(dup))})')
+                try:
+                    trash_dest = action_log.soft_delete(base_path, dup)
+                    action_log.record('soft_delete', orig_path=dup, trash_path=trash_dest)
+                    removed += 1
+                except OSError as e:
+                    print(f'  [dedup] could not remove: {e}')
+    finally:
+        action_log.finish()
 
     if removed:
         print(f'[dedup] done — removed {removed} duplicate(s) from {total} files scanned')
