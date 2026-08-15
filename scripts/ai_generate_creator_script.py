@@ -1,19 +1,26 @@
-"""Advanced/optional: generate a new creator_scripts/ plugin with Claude, from a
-plain-English description of a creator's filename quirk.
+"""Advanced/optional: generate a new creator_scripts/ plugin with an LLM, from
+a plain-English description of a creator's filename quirk.
 
 This is deliberately the *harder* path, not the recommended one — writing your
 own plugin by hand (see scripts/creator_scripts/README.md) is free, has no
 external dependency, and you already understand every line of it because you
 wrote it. This exists for when you don't want to write it yourself and are
-willing to accept the tradeoffs:
+willing to accept the tradeoffs. Two providers, same tradeoffs on the trust
+side either way:
 
-  - It calls the Anthropic API, which costs real money per generation
-    (typically a few cents for a script this size, at claude-opus-5's
-    published rate — the actual cost is printed after every call).
-  - The generated code gets the same filesystem access as any other script
-    in this project: it can rename, move, and (if it chooses to use
-    action_log.soft_delete) remove files. Nothing here has a review or
-    approval step *inside* Claude — the review step is you.
+  - Anthropic API (claude-opus-5) — best quality, costs real money per
+    generation (typically a few cents for a script this size; the actual
+    cost is printed after every call, from response.usage).
+  - A local model via Ollama (scripts/local_llm.py) — free (no per-call
+    cost), runs entirely on your own GPU, auto-picks the strongest coding
+    model your detected VRAM can actually run. Quality depends on your
+    hardware and is generally weaker than the API at following the strict
+    contract below, especially on smaller local models — review the draft
+    even more carefully than you would an API-generated one.
+  - Either way: the generated code gets the same filesystem access any
+    other script here has (rename/move/soft-delete via action_log).
+    Nothing here has a review or approval step *inside* the model — the
+    review step is you.
 
 To keep that review real: a generated script is written to
 scripts/creator_scripts/_drafts/ and NEVER auto-run or auto-installed. It has
@@ -21,10 +28,11 @@ no effect on the menu until you read it and move it into
 scripts/creator_scripts/ yourself. Treat it exactly like code from a stranger
 on the internet — because functionally, that's what it is.
 
-Requires the `anthropic` package (not a core dependency of this project —
-installed on first use only, at your confirmation) and an Anthropic API key
-(prompted for once, stored in the OS keyring alongside this project's other
-credentials).
+The Anthropic path requires the `anthropic` package (not a core dependency of
+this project — installed on first use only, at your confirmation) and an API
+key (prompted for once, stored in the OS keyring). The local path requires
+Ollama (scripts/local_llm.py offers to install it) and a GPU with enough
+VRAM — see that file for the model ladder.
 """
 import os
 import re
@@ -46,21 +54,19 @@ _WARNING = """
   ══════════════════════════════════════════════════════════════════
   ADVANCED / OPTIONAL — read before continuing
   ══════════════════════════════════════════════════════════════════
-  This calls the Anthropic API to write a new creator_scripts/ plugin
-  for you. Two things worth knowing before you say yes:
+  This uses an LLM (your choice: paid Anthropic API, or a free local
+  model on your own GPU) to write a new creator_scripts/ plugin for
+  you. One thing is true either way — TRUST: the generated code gets
+  the same filesystem access any other script here has (rename/move/
+  soft-delete via action_log). It is written to a _drafts/ folder and
+  is NEVER run or wired into the menu automatically. You must read it
+  and move it into scripts/creator_scripts/ yourself before it does
+  anything — a local model especially, since it's weaker at following
+  the contract exactly than the API is.
 
-    1. COST — this is a paid API call, typically a few cents for a
-       script this size. The exact cost is printed after the call.
-
-    2. TRUST — the generated code gets the same filesystem access any
-       other script here has (rename/move/soft-delete via action_log).
-       It is written to a _drafts/ folder and is NEVER run or wired
-       into the menu automatically. You must read it and move it into
-       scripts/creator_scripts/ yourself before it does anything.
-
-  The safer, free default is writing the plugin by hand — see
-  scripts/creator_scripts/README.md for the contract; it's short.
-  Use this only when you'd rather not write it yourself.
+  The safer, free-and-no-dependencies default is writing the plugin
+  by hand — see scripts/creator_scripts/README.md for the contract;
+  it's short. Use this only when you'd rather not write it yourself.
   ══════════════════════════════════════════════════════════════════
 """
 
@@ -177,15 +183,21 @@ def run() -> None:
         print('  Cancelled.')
         return
 
-    anthropic = _ensure_anthropic_sdk()
-    if anthropic is None:
-        print('  Cancelled — anthropic package not available.')
-        return
+    print('\n  1) Anthropic API (claude-opus-5) — best quality, costs a few cents per generation')
+    print('  2) Local model via Ollama — free, runs on your own GPU, auto-picks a model to fit your VRAM')
+    use_local = input('  Choose (1/2): ').strip() == '2'
 
-    api_key = _get_api_key()
-    if not api_key:
-        print('  Cancelled — no API key provided.')
-        return
+    if use_local:
+        import local_llm
+    else:
+        anthropic = _ensure_anthropic_sdk()
+        if anthropic is None:
+            print('  Cancelled — anthropic package not available.')
+            return
+        api_key = _get_api_key()
+        if not api_key:
+            print('  Cancelled — no API key provided.')
+            return
 
     creator = input('\n  Creator name (for the script label, e.g. "Pize"): ').strip()
     if not creator:
@@ -217,29 +229,42 @@ def run() -> None:
     system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(reference_example=reference_example)
     user_prompt = f'Creator: {creator}\n\nNaming quirk and examples:\n{description}'
 
-    client = anthropic.Anthropic(api_key=api_key)
-    print('\n  Calling Claude (claude-opus-5)...')
-    try:
-        response = client.messages.create(
-            model=_MODEL,
-            max_tokens=8000,
-            system=system_prompt,
-            messages=[{'role': 'user', 'content': user_prompt}],
-        )
-    except Exception as e:
-        print(f'  API call failed: {e}')
-        return
+    if use_local:
+        tag = local_llm.get_or_setup_model()
+        if tag is None:
+            print('  Cancelled — no usable local model set up.')
+            return
+        print(f'\n  Generating with {tag} (local)...')
+        text = local_llm.generate(tag, system_prompt, user_prompt)
+        if not text or not text.strip():
+            print('  Local model returned no text — nothing written.')
+            return
+        print(f'  Done — free (ran locally on {tag}).')
+    else:
+        client = anthropic.Anthropic(api_key=api_key)
+        print('\n  Calling Claude (claude-opus-5)...')
+        try:
+            response = client.messages.create(
+                model=_MODEL,
+                max_tokens=8000,
+                system=system_prompt,
+                messages=[{'role': 'user', 'content': user_prompt}],
+            )
+        except Exception as e:
+            print(f'  API call failed: {e}')
+            return
 
-    text = next((b.text for b in response.content if b.type == 'text'), '')
-    if not text.strip():
-        print('  Claude returned no text — nothing written.')
-        return
+        text = next((b.text for b in response.content if b.type == 'text'), '')
+        if not text.strip():
+            print('  Claude returned no text — nothing written.')
+            return
+
+        in_tok = response.usage.input_tokens
+        out_tok = response.usage.output_tokens
+        cost = (in_tok / 1_000_000) * _INPUT_PRICE_PER_MTOK + (out_tok / 1_000_000) * _OUTPUT_PRICE_PER_MTOK
+        print(f'  Done — {in_tok} input / {out_tok} output tokens, ~${cost:.4f}')
+
     code = _extract_code(text)
-
-    in_tok = response.usage.input_tokens
-    out_tok = response.usage.output_tokens
-    cost = (in_tok / 1_000_000) * _INPUT_PRICE_PER_MTOK + (out_tok / 1_000_000) * _OUTPUT_PRICE_PER_MTOK
-    print(f'  Done — {in_tok} input / {out_tok} output tokens, ~${cost:.4f}')
 
     os.makedirs(_DRAFTS_DIR, exist_ok=True)
     slug = _slugify(creator)

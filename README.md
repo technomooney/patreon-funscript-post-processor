@@ -33,14 +33,15 @@ PatreonDownloader --json --embeds --descriptions --use-sub-directories --url <cr
 - **Fix attachment ID prefixes** — strip numeric prefix added by the Patreon downloader
 - **Extract variant archives** — extract password-protected script archives (e.g. Pize's pixeldrain-hosted, per-intensity `.rar`/`.zip`/`.7z` bundles) and rename their funscripts with the variant folded in; passwords resolved from a local history first, falling back to a live Discord fetch
 - **Creator-specific script plugins** — one-creator naming quirks (e.g. MDemaxis's SMOOTH-prefix convention) live in `scripts/creator_scripts/` and show up automatically in a submenu; drop in your own `.py` file to add one without editing any core file — see `scripts/creator_scripts/README.md`
-- **AI-generate a creator script (advanced, optional)** — from the creator scripts submenu, describe a naming quirk and Claude drafts a plugin for it. Costs a paid Anthropic API call, and the draft is never run or installed automatically — you review and move it into place yourself. The free, no-dependency default is still writing the plugin by hand
+- **AI-generate a creator script (advanced, optional)** — from the creator scripts submenu, describe a naming quirk and an LLM drafts a plugin for it. Two providers: the Anthropic API (best quality, costs a few cents per generation) or a free local model via Ollama, which auto-detects your GPU's VRAM and picks the strongest coding model it can run (see `scripts/local_llm.py`). Either way the draft is never run or installed automatically — you review and move it into place yourself. The free, no-dependency default is still writing the plugin by hand
 
 ## Requirements
 
 - Python 3.11+
 - [Brave Browser](https://brave.com) (recommended — built-in ad blocker reduces popup interference during downloads; Chromium works as a fallback)
 - ffmpeg / ffprobe (installed automatically by setup)
-- `7z` on PATH (p7zip) — only needed for "Extract variant archives" (option 10), which extracts password-protected script archives
+- `7z` on PATH (p7zip) — only needed for "Extract variant archives" (option 9), which extracts password-protected script archives
+- [Ollama](https://ollama.com) + a GPU with enough VRAM — only needed for the free local-model path of "AI-generate a creator script" (see Features above); the Anthropic API path and every other feature work without it
 
 ## Setup
 
