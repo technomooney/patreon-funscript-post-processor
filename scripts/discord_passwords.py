@@ -20,6 +20,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import creator_db
 import creator_profiles
 import downloadContent as dc
 
@@ -166,8 +167,10 @@ def ensure_login(driver, timeout_minutes: int = 20) -> bool:
     return False
 
 
-def fetch_latest_password(creator_key: str, max_messages: int = 50) -> str | None:
-    """Return the most recent password posted in *creator_key*'s configured Discord channel, or None."""
+def _load_channel_messages(creator_key: str, max_messages: int) -> tuple[list[str], dict] | None:
+    """Navigate to *creator_key*'s configured Discord channel and return its recent
+    message texts (newest first) alongside the channel config, or None on any
+    failure (no channel configured, login declined/timed out, channel didn't load)."""
     profile = creator_profiles.get(creator_key)
     discord_cfg = profile.get('discord')
     if not discord_cfg or not discord_cfg.get('guild_id') or not discord_cfg.get('channel_id'):
@@ -212,19 +215,50 @@ def fetch_latest_password(creator_key: str, max_messages: int = 50) -> str | Non
         print(f'  [discord] channel did not load: {url}')
         return None
 
-    # Messages render newest-at-bottom; scan from the end for the first match.
+    # Messages render newest-at-bottom; callers want newest-first.
     messages = driver.find_elements(By.XPATH, message_xpath)
-    for el in reversed(messages[-max_messages:]):
-        text = el.text or ''
+    texts = [(el.text or '') for el in reversed(messages[-max_messages:])]
+    return texts, discord_cfg
+
+
+def fetch_password_history(creator_key: str, max_messages: int = 50) -> list[str]:
+    """Return every distinct password-looking value posted in *creator_key*'s
+    channel within the last *max_messages* messages, most recent first.
+
+    Unlike fetch_latest_password, this doesn't stop at the first match — some
+    creators (confirmed: Pize) rotate the archive password over time, and an
+    older archive isn't always re-encrypted under the newest one, so a caller
+    that fails to extract with the latest password may still need to fall
+    back through history. Results are persisted to creator_db so later runs
+    (or extraction retries) have them without re-scanning Discord.
+    """
+    loaded = _load_channel_messages(creator_key, max_messages)
+    if loaded is None:
+        return []
+    texts, discord_cfg = loaded
+
+    passwords: list[str] = []
+    for text in texts:
         match = _PASSWORD_RE.search(text)
         if match and _looks_like_password(match.group(1)):
-            password = match.group(1).strip()
-            print(f'  [discord] found password for "{creator_key}" in channel {discord_cfg["channel_id"]}')
-            return password
+            pw = match.group(1).strip()
+            if pw not in passwords:
+                passwords.append(pw)
 
-    print(f'  [discord] no password-looking message found in the last {max_messages} '
-          f'messages of channel {discord_cfg["channel_id"]}')
-    return None
+    if passwords:
+        print(f'  [discord] found {len(passwords)} distinct password(s) for "{creator_key}" '
+              f'in channel {discord_cfg["channel_id"]}')
+        creator_db.record_passwords(creator_key, passwords)
+    else:
+        print(f'  [discord] no password-looking message found in the last {max_messages} '
+              f'messages of channel {discord_cfg["channel_id"]}')
+    return passwords
+
+
+def fetch_latest_password(creator_key: str, max_messages: int = 50) -> str | None:
+    """Return the most recent password posted in *creator_key*'s configured Discord channel, or None."""
+    history = fetch_password_history(creator_key, max_messages)
+    return history[0] if history else None
 
 
 def close() -> None:
