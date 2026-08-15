@@ -9,10 +9,14 @@ leaves the previous journal (if any) in place as the undo target.
 
 Soft-deletes (used by dedupe, where a file has to disappear but should stay
 recoverable) are moved into a '.trash' folder next to the files being
-scanned rather than actually deleted. That trash is only ever one run deep:
-starting a new soft-deleting run permanently purges whatever trash the
-*previous* run of the same kind left behind, since once a new run starts,
-the old journal is no longer "the last action" and can't be undone anyway.
+scanned rather than actually deleted. Trash is age-based, not "one run
+deep": purge_old_trash() removes only files older than TRASH_RETENTION_DAYS
+(default 14) and is safe to call at the start of every soft-deleting run —
+undo (the journal above) only ever covers the *last* run anyway, so a
+15-day-old trashed file was never reachable through undo by the time it's
+actually removed. This is deliberately a longer, decoupled safety net: you
+can still recover something from .trash by hand within the retention
+window even after several newer runs have moved on.
 """
 
 import json
@@ -22,6 +26,7 @@ import time
 
 _PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.last_action.json')
 TRASH_DIRNAME = '.trash'
+DEFAULT_TRASH_RETENTION_DAYS = 14
 
 _entries: list[dict] = []
 _script_name: str | None = None
@@ -95,24 +100,44 @@ def trash_path(root_dir: str, original_path: str) -> str:
     return os.path.join(root_dir, TRASH_DIRNAME, rel)
 
 
-def purge_previous_trash(root_dir: str) -> None:
-    """Permanently delete leftover trash under *root_dir*, if any.
+def purge_old_trash(root_dir: str, max_age_days: float | None = None) -> int:
+    """Permanently delete trashed files under *root_dir* older than *max_age_days*.
 
-    Call this only once the caller is certain it's about to record at least
-    one soft_delete and call finish() — i.e. certain the persisted journal
-    (whatever it currently points to, including this same script/root) is
-    about to be overwritten and stop being the undo target anyway. Calling
-    it any earlier risks nuking a still-valid previous run's only copy of
-    its trashed files before we know this run has anything to replace it
-    with.
+    Defaults to the TRASH_RETENTION_DAYS env var, falling back to
+    DEFAULT_TRASH_RETENTION_DAYS. Safe to call unconditionally at the start of
+    any soft-deleting run — it never touches anything young enough to still be
+    a plausible undo target. Prunes directories left empty behind it too.
+    Returns the number of files removed.
     """
+    if max_age_days is None:
+        env = os.getenv('TRASH_RETENTION_DAYS', '').strip()
+        try:
+            max_age_days = float(env) if env else DEFAULT_TRASH_RETENTION_DAYS
+        except ValueError:
+            max_age_days = DEFAULT_TRASH_RETENTION_DAYS
+
     trash_dir = os.path.join(root_dir, TRASH_DIRNAME)
     if not os.path.isdir(trash_dir):
-        return
-    try:
-        shutil.rmtree(trash_dir)
-    except OSError as e:
-        print(f'  [action_log] could not purge old trash: {e}')
+        return 0
+
+    cutoff = time.time() - max_age_days * 86400
+    removed = 0
+    for root, _dirs, files in os.walk(trash_dir, topdown=False):
+        for f in files:
+            fpath = os.path.join(root, f)
+            try:
+                if os.path.getmtime(fpath) < cutoff:
+                    os.remove(fpath)
+                    removed += 1
+            except OSError as e:
+                print(f'  [action_log] could not purge trashed file {fpath}: {e}')
+        if root != trash_dir:
+            try:
+                if not os.listdir(root):
+                    os.rmdir(root)
+            except OSError:
+                pass
+    return removed
 
 
 def soft_delete(root_dir: str, path: str) -> str:

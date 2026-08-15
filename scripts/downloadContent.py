@@ -4014,14 +4014,20 @@ def _dedup_existing(base_path: str) -> int:
     """Hash every file under *base_path* and remove exact duplicates.
 
     For each set of identical files the oldest (earliest mtime) is kept;
-    all others are moved into a '.trash' folder (recoverable via the
-    undo-last-action menu option) rather than deleted outright. Returns the
-    number of files removed.
+    all others are moved into a '.trash' folder rather than deleted
+    outright — recoverable via the undo-last-action menu option while it's
+    still the most recent run, and by hand from '.trash' itself for up to
+    TRASH_RETENTION_DAYS (default 14) afterward. Returns the number of
+    files removed.
 
     Controlled by the DEDUP_EXISTING env var (default 'true').
     Set DEDUP_EXISTING=false in .env to skip this scan.
     """
     action_log.start('dedupe_only', base_path)
+
+    purged = action_log.purge_old_trash(base_path)
+    if purged:
+        print(f'[dedup] purged {purged} file(s) from .trash older than TRASH_RETENTION_DAYS')
 
     print('\n[dedup] Cleaning temp files...')
     _cleanup_temp_files_recursive(base_path)
@@ -4084,15 +4090,6 @@ def _dedup_existing(base_path: str) -> int:
         return 0
 
     removed = 0
-    has_duplicates = any(len(paths) >= 2 for paths in hash_to_paths.values())
-    if has_duplicates:
-        # We're about to make changes and overwrite the undo journal for this
-        # script+root, so any trash a previous un-undone run left behind is
-        # now unreachable — reclaim it. Deferred to here (not the top of the
-        # function) so a run that finds nothing to remove never touches a
-        # still-valid previous run's trash.
-        action_log.purge_previous_trash(base_path)
-
     try:
         for paths in hash_to_paths.values():
             if len(paths) < 2:

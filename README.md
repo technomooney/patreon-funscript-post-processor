@@ -112,6 +112,7 @@ All settings live in `.env` (created by setup). Key options:
 | `DEDUP_EXISTING` | `true` | Auto-dedup at the start of each download run. Option 7 always runs regardless of this |
 | `SKIP_KNOWN_FAILURES` | `false` | Skip links listed in `failed_downloads.csv` |
 | `DEDUP_VERBOSE` | `false` | Print one line per file during dedup. Warning: very noisy on large libraries |
+| `TRASH_RETENTION_DAYS` | `14` | Days a soft-deleted (dedup) file stays in `.trash` before permanent removal. Separate from the one-run-deep "undo last action" journal |
 | `MEGA_TIMEOUT_MINUTES` | `30` | Timeout for a single mega.nz download in minutes. Increase for very large files |
 | `MEGA_HIDE_WINDOW` | `true` | Suppress MEGAcmd console popup on Windows. Set to `false` to see MEGAcmd output for debugging |
 | `DEDUP_THREADS` | (benchmarked) | Parallel threads for hashing during dedup |

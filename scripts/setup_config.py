@@ -576,6 +576,19 @@ def main():
                comment='Print one line per file during dedup. Warning: very noisy on large libraries.')
 
     while True:
+        raw = _ask('Days to keep soft-deleted (dedup) files in .trash before permanent removal',
+                   current=_read_env('TRASH_RETENTION_DAYS') or '14')
+        try:
+            if float(raw) >= 0:
+                _write_env('TRASH_RETENTION_DAYS', raw,
+                           comment='Days a soft-deleted file stays in .trash before dedup permanently removes it. '
+                                    'Separate from the one-run-deep "undo last action" journal.')
+                break
+        except ValueError:
+            pass
+        print('  Please enter a non-negative number (e.g. 14).')
+
+    while True:
         raw = _ask('mega.nz download timeout in minutes',
                    current=_read_env('MEGA_TIMEOUT_MINUTES') or '30')
         try:
