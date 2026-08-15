@@ -69,15 +69,16 @@ echo   8^) Audit report           -- read .folder_log.json from every post folde
 echo      and generate _reports/audit_report.html showing what each script
 echo      has done, with per-folder detail and an overall summary
 echo.
-echo   9^) MDemaxis rename fix    -- MDemaxis patreon only: rename SMOOTH-prefixed
-echo      and _maxinterval-suffixed funscripts to variant naming
-echo      (e.g. SMOOTH x.funscript -^> x (SMOOTH).funscript)
-echo.
-echo  10^) Extract variant archives -- for creators (e.g. Pize) who now ship scripts
+echo   9^) Extract variant archives -- for creators (e.g. Pize) who now ship scripts
 echo      only inside a password-protected .rar/.zip/.7z per intensity variant:
 echo      extracts each archive and renames its funscripts with the variant folded
 echo      in, so they don't collide. Password resolved from local history first,
 echo      falling back to a live Discord fetch -- see 'c' for setting that up.
+echo.
+echo   s^) Creator scripts        -- submenu of one-creator naming-quirk fixes
+echo      (e.g. MDemaxis's SMOOTH-prefix rename). Drop your own .py file into
+echo      scripts\creator_scripts\ to add one without editing this menu --
+echo      see scripts\creator_scripts\README.md for the contract.
 echo.
 echo   u^) Update dependencies    -- upgrade pip packages in the venv (incl. yt-dlp,
 echo      undetected-chromedriver, selenium) -- run this if downloads start failing
@@ -88,14 +89,14 @@ echo      iwara.tv, mega.nz, spankbang.com) without re-answering every other set
 echo      question -- run this if a saved credential expires or gets revoked
 echo.
 echo   z^) Undo last action       -- reverse the most recent renames/copies/dedupe
-echo      from options 1, 3, 5, 6, 7, 9, or 10 (one level deep -- running any of them
-echo      again replaces what 'last action' means)
+echo      from options 1, 3, 5, 6, 7, 9, or a creator script (s) (one level deep --
+echo      running any of them again replaces what 'last action' means)
 echo.
 echo   q^) Exit
 echo.
 
 :ask
-set /p "choice=Choose a program to run (1-10, u=update deps, c=update creds, z=undo last, q=exit): "
+set /p "choice=Choose a program to run (1-9, s=creator scripts, u=update deps, c=update creds, z=undo last, q=exit): "
 
 if /i "%choice%"=="q" goto done
 if /i "%choice%"=="u" (
@@ -111,6 +112,13 @@ if /i "%choice%"=="u" (
 if /i "%choice%"=="c" (
     echo.
     .venv\Scripts\python.exe scripts\setup_config.py --credentials
+    echo.
+    pause
+    goto menu
+)
+if /i "%choice%"=="s" (
+    echo.
+    .venv\Scripts\python.exe scripts\creator_scripts_menu.py
     echo.
     pause
     goto menu
@@ -180,20 +188,13 @@ if "%choice%"=="8" (
 )
 if "%choice%"=="9" (
     echo.
-    .venv\Scripts\python.exe scripts\MDemaxis_smooth_fix.py
-    echo.
-    pause
-    goto menu
-)
-if "%choice%"=="10" (
-    echo.
     .venv\Scripts\python.exe scripts\extract_variant_archives.py
     echo.
     pause
     goto menu
 )
 
-echo Invalid choice. Please enter 1-10, u, c, z, or q to exit.
+echo Invalid choice. Please enter 1-9, s, u, c, z, or q to exit.
 goto ask
 
 :done

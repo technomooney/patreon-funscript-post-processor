@@ -32,6 +32,7 @@ PatreonDownloader --json --embeds --descriptions --use-sub-directories --url <cr
 - **Sync new folders** — copy newly downloaded Patreon folders into your working directory
 - **Fix attachment ID prefixes** — strip numeric prefix added by the Patreon downloader
 - **Extract variant archives** — extract password-protected script archives (e.g. Pize's pixeldrain-hosted, per-intensity `.rar`/`.zip`/`.7z` bundles) and rename their funscripts with the variant folded in; passwords resolved from a local history first, falling back to a live Discord fetch
+- **Creator-specific script plugins** — one-creator naming quirks (e.g. MDemaxis's SMOOTH-prefix convention) live in `scripts/creator_scripts/` and show up automatically in a submenu; drop in your own `.py` file to add one without editing any core file — see `scripts/creator_scripts/README.md`
 
 ## Requirements
 
