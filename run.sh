@@ -97,6 +97,12 @@ while true; do
     echo "     and _maxinterval-suffixed funscripts to variant naming"
     echo "     (e.g. SMOOTH x.funscript → x (SMOOTH).funscript)"
     echo ""
+    echo " 10) Extract variant archives — for creators (e.g. Pize) who now ship scripts"
+    echo "     only inside a password-protected .rar/.zip/.7z per intensity variant:"
+    echo "     extracts each archive and renames its funscripts with the variant folded"
+    echo "     in, so they don't collide. Password resolved from local history first,"
+    echo "     falling back to a live Discord fetch — see 'c' for setting that up."
+    echo ""
     echo "  u) Update dependencies    — upgrade pip packages in the venv (incl. yt-dlp,"
     echo "     undetected-chromedriver, selenium) — run this if downloads start failing"
     echo "     after a site or browser update"
@@ -106,14 +112,14 @@ while true; do
     echo "     question — run this if a saved credential expires or gets revoked"
     echo ""
     echo "  z) Undo last action       — reverse the most recent renames/copies/dedupe"
-    echo "     from options 1, 3, 5, 6, 7, or 9 (one level deep — running any of them"
+    echo "     from options 1, 3, 5, 6, 7, 9, or 10 (one level deep — running any of them"
     echo "     again replaces what 'last action' means)"
     echo ""
     echo "  q) Exit"
     echo ""
 
     while true; do
-        read -rp "Choose a program to run (1-9, u=update deps, c=update creds, z=undo last, q=exit): " choice
+        read -rp "Choose a program to run (1-10, u=update deps, c=update creds, z=undo last, q=exit): " choice
         case "$choice" in
             q|Q)
                 echo ""
@@ -182,8 +188,13 @@ while true; do
                 .venv/bin/python scripts/MDemaxis_smooth_fix.py
                 break
                 ;;
+            10)
+                echo ""
+                .venv/bin/python scripts/extract_variant_archives.py
+                break
+                ;;
             *)
-                echo "Invalid choice. Please enter 1-9, u, c, z, or q to exit."
+                echo "Invalid choice. Please enter 1-10, u, c, z, or q to exit."
                 ;;
         esac
     done

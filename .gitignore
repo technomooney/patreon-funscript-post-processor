@@ -7,6 +7,7 @@ extensions
 STATUS.md
 pyrightconfig.json
 .creators.json
+.creator_data.db
 .discord_browser_profile
 .last_action.json
 __pycache__

@@ -31,12 +31,14 @@ PatreonDownloader --json --embeds --descriptions --use-sub-directories --url <cr
 - **Generate HTML overviews** — build a `description.html` visual summary in each post folder
 - **Sync new folders** — copy newly downloaded Patreon folders into your working directory
 - **Fix attachment ID prefixes** — strip numeric prefix added by the Patreon downloader
+- **Extract variant archives** — extract password-protected script archives (e.g. Pize's pixeldrain-hosted, per-intensity `.rar`/`.zip`/`.7z` bundles) and rename their funscripts with the variant folded in; passwords resolved from a local history first, falling back to a live Discord fetch
 
 ## Requirements
 
 - Python 3.11+
 - [Brave Browser](https://brave.com) (recommended — built-in ad blocker reduces popup interference during downloads; Chromium works as a fallback)
 - ffmpeg / ffprobe (installed automatically by setup)
+- `7z` on PATH (p7zip) — only needed for "Extract variant archives" (option 10), which extracts password-protected script archives
 
 ## Setup
 
