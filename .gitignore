@@ -11,3 +11,4 @@ pyrightconfig.json
 .discord_browser_profile
 .last_action.json
 __pycache__
+scripts/creator_scripts/_drafts/

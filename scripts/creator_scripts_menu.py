@@ -72,16 +72,23 @@ def main() -> None:
         for line in desc.strip().splitlines():
             print(f'     {line}')
         print()
+    print('  g) Generate a new one with AI (advanced — costs money, writes a draft')
+    print('     only, never runs automatically; see the warning before it starts)')
+    print()
     print('  q) Back to main menu')
     print()
 
     while True:
-        choice = input(f'Choose a script to run (1-{len(plugins)}, q=back): ').strip()
+        choice = input(f'Choose a script to run (1-{len(plugins)}, g=AI-generate, q=back): ').strip()
         if choice.lower() in ('q', ''):
+            return
+        if choice.lower() == 'g':
+            import ai_generate_creator_script
+            ai_generate_creator_script.run()
             return
         if choice.isdigit() and 1 <= int(choice) <= len(plugins):
             break
-        print(f'Invalid choice. Please enter 1-{len(plugins)} or q.')
+        print(f'Invalid choice. Please enter 1-{len(plugins)}, g, or q.')
 
     label, module = plugins[int(choice) - 1]
     entered = input('Enter full directory path to process: ').strip()

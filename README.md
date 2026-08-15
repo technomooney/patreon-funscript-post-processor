@@ -33,6 +33,7 @@ PatreonDownloader --json --embeds --descriptions --use-sub-directories --url <cr
 - **Fix attachment ID prefixes** — strip numeric prefix added by the Patreon downloader
 - **Extract variant archives** — extract password-protected script archives (e.g. Pize's pixeldrain-hosted, per-intensity `.rar`/`.zip`/`.7z` bundles) and rename their funscripts with the variant folded in; passwords resolved from a local history first, falling back to a live Discord fetch
 - **Creator-specific script plugins** — one-creator naming quirks (e.g. MDemaxis's SMOOTH-prefix convention) live in `scripts/creator_scripts/` and show up automatically in a submenu; drop in your own `.py` file to add one without editing any core file — see `scripts/creator_scripts/README.md`
+- **AI-generate a creator script (advanced, optional)** — from the creator scripts submenu, describe a naming quirk and Claude drafts a plugin for it. Costs a paid Anthropic API call, and the draft is never run or installed automatically — you review and move it into place yourself. The free, no-dependency default is still writing the plugin by hand
 
 ## Requirements
 
