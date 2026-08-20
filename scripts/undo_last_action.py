@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """
 Undo the most recent run of a change-making script (renames, sync copies,
-dedupe deletions). Only one level deep — running any of those scripts again
-replaces what "last action" means, and a soft-deleting script permanently
-purges its own previous run's trash the moment it starts a new run.
+dedupe deletions) against a given folder. Only one level deep per folder —
+running any of those scripts again against the same folder replaces what
+"last action" means for it, and a soft-deleting script permanently purges
+its own previous run's trash there the moment it starts a new run.
 
 Usage
 -----
-  python undo_last_action.py
+  python undo_last_action.py [path]
+
+*path* is prompted for if omitted — press Enter with no path to undo
+whichever folder the toolchain acted on most recently (i.e. the last menu
+action), or type one to undo that specific folder instead.
 """
 
 import os
 import shutil
+import sys
 
 import action_log
 
@@ -61,16 +67,20 @@ _HANDLERS = {
 }
 
 
-def main():
+def main(root_dir: str | None = None):
     print()
     print("========================================")
     print("  Undo Last Action")
     print("========================================")
     print()
 
-    journal = action_log.read_last()
+    journal = action_log.read_last(root_dir)
     if not journal:
-        print("Nothing to undo — no undoable run recorded (or it was already undone).")
+        if root_dir:
+            print(f"Nothing to undo in {root_dir} — no undoable run recorded there "
+                  "(or it was already undone).")
+        else:
+            print("Nothing to undo — no undoable run recorded (or it was already undone).")
         return
 
     entries = journal['entries']
@@ -110,10 +120,15 @@ def main():
     print()
     print(f"Done — undone: {ok}, skipped: {skipped}")
     if skipped == 0:
-        action_log.clear_last()
+        action_log.clear_last(root_dir)
     else:
         print("Some changes couldn't be undone (see above) — journal kept in case you want to retry.")
 
 
 if __name__ == "__main__":
-    main()
+    _args = sys.argv[1:]
+    if _args:
+        _root_dir = _args[0]
+    else:
+        _root_dir = input("Folder to undo (press Enter for the last menu action): ").strip() or None
+    main(_root_dir)

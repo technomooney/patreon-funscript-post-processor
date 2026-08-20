@@ -2,10 +2,23 @@
 
 Any script that performs reversible filesystem changes (renames, copies,
 soft-deletes) calls start() once, record() for each change, and finish()
-when done. The journal always holds only the most recently *completed* run
-that actually changed something — "undo" means "undo the last thing this
-toolchain did", not a multi-level history. A run that made no changes
-leaves the previous journal (if any) in place as the undo target.
+when done. The journal for a run lives *inside the folder that run acted
+on* (root_dir/.last_action.json — the same per-folder-state convention
+folder_log.py already uses), not in one global file. That means running
+this toolchain against a scratch/test folder no longer clobbers the real
+undo target for whatever folder you actually work in day to day — each
+folder keeps its own undo history, one level deep ("undo the last thing
+this toolchain did *to that folder*", not a multi-level history). A run
+that made no changes leaves that folder's previous journal (if any) in
+place as the undo target.
+
+read_last()/clear_last() take an optional root_dir. Pass one to target that
+folder's journal specifically; omit it to fall back to "the last menu
+action" system-wide — resolved via a small pointer file (_POINTER_PATH,
+fixed at the repo root) that finish() updates with whichever root_dir it
+just wrote to. Nothing is ever destroyed by the pointer moving on: an
+older run's journal is still sitting in its own folder, just no longer the
+no-argument default — pass its root_dir explicitly to reach it.
 
 Soft-deletes (used by dedupe, where a file has to disappear but should stay
 recoverable) are moved into a '.trash' folder next to the files being
@@ -24,7 +37,9 @@ import os
 import shutil
 import time
 
-_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.last_action.json')
+JOURNAL_FILENAME = '.last_action.json'
+_POINTER_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                              '.last_action_pointer.json')
 TRASH_DIRNAME = '.trash'
 DEFAULT_TRASH_RETENTION_DAYS = 14
 
@@ -48,11 +63,40 @@ def record(op: str, **fields) -> None:
     _entries.append(entry)
 
 
+def _journal_path(root_dir: str) -> str:
+    return os.path.join(os.path.normpath(root_dir), JOURNAL_FILENAME)
+
+
+def _write_json(path: str, payload: dict) -> None:
+    tmp = path + '.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError as e:
+        print(f'  [action_log] could not write {os.path.basename(path)}: {e}')
+
+
+def _resolve_root_dir(root_dir: str | None) -> str | None:
+    """*root_dir* itself if given, else the folder the pointer file says was
+    acted on most recently. None if there's nothing to resolve to."""
+    if root_dir is not None:
+        return root_dir
+    if not os.path.exists(_POINTER_PATH):
+        return None
+    try:
+        with open(_POINTER_PATH, 'r', encoding='utf-8') as f:
+            return json.load(f).get('root_dir')
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def finish() -> None:
-    """Persist the journal, replacing whatever run was previously the 'last action'.
+    """Persist the journal into root_dir, and point the no-argument default
+    (read_last()/clear_last() called with no root_dir) at it.
 
     No-op if nothing was recorded this run — an empty run shouldn't erase a
-    previous run's undo target.
+    previous run's undo target, in that folder or as the default.
     """
     if not _entries:
         return
@@ -62,21 +106,22 @@ def finish() -> None:
         'root_dir': _root_dir,
         'entries': _entries,
     }
-    tmp = _PATH + '.tmp'
-    try:
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, _PATH)
-    except OSError as e:
-        print(f'  [action_log] could not write undo journal: {e}')
+    _write_json(_journal_path(_root_dir), payload)
+    _write_json(_POINTER_PATH, {'root_dir': _root_dir})
 
 
-def read_last() -> dict | None:
-    """Return the persisted journal, or None if there's nothing to undo."""
-    if not os.path.exists(_PATH):
+def read_last(root_dir: str | None = None) -> dict | None:
+    """Return the persisted journal for *root_dir*, or (if omitted) for
+    whichever folder was acted on most recently. None if there's nothing to
+    undo."""
+    resolved = _resolve_root_dir(root_dir)
+    if resolved is None:
+        return None
+    path = _journal_path(resolved)
+    if not os.path.exists(path):
         return None
     try:
-        with open(_PATH, 'r', encoding='utf-8') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         if isinstance(data, dict) and data.get('entries'):
             return data
@@ -85,12 +130,24 @@ def read_last() -> dict | None:
     return None
 
 
-def clear_last() -> None:
-    """Delete the journal — call after a successful undo so it can't be re-applied."""
+def clear_last(root_dir: str | None = None) -> None:
+    """Delete the journal for *root_dir* (or, if omitted, whichever folder
+    was acted on most recently) — call after a successful undo so it can't
+    be re-applied. Also clears the pointer if it was pointing at the
+    journal just cleared, so a later no-argument call doesn't chase a
+    now-missing file."""
+    resolved = _resolve_root_dir(root_dir)
+    if resolved is None:
+        return
     try:
-        os.remove(_PATH)
+        os.remove(_journal_path(resolved))
     except OSError:
         pass
+    if _resolve_root_dir(None) == resolved:
+        try:
+            os.remove(_POINTER_PATH)
+        except OSError:
+            pass
 
 
 def trash_path(root_dir: str, original_path: str) -> str:

@@ -10,5 +10,6 @@ pyrightconfig.json
 .creator_data.db
 .discord_browser_profile
 .last_action.json
+.last_action_pointer.json
 __pycache__
 scripts/creator_scripts/_drafts/
