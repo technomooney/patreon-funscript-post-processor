@@ -1,5 +1,6 @@
 import hashlib
 import os
+import re
 import shutil
 from collections import defaultdict
 
@@ -7,6 +8,19 @@ import action_log
 
 _JUNK_NAMES = {'thumbs.db', 'desktop.ini'}
 _FUNSCRIPT_EXT = '.funscript'
+
+# Patreon post IDs run 6-9 digits in every folder name observed in this
+# project (e.g. "[167073603] 2026-08-18 title"). Matching folders by this
+# embedded ID rather than the literal name is what lets folder-pairing
+# survive whatever decoration wraps it -- the raw Patreon downloader's own
+# prefix, prefixFix.py stripping it, fix_garbled_names.py's mojibake/rename
+# pass, or a manually retitled folder -- none of which change the post ID.
+# Anchored at the start first (every real example seen leads with the ID,
+# e.g. "[167073603] ..." or a bare/underscored "167073603_...") so a long
+# number elsewhere in a title (resolution, a count, ...) doesn't get picked
+# up instead; only falls back to searching anywhere if that finds nothing.
+_LEADING_POST_ID_RE = re.compile(r'^\W*(\d{6,9})\b')
+_POST_ID_RE = re.compile(r'\d{6,9}')
 
 
 def _sha256_file(path, chunk_size=1 << 20):
@@ -34,6 +48,38 @@ def _scoped_files(root, funscripts_only):
                 continue
             full = os.path.join(dirpath, fn)
             yield os.path.relpath(full, root)
+
+
+def _folder_key(name):
+    """The token folders are matched on: the embedded Patreon post ID if one
+    can be found, else the literal name as a fallback (e.g. the hand-made
+    "Weekly voted(...)" folders that carry no post ID)."""
+    m = _LEADING_POST_ID_RE.match(name)
+    if m:
+        return m.group(1)
+    m = _POST_ID_RE.search(name)
+    return m.group(0) if m else name
+
+
+def _folder_key_map(folders):
+    """Map each folder's matching key -> folder name.
+
+    A key claimed by more than one folder on the same side (should be
+    essentially impossible for real, distinct posts, but never silently
+    drop a folder over it) falls back to using each of those folders' own
+    literal name as its key instead, same as a folder with no ID at all.
+    """
+    by_key = defaultdict(list)
+    for f in folders:
+        by_key[_folder_key(f)].append(f)
+    result = {}
+    for key, names in by_key.items():
+        if len(names) == 1:
+            result[key] = names[0]
+        else:
+            for name in names:
+                result[name] = name
+    return result
 
 
 def _unique_dest_path(dest_path):
@@ -103,8 +149,20 @@ def sync_new_folders(source, destination):
         if os.path.isdir(os.path.join(destination, f))
     }
 
-    new_folders = sorted(source_folders - dest_folders)
-    common_folders = sorted(source_folders & dest_folders)
+    # Match by embedded post ID, not literal name -- see _folder_key. A folder
+    # already present under a differently-decorated name (prefix stripped,
+    # mojibake fixed, retitled, ...) is "common", not "new", so the per-file
+    # symmetry check below actually gets to run on it instead of being skipped
+    # entirely because the literal names never matched.
+    source_by_key = _folder_key_map(source_folders)
+    dest_by_key = _folder_key_map(dest_folders)
+
+    new_keys = sorted(set(source_by_key) - set(dest_by_key))
+    common_keys = sorted(set(source_by_key) & set(dest_by_key))
+
+    new_folders = [source_by_key[k] for k in new_keys]
+    # (src_name, dest_name) -- may differ even though they're the same post.
+    common_folders = [(source_by_key[k], dest_by_key[k]) for k in common_keys]
 
     if not new_folders:
         print("\nNo new folders found — destination is already up to date.")
@@ -168,13 +226,14 @@ def sync_existing_folders(source, destination, common_folders):
 
     print()
     print(f"Scanning {len(common_folders)} folder(s)...")
-    all_missing = []  # (folder, src_full, relpath)
-    for i, folder in enumerate(common_folders, 1):
-        print(f"  [{i}/{len(common_folders)}] {folder}", end='\r')
-        src_root = os.path.join(source, folder)
-        dest_root = os.path.join(destination, folder)
+    all_missing = []  # (dest_folder, src_full, relpath)
+    for i, (src_folder, dest_folder) in enumerate(common_folders, 1):
+        label = dest_folder if src_folder == dest_folder else f"{dest_folder}  (source: {src_folder})"
+        print(f"  [{i}/{len(common_folders)}] {label}", end='\r')
+        src_root = os.path.join(source, src_folder)
+        dest_root = os.path.join(destination, dest_folder)
         for src_full, rel in find_missing_files(src_root, dest_root, funscripts_only):
-            all_missing.append((folder, src_full, rel))
+            all_missing.append((dest_folder, src_full, rel))
     print()
 
     if not all_missing:
