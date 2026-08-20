@@ -4478,11 +4478,11 @@ def _reports_dir(base_path: str) -> str:
     return d
 
 
-def _write_failures_csv(base_path: str, failures: list):
-    """Write failed download entries to _reports/failed_downloads.csv."""
+def _write_failures_csv(base_path: str, failures: list, filename: str = 'failed_downloads.csv'):
+    """Write failed download entries to _reports/<filename>."""
     if not failures:
         return
-    csv_path = os.path.join(_reports_dir(base_path), 'failed_downloads.csv')
+    csv_path = os.path.join(_reports_dir(base_path), filename)
     # Ensure all rows have a 'filename' key (older entries may not)
     for row in failures:
         row.setdefault('filename', 'unknown')
@@ -4493,11 +4493,11 @@ def _write_failures_csv(base_path: str, failures: list):
     print(f"\nFailed downloads ({len(failures)}) written to: {csv_path}")
 
 
-def _write_mega_error6_csv(base_path: str, mega_error6: list):
-    """Write mega.nz links that failed with exit 6 to _reports/mega_error6.csv."""
+def _write_mega_error6_csv(base_path: str, mega_error6: list, filename: str = 'mega_error6.csv'):
+    """Write mega.nz links that failed with exit 6 to _reports/<filename>."""
     if not mega_error6:
         return
-    csv_path = os.path.join(_reports_dir(base_path), 'mega_error6.csv')
+    csv_path = os.path.join(_reports_dir(base_path), filename)
     for row in mega_error6:
         row.setdefault('filename', 'unknown')
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
@@ -4609,11 +4609,11 @@ def _triage_failure(entry: dict, folder: str,
     failures.append(entry)
 
 
-def _write_uncertain_csv(base_path: str, uncertain: list):
-    """Write uncertain download entries to _reports/uncertain_downloads.csv."""
+def _write_uncertain_csv(base_path: str, uncertain: list, filename: str = 'uncertain_downloads.csv'):
+    """Write uncertain download entries to _reports/<filename>."""
     if not uncertain:
         return
-    csv_path = os.path.join(_reports_dir(base_path), 'uncertain_downloads.csv')
+    csv_path = os.path.join(_reports_dir(base_path), filename)
     fieldnames = ['link', 'funscript_name', 'save_directory', 'domain',
                   'matched_video', 'match_score']
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
@@ -4785,9 +4785,119 @@ def _load_known_failures(base_path: str) -> tuple[set[str], list[dict]]:
     return links, rows
 
 
-def find_and_download(base_path: str):
-    ans = input("Download even without a funscript file? (y/n, default n): ").strip().lower()
-    require_funscript = ans != 'y'
+def collect_tasks_from_funscript_metadata(base_path: str) -> tuple[list, list]:
+    """Walk *base_path* for folders whose .funscript files carry a source video
+    URL in their own metadata.video_url field (the "metadata" object every
+    OpenFunscripter-style .funscript already has — creator/title/performers/
+    tags/video_url/... — populated or not) but have no video on disk yet.
+
+    Unlike collect_tasks() this never reads description.json — the funscript
+    is the only source of truth here — so it works for scripts that showed up
+    some other way (a bare .funscript a creator posted with no description
+    link at all, one hand-placed, ...), which is the whole point: some
+    creators are only just starting to fill this field in on request, and
+    won't necessarily also post the same link elsewhere in the post body.
+
+    A folder already holding a video is skipped outright — nothing to fetch,
+    regardless of what any of its funscripts' metadata says. So is one
+    folder_log already has a completed run of this same collector for
+    (script name 'downloadFromFunscriptMetadata' — a distinct name from
+    'downloadContent's own tracking, so the two don't shadow each other).
+
+    Returns (tasks, failures) — same shape as collect_tasks()'s first two
+    return values (folders with >1 funscript or a .manual marker aren't
+    relevant here, so there's no many_funscripts/manual_folders equivalent).
+    """
+    axis_suffixes = ('.surge', '.pitch', '.roll', '.twist', '.sway')  # keep in sync with collect_tasks()
+    tasks = []
+    failures = []
+
+    for root, dirs, files in os.walk(base_path):
+        dirs.sort()
+        if '.manual' in files:
+            continue
+        if folder_log.has_run(root, 'downloadFromFunscriptMetadata'):
+            continue
+        if any(_is_video_filename(f) for f in files):
+            continue  # already has a video -- nothing to do regardless of metadata
+
+        funscripts = sorted(f for f in files if f.lower().endswith('.funscript'))
+        if not funscripts:
+            continue
+
+        urls: set[str] = set()
+        for fs in funscripts:
+            try:
+                with open(os.path.join(root, fs), 'r', encoding='utf-8') as fh:
+                    data = json.load(fh)
+            except (OSError, json.JSONDecodeError):
+                continue
+            video_url = (data.get('metadata') or {}).get('video_url', '')
+            if isinstance(video_url, str) and video_url.strip():
+                urls.add(video_url.strip())
+        if not urls:
+            continue
+
+        main_scripts = [fs for fs in funscripts if not any(Path(fs).stem.endswith(s) for s in axis_suffixes)]
+        basename = Path((main_scripts or funscripts)[0]).stem
+
+        validated_links = []
+        for link in sorted(urls):
+            domain = get_domain(link)
+            try:
+                check_domain(link)
+            except UnknownDomainError:
+                if _ytdlp_cmd() is not None:
+                    print(f"  [yt-dlp] no dedicated handler for '{domain}' — will attempt generic extraction")
+                else:
+                    print(f"[ERROR] unsupported domain '{domain}': {link}")
+                    failures.append({'link': link, 'funscript_name': basename,
+                                     'save_directory': root, 'domain': domain})
+                    continue
+            validated_links.append(link)
+
+        if not validated_links:
+            continue
+
+        print(f'  [funscript-metadata] {_safe(basename)}: {len(validated_links)} video URL(s) found, no video on disk')
+        tasks.append({'folder': root, 'basename': basename, 'links': validated_links})
+
+    return tasks, failures
+
+
+def find_and_download_from_funscript_metadata(base_path: str) -> None:
+    """Entry point for the 'download from funscript URL metadata' menu option —
+    builds tasks via collect_tasks_from_funscript_metadata() and runs them
+    through the normal find_and_download() engine (same domain handlers, same
+    retry/AV-similarity/quality-replace logic, same undo/progress-resume
+    support), just tagged with its own script name and report filenames so it
+    never overwrites — or gets confused with — the regular download run's."""
+    tasks, failures = collect_tasks_from_funscript_metadata(base_path)
+    if not tasks:
+        print("No funscripts with a usable video_url and no existing video found.")
+        _write_failures_csv(base_path, failures, filename='failed_downloads_funscript_metadata.csv')
+        return
+    find_and_download(
+        base_path, tasks=tasks, failures=failures,
+        script_name='downloadFromFunscriptMetadata',
+        report_suffix='_funscript_metadata',
+    )
+
+
+def find_and_download(base_path: str, tasks: list | None = None, failures: list | None = None,
+                       script_name: str = 'downloadContent', report_suffix: str = ''):
+    """*tasks*/*failures*: pre-built task list (collect_tasks()'s return shape)
+    to run instead of scanning description.json — used by
+    find_and_download_from_funscript_metadata(). None (the default) collects
+    tasks the normal way, prompting for require_funscript first.
+    *script_name*/*report_suffix*: what to stamp folder_log entries and
+    report filenames with, so a non-default caller's output doesn't overwrite
+    or get confused with the regular download run's.
+    """
+    prebuilt = tasks is not None
+    if not prebuilt:
+        ans = input("Download even without a funscript file? (y/n, default n): ").strip().lower()
+        require_funscript = ans != 'y'
 
     # Deduplicate existing videos unless the user has opted out.
     dedup_existing = os.getenv('DEDUP_EXISTING', 'true').strip().lower() not in ('false', '0', 'no')
@@ -4803,13 +4913,18 @@ def find_and_download(base_path: str):
         if known_failure_links:
             print(f'[skip-known-failed-url] {len(known_failure_links)} previously-failed link(s) will be skipped.')
 
-    tasks, failures, many_funscripts, manual_folders = collect_tasks(base_path, require_funscript=require_funscript)
+    if prebuilt:
+        failures = failures or []
+        many_funscripts: list = []
+        manual_folders: list = []
+    else:
+        tasks, failures, many_funscripts, manual_folders = collect_tasks(base_path, require_funscript=require_funscript)
     _write_many_funscripts_csv(base_path, many_funscripts)
     _write_manual_folders(base_path, manual_folders)
 
     if not tasks:
         print("No valid download tasks found.")
-        _write_failures_csv(base_path, failures)
+        _write_failures_csv(base_path, failures, filename=f'failed_downloads{report_suffix}.csv')
         return
 
     tracker = ProgressTracker(base_path)
@@ -4839,7 +4954,7 @@ def find_and_download(base_path: str):
     # Separate run from _dedup_existing()'s own start()/finish() above — this
     # becomes the new undo target once anything actually gets saved below, via
     # _save_downloaded()'s and the AV-replace block's action_log.record() calls.
-    action_log.start('downloadContent', base_path)
+    action_log.start(script_name, base_path)
 
     driver = setup_driver(tasks[0]['folder'])
 
@@ -5153,7 +5268,7 @@ def find_and_download(base_path: str):
                 _saved = [os.path.basename(f) for f in newly_downloaded
                           if os.path.abspath(os.path.dirname(f)) == os.path.abspath(_folder)]
                 folder_log.append_run(
-                    _folder, 'downloadContent',
+                    _folder, script_name,
                     links=[{'url': url, 'status': st}
                            for url, st in link_statuses.get(_folder, {}).items()],
                     files_saved=_saved,
@@ -5171,9 +5286,9 @@ def find_and_download(base_path: str):
             for row in known_failure_rows:
                 if row['link'] not in succeeded_links:
                     failures.append(row)
-        _write_failures_csv(base_path, failures)
-        _write_mega_error6_csv(base_path, mega_error6)
-        _write_uncertain_csv(base_path, uncertain)
+        _write_failures_csv(base_path, failures, filename=f'failed_downloads{report_suffix}.csv')
+        _write_mega_error6_csv(base_path, mega_error6, filename=f'mega_error6{report_suffix}.csv')
+        _write_uncertain_csv(base_path, uncertain, filename=f'uncertain_downloads{report_suffix}.csv')
         _write_many_funscripts_csv(base_path, many_funscripts)
         _write_playlist(base_path, newly_downloaded)
 

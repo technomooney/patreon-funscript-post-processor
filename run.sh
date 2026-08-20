@@ -77,26 +77,33 @@ while true; do
     echo "     in, so they don't collide. Password resolved from local history first,"
     echo "     falling back to a live Discord fetch — see 'c' for setting that up."
     echo ""
-    echo "  5) Fix garbled names      — four-pass cleanup pipeline:"
+    echo "  5) Download from funscript metadata — for creators who put the source"
+    echo "     video's URL in the funscript's own metadata.video_url field instead of"
+    echo "     (or in addition to) the post body: download it for any funscript that"
+    echo "     has one but no matching video on disk yet. Same download engine as"
+    echo "     option 3, tagged separately (own report files, own undo/folder_log entry)"
+    echo "     so it never overwrites that run's output."
+    echo ""
+    echo "  6) Fix garbled names      — four-pass cleanup pipeline:"
     echo "     • detect video files with wrong/missing extension (magic bytes)"
     echo "     • detect funscripts with wrong/missing .funscript extension"
     echo "     • decode percent-encoded or mojibake filenames"
     echo "     • fuzzy-match funscript names to their video and rename to match"
     echo "     All changes written to CSV reports in _reports/"
     echo ""
-    echo "  6) Check funscript match  — find videos missing a funscript and"
+    echo "  7) Check funscript match  — find videos missing a funscript and"
     echo "     report fuzzy-match suggestions, cross-checked against video/funscript"
     echo "     duration; can auto-rename a lone unmatched video to its funscript's"
     echo "     name when duration confirms it unambiguously (asks first)"
     echo ""
-    echo "  7) Dedupe only            — clean leftover temp files and remove"
+    echo "  8) Dedupe only            — clean leftover temp files and remove"
     echo "     exact duplicate files (moved to .trash, undoable) without running"
     echo "     a full download"
     echo ""
-    echo "  8) Generate HTML          — build a description.html visual overview"
+    echo "  9) Generate HTML          — build a description.html visual overview"
     echo "     in each post folder"
     echo ""
-    echo "  9) Audit report           — read .folder_log.json from every post folder"
+    echo "  10) Audit report          — read .folder_log.json from every post folder"
     echo "     and generate _reports/audit_report.html showing what each script"
     echo "     has done, with per-folder detail and an overall summary"
     echo ""
@@ -114,14 +121,14 @@ while true; do
     echo "     question — run this if a saved credential expires or gets revoked"
     echo ""
     echo "  z) Undo last action       — reverse the most recent renames/copies/dedupe"
-    echo "     from options 1-7, or a creator script (s) (one level deep — running any"
+    echo "     from options 1-8, or a creator script (s) (one level deep — running any"
     echo "     of them again replaces what 'last action' means)"
     echo ""
     echo "  q) Exit"
     echo ""
 
     while true; do
-        read -rp "Choose a program to run (1-9, s=creator scripts, u=update deps, c=update creds, z=undo last, q=exit): " choice
+        read -rp "Choose a program to run (1-10, s=creator scripts, u=update deps, c=update creds, z=undo last, q=exit): " choice
         case "$choice" in
             q|Q)
                 echo ""
@@ -172,31 +179,36 @@ while true; do
                 ;;
             5)
                 echo ""
-                .venv/bin/python scripts/fix_garbled_names.py
+                .venv/bin/python scripts/download_from_funscript_metadata.py
                 break
                 ;;
             6)
                 echo ""
-                .venv/bin/python scripts/check_funscripts.py
+                .venv/bin/python scripts/fix_garbled_names.py
                 break
                 ;;
             7)
                 echo ""
-                .venv/bin/python scripts/dedupe_only.py
+                .venv/bin/python scripts/check_funscripts.py
                 break
                 ;;
             8)
                 echo ""
-                .venv/bin/python scripts/generate_html.py
+                .venv/bin/python scripts/dedupe_only.py
                 break
                 ;;
             9)
+                echo ""
+                .venv/bin/python scripts/generate_html.py
+                break
+                ;;
+            10)
                 echo ""
                 .venv/bin/python scripts/generate_audit_report.py
                 break
                 ;;
             *)
-                echo "Invalid choice. Please enter 1-9, s, u, c, z, or q to exit."
+                echo "Invalid choice. Please enter 1-10, s, u, c, z, or q to exit."
                 ;;
         esac
     done

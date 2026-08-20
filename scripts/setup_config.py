@@ -561,11 +561,11 @@ def main():
 
     dedup = _ask_bool(
         'Auto-dedup at the start of each download run? (true/false)\n'
-        '  (Note: option 7 in the main menu always runs dedup regardless of this setting)',
+        '  (Note: option 8 in the main menu always runs dedup regardless of this setting)',
         current=_read_env('DEDUP_EXISTING').lower() not in ('false', '0', 'no'),
     )
     _write_env('DEDUP_EXISTING', 'true' if dedup else 'false',
-               comment='Auto-dedup at the start of each download run. Option 7 (dedupe only) always runs regardless of this.')
+               comment='Auto-dedup at the start of each download run. Option 8 (dedupe only) always runs regardless of this.')
 
     dedup_verbose = _ask_bool(
         'Show verbose per-file output during dedup? (true/false)\n'

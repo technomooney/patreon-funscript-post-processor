@@ -85,13 +85,14 @@ run.bat
 | 2 | Fix file prefixes | Strip the numeric attachment ID prefix from downloaded filenames |
 | 3 | Download content | Find links in `description.json` files and download the associated media |
 | 4 | Extract variant archives | Extract password-protected per-variant script archives (e.g. Pize) |
-| 5 | Fix garbled names | Four-pass cleanup: fix video extensions → fix funscript extensions → decode garbled names → match funscript names to videos |
-| 6 | Check funscript match | Report videos missing a funscript with fuzzy-match suggestions |
-| 7 | Dedupe only | Clean leftover temp files and remove exact duplicate files |
-| 8 | Generate HTML | Build a `description.html` visual overview in each post folder |
-| 9 | Audit report | Build `_reports/audit_report.html` summarizing what each script has done per folder |
+| 5 | Download from funscript metadata | Download a video from a funscript's own `metadata.video_url` field, for any funscript that has one set but no matching video yet |
+| 6 | Fix garbled names | Four-pass cleanup: fix video extensions → fix funscript extensions → decode garbled names → match funscript names to videos |
+| 7 | Check funscript match | Report videos missing a funscript with fuzzy-match suggestions |
+| 8 | Dedupe only | Clean leftover temp files and remove exact duplicate files |
+| 9 | Generate HTML | Build a `description.html` visual overview in each post folder |
+| 10 | Audit report | Build `_reports/audit_report.html` summarizing what each script has done per folder |
 
-### Fix garbled names (option 5) — detail
+### Fix garbled names (option 6) — detail
 
 Runs four passes in order so each step sees already-corrected extensions:
 
