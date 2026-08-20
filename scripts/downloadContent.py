@@ -4622,12 +4622,14 @@ def _save_downloaded(downloaded: str, folder: str,
         print(f'  Saved as: {_safe(alt_name)} (name collision with different content)')
         _session_hashes[new_hash] = alt_path
         newly_downloaded.append(alt_path)
+        action_log.record('copy', dst=alt_path)
         return True
 
     os.rename(downloaded, dest_path)
     print(f'  Saved as: {_safe(dest_name)}')
     _session_hashes[new_hash] = dest_path
     newly_downloaded.append(dest_path)
+    action_log.record('copy', dst=dest_path)
     return True
 
 
@@ -4761,6 +4763,11 @@ def find_and_download(base_path: str):
     if confirm != 'y':
         print("Aborted.")
         return
+
+    # Separate run from _dedup_existing()'s own start()/finish() above — this
+    # becomes the new undo target once anything actually gets saved below, via
+    # _save_downloaded()'s and the AV-replace block's action_log.record() calls.
+    action_log.start('downloadContent', base_path)
 
     driver = setup_driver(tasks[0]['folder'])
 
@@ -4970,12 +4977,14 @@ def find_and_download(base_path: str):
                             print(f'  [replace] {_safe(os.path.basename(downloaded))} ({new_h}p) fits '
                                   f'MAX_RESOLUTION better than existing {_safe(kept_name)} ({old_h}p) — replacing')
                             try:
-                                os.remove(similar)
+                                trash_dest = action_log.soft_delete(base_path, similar)
+                                action_log.record('soft_delete', orig_path=similar, trash_path=trash_dest)
                             except OSError:
                                 pass
                             dest_path = os.path.join(folder, kept_name)
                             os.rename(downloaded, dest_path)
                             newly_downloaded.append(dest_path)
+                            action_log.record('copy', dst=dest_path)
                             link_statuses.setdefault(folder, {})[link] = 'replaced_better_quality'
                             tracker.mark_done(folder, link)
                             continue
@@ -5052,6 +5061,7 @@ def find_and_download(base_path: str):
             _cleanup_temp_files(current_folder)
 
     finally:
+        action_log.finish()
         driver.quit()
         # Close the Discord browser too, if _fetch_discord_password_cached ever
         # opened one this run — checked via sys.modules rather than a top-level
