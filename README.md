@@ -40,7 +40,7 @@ PatreonDownloader --json --embeds --descriptions --use-sub-directories --url <cr
 - Python 3.11+
 - [Brave Browser](https://brave.com) (recommended — built-in ad blocker reduces popup interference during downloads; Chromium works as a fallback)
 - ffmpeg / ffprobe (installed automatically by setup)
-- `7z` on PATH (p7zip) — only needed for "Extract variant archives" (option 9), which extracts password-protected script archives
+- `7z` on PATH (p7zip) — only needed for "Extract variant archives" (option 4), which extracts password-protected script archives
 - [Ollama](https://ollama.com) + a GPU with enough VRAM — only needed for the free local-model path of "AI-generate a creator script" (see Features above); the Anthropic API path and every other feature work without it
 
 ## Setup
@@ -81,15 +81,17 @@ run.bat
 
 | # | Option | Description |
 |---|--------|-------------|
-| 1 | Fix file prefixes | Strip the numeric attachment ID prefix from downloaded filenames |
-| 2 | Download content | Find links in `description.json` files and download the associated media |
-| 3 | Check funscript match | Report videos missing a funscript with fuzzy-match suggestions |
-| 4 | Generate HTML | Build a `description.html` visual overview in each post folder |
-| 5 | Sync new folders | Copy new Patreon downloader output into the working directory |
-| 6 | Fix garbled names | Four-pass cleanup: fix video extensions → fix funscript extensions → decode garbled names → match funscript names to videos |
+| 1 | Sync new folders | Copy new Patreon downloader output into the working directory (run this first) |
+| 2 | Fix file prefixes | Strip the numeric attachment ID prefix from downloaded filenames |
+| 3 | Download content | Find links in `description.json` files and download the associated media |
+| 4 | Extract variant archives | Extract password-protected per-variant script archives (e.g. Pize) |
+| 5 | Fix garbled names | Four-pass cleanup: fix video extensions → fix funscript extensions → decode garbled names → match funscript names to videos |
+| 6 | Check funscript match | Report videos missing a funscript with fuzzy-match suggestions |
 | 7 | Dedupe only | Clean leftover temp files and remove exact duplicate files |
+| 8 | Generate HTML | Build a `description.html` visual overview in each post folder |
+| 9 | Audit report | Build `_reports/audit_report.html` summarizing what each script has done per folder |
 
-### Fix garbled names (option 6) — detail
+### Fix garbled names (option 5) — detail
 
 Runs four passes in order so each step sees already-corrected extensions:
 

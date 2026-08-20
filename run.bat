@@ -35,45 +35,46 @@ if exist "%DEPS_MARKER%" (
     echo   [deps] Dependency update status unknown -- choose 'u' below to update.
     echo.
 )
-echo   1^) Fix file prefixes -- strip the attachment ID prefix from
-echo      downloaded filenames (run this first)
-echo.
-echo   2^) Download content       -- find links in description.json files
-echo      and download the associated videos and files
-echo.
-echo   3^) Check funscript match  -- find videos missing a funscript and
-echo      report fuzzy-match suggestions, cross-checked against video/funscript
-echo      duration; can auto-rename a lone unmatched video to its funscript's
-echo      name when duration confirms it unambiguously (asks first)
-echo.
-echo   4^) Generate HTML          -- build a description.html visual overview
-echo      in each post folder
-echo.
-echo   5^) Sync new folders       -- copy folders that are new in the Patreon
+echo   1^) Sync new folders       -- copy folders that are new in the Patreon
 echo      downloader output into the post-processor working directory, then
 echo      optionally check existing folders for files missing by content
 echo      (e.g. new funscripts added after the folder was first copied)
+echo      (run this first)
 echo.
-echo   6^) Fix garbled names      -- four-pass cleanup pipeline:
+echo   2^) Fix file prefixes      -- strip the attachment ID prefix from
+echo      downloaded filenames
+echo.
+echo   3^) Download content       -- find links in description.json files
+echo      and download the associated videos and files
+echo.
+echo   4^) Extract variant archives -- for creators (e.g. Pize) who now ship scripts
+echo      only inside a password-protected .rar/.zip/.7z per intensity variant:
+echo      extracts each archive and renames its funscripts with the variant folded
+echo      in, so they don't collide. Password resolved from local history first,
+echo      falling back to a live Discord fetch -- see 'c' for setting that up.
+echo.
+echo   5^) Fix garbled names      -- four-pass cleanup pipeline:
 echo      * detect video files with wrong/missing extension (magic bytes)
 echo      * detect funscripts with wrong/missing .funscript extension
 echo      * decode percent-encoded or mojibake filenames
 echo      * fuzzy-match funscript names to their video and rename to match
 echo      All changes written to CSV reports in _reports/
 echo.
+echo   6^) Check funscript match  -- find videos missing a funscript and
+echo      report fuzzy-match suggestions, cross-checked against video/funscript
+echo      duration; can auto-rename a lone unmatched video to its funscript's
+echo      name when duration confirms it unambiguously (asks first)
+echo.
 echo   7^) Dedupe only            -- clean leftover temp files and remove
 echo      exact duplicate files (moved to .trash, undoable) without running
 echo      a full download
 echo.
-echo   8^) Audit report           -- read .folder_log.json from every post folder
+echo   8^) Generate HTML          -- build a description.html visual overview
+echo      in each post folder
+echo.
+echo   9^) Audit report           -- read .folder_log.json from every post folder
 echo      and generate _reports/audit_report.html showing what each script
 echo      has done, with per-folder detail and an overall summary
-echo.
-echo   9^) Extract variant archives -- for creators (e.g. Pize) who now ship scripts
-echo      only inside a password-protected .rar/.zip/.7z per intensity variant:
-echo      extracts each archive and renames its funscripts with the variant folded
-echo      in, so they don't collide. Password resolved from local history first,
-echo      falling back to a live Discord fetch -- see 'c' for setting that up.
 echo.
 echo   s^) Creator scripts        -- submenu of one-creator naming-quirk fixes
 echo      (e.g. MDemaxis's SMOOTH-prefix rename). Drop your own .py file into
@@ -89,8 +90,8 @@ echo      iwara.tv, mega.nz, spankbang.com) without re-answering every other set
 echo      question -- run this if a saved credential expires or gets revoked
 echo.
 echo   z^) Undo last action       -- reverse the most recent renames/copies/dedupe
-echo      from options 1, 3, 5, 6, 7, 9, or a creator script (s) (one level deep --
-echo      running any of them again replaces what 'last action' means)
+echo      from options 1-7, or a creator script (s) (one level deep -- running any
+echo      of them again replaces what 'last action' means)
 echo.
 echo   q^) Exit
 echo.
@@ -132,42 +133,42 @@ if /i "%choice%"=="z" (
 )
 if "%choice%"=="1" (
     echo.
-    .venv\Scripts\python.exe scripts\prefixFix.py
+    .venv\Scripts\python.exe scripts\sync_new_folders.py
     echo.
     pause
     goto menu
 )
 if "%choice%"=="2" (
     echo.
-    .venv\Scripts\python.exe scripts\downloadContent.py
+    .venv\Scripts\python.exe scripts\prefixFix.py
     echo.
     pause
     goto menu
 )
 if "%choice%"=="3" (
     echo.
-    .venv\Scripts\python.exe scripts\check_funscripts.py
+    .venv\Scripts\python.exe scripts\downloadContent.py
     echo.
     pause
     goto menu
 )
 if "%choice%"=="4" (
     echo.
-    .venv\Scripts\python.exe scripts\generate_html.py
+    .venv\Scripts\python.exe scripts\extract_variant_archives.py
     echo.
     pause
     goto menu
 )
 if "%choice%"=="5" (
     echo.
-    .venv\Scripts\python.exe scripts\sync_new_folders.py
+    .venv\Scripts\python.exe scripts\fix_garbled_names.py
     echo.
     pause
     goto menu
 )
 if "%choice%"=="6" (
     echo.
-    .venv\Scripts\python.exe scripts\fix_garbled_names.py
+    .venv\Scripts\python.exe scripts\check_funscripts.py
     echo.
     pause
     goto menu
@@ -181,14 +182,14 @@ if "%choice%"=="7" (
 )
 if "%choice%"=="8" (
     echo.
-    .venv\Scripts\python.exe scripts\generate_audit_report.py
+    .venv\Scripts\python.exe scripts\generate_html.py
     echo.
     pause
     goto menu
 )
 if "%choice%"=="9" (
     echo.
-    .venv\Scripts\python.exe scripts\extract_variant_archives.py
+    .venv\Scripts\python.exe scripts\generate_audit_report.py
     echo.
     pause
     goto menu

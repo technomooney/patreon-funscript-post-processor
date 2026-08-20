@@ -59,45 +59,46 @@ while true; do
         echo "  [deps] Dependency update status unknown — choose 'u' below to update."
         echo ""
     fi
-    echo "  1) Fix file prefixes — strip the attachment ID prefix from"
-    echo "     downloaded filenames (run this first)"
-    echo ""
-    echo "  2) Download content       — find links in description.json files"
-    echo "     and download the associated videos and files"
-    echo ""
-    echo "  3) Check funscript match  — find videos missing a funscript and"
-    echo "     report fuzzy-match suggestions, cross-checked against video/funscript"
-    echo "     duration; can auto-rename a lone unmatched video to its funscript's"
-    echo "     name when duration confirms it unambiguously (asks first)"
-    echo ""
-    echo "  4) Generate HTML          — build a description.html visual overview"
-    echo "     in each post folder"
-    echo ""
-    echo "  5) Sync new folders       — copy folders that are new in the Patreon"
+    echo "  1) Sync new folders       — copy folders that are new in the Patreon"
     echo "     downloader output into the post-processor working directory, then"
     echo "     optionally check existing folders for files missing by content"
     echo "     (e.g. new funscripts added after the folder was first copied)"
+    echo "     (run this first)"
     echo ""
-    echo "  6) Fix garbled names      — four-pass cleanup pipeline:"
+    echo "  2) Fix file prefixes      — strip the attachment ID prefix from"
+    echo "     downloaded filenames"
+    echo ""
+    echo "  3) Download content       — find links in description.json files"
+    echo "     and download the associated videos and files"
+    echo ""
+    echo "  4) Extract variant archives — for creators (e.g. Pize) who now ship scripts"
+    echo "     only inside a password-protected .rar/.zip/.7z per intensity variant:"
+    echo "     extracts each archive and renames its funscripts with the variant folded"
+    echo "     in, so they don't collide. Password resolved from local history first,"
+    echo "     falling back to a live Discord fetch — see 'c' for setting that up."
+    echo ""
+    echo "  5) Fix garbled names      — four-pass cleanup pipeline:"
     echo "     • detect video files with wrong/missing extension (magic bytes)"
     echo "     • detect funscripts with wrong/missing .funscript extension"
     echo "     • decode percent-encoded or mojibake filenames"
     echo "     • fuzzy-match funscript names to their video and rename to match"
     echo "     All changes written to CSV reports in _reports/"
     echo ""
+    echo "  6) Check funscript match  — find videos missing a funscript and"
+    echo "     report fuzzy-match suggestions, cross-checked against video/funscript"
+    echo "     duration; can auto-rename a lone unmatched video to its funscript's"
+    echo "     name when duration confirms it unambiguously (asks first)"
+    echo ""
     echo "  7) Dedupe only            — clean leftover temp files and remove"
     echo "     exact duplicate files (moved to .trash, undoable) without running"
     echo "     a full download"
     echo ""
-    echo "  8) Audit report           — read .folder_log.json from every post folder"
+    echo "  8) Generate HTML          — build a description.html visual overview"
+    echo "     in each post folder"
+    echo ""
+    echo "  9) Audit report           — read .folder_log.json from every post folder"
     echo "     and generate _reports/audit_report.html showing what each script"
     echo "     has done, with per-folder detail and an overall summary"
-    echo ""
-    echo "  9) Extract variant archives — for creators (e.g. Pize) who now ship scripts"
-    echo "     only inside a password-protected .rar/.zip/.7z per intensity variant:"
-    echo "     extracts each archive and renames its funscripts with the variant folded"
-    echo "     in, so they don't collide. Password resolved from local history first,"
-    echo "     falling back to a live Discord fetch — see 'c' for setting that up."
     echo ""
     echo "  s) Creator scripts        — submenu of one-creator naming-quirk fixes"
     echo "     (e.g. MDemaxis's SMOOTH-prefix rename). Drop your own .py file into"
@@ -113,8 +114,8 @@ while true; do
     echo "     question — run this if a saved credential expires or gets revoked"
     echo ""
     echo "  z) Undo last action       — reverse the most recent renames/copies/dedupe"
-    echo "     from options 1, 3, 5, 6, 7, 9, or a creator script (s) (one level deep —"
-    echo "     running any of them again replaces what 'last action' means)"
+    echo "     from options 1-7, or a creator script (s) (one level deep — running any"
+    echo "     of them again replaces what 'last action' means)"
     echo ""
     echo "  q) Exit"
     echo ""
@@ -151,32 +152,32 @@ while true; do
                 ;;
             1)
                 echo ""
-                .venv/bin/python scripts/prefixFix.py
+                .venv/bin/python scripts/sync_new_folders.py
                 break
                 ;;
             2)
                 echo ""
-                .venv/bin/python scripts/downloadContent.py
+                .venv/bin/python scripts/prefixFix.py
                 break
                 ;;
             3)
                 echo ""
-                .venv/bin/python scripts/check_funscripts.py
+                .venv/bin/python scripts/downloadContent.py
                 break
                 ;;
             4)
                 echo ""
-                .venv/bin/python scripts/generate_html.py
+                .venv/bin/python scripts/extract_variant_archives.py
                 break
                 ;;
             5)
                 echo ""
-                .venv/bin/python scripts/sync_new_folders.py
+                .venv/bin/python scripts/fix_garbled_names.py
                 break
                 ;;
             6)
                 echo ""
-                .venv/bin/python scripts/fix_garbled_names.py
+                .venv/bin/python scripts/check_funscripts.py
                 break
                 ;;
             7)
@@ -186,12 +187,12 @@ while true; do
                 ;;
             8)
                 echo ""
-                .venv/bin/python scripts/generate_audit_report.py
+                .venv/bin/python scripts/generate_html.py
                 break
                 ;;
             9)
                 echo ""
-                .venv/bin/python scripts/extract_variant_archives.py
+                .venv/bin/python scripts/generate_audit_report.py
                 break
                 ;;
             *)
