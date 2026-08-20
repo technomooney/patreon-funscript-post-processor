@@ -113,9 +113,20 @@ def main():
     for file, root in zip(fileList, fileRoots):
         folder_map.setdefault(root, []).append(file)
 
+    # Normal runs skip folders folder_log already marked done - cheap, and
+    # processAndRename is a no-op on anything already prefix-free anyway, but
+    # a folder that got new files added after it was marked done (e.g. a
+    # funscript synced/extracted in later) would otherwise never get looked
+    # at again. Opt-in, defaulting to no, since re-walking every folder is
+    # only worth the extra time when that's actually suspected.
+    reprocess_ans = input(
+        "Reprocess folders already marked done by a previous run? (y/n, default n): "
+    ).strip().lower()
+    reprocess_all = reprocess_ans == 'y'
+
     action_log.start('prefixFix', os.path.abspath(filePath))
     for folder in sorted(folder_map):
-        if folder_log.has_run(folder, 'prefixFix'):
+        if not reprocess_all and folder_log.has_run(folder, 'prefixFix'):
             print(f'  [skip] already processed: {os.path.basename(folder)}')
             continue
         renames = processAndRename(folder_map[folder], [folder] * len(folder_map[folder]))
