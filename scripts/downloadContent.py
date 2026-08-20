@@ -3211,7 +3211,90 @@ def _mega_flatten_folders(download_dir: str, before: set[str]) -> None:
 
 
 _MEGA_RATE_LIMIT_EXIT = 6
-_MEGA_RATE_LIMIT_DELAYS = (60, 120, 300)  # seconds before each retry attempt
+_MEGA_RATE_LIMIT_DELAYS = (15, 15, 15)  # seconds before each retry attempt
+
+# The background worker (see _MegaWorker below) doesn't kill mega-get on a
+# fixed overall duration - most of what used to eat the full _MEGA_TIMEOUT
+# wait turned out to be a dead link (file removed for a ToS violation,
+# account closed, ...) that mega-get just sits on producing nothing, not a
+# genuinely large download that needed the extra time. Instead it polls
+# whether the download directory is actually growing, and only gives up if
+# there's been zero progress for _MEGA_STALL_POLLS consecutive checks - a
+# real, still-progressing download (however large) is never cut off.
+_MEGA_POLL_INTERVAL = 15    # seconds between progress checks
+_MEGA_STALL_POLLS = 4       # consecutive no-progress polls (~60s) before giving up
+
+
+def _mega_dir_size(download_dir: str) -> int:
+    """Total size in bytes of every file currently in download_dir.
+
+    Used only to detect *change* between polls, not as an absolute figure -
+    pre-existing files (from other links already downloaded into the same
+    post folder) just raise the baseline; what matters is whether the total
+    is still climbing, which only happens while mega-get is actively
+    writing to its own (partial or final) output file.
+    """
+    total = 0
+    try:
+        for entry in os.scandir(download_dir):
+            if entry.is_file():
+                try:
+                    total += entry.stat().st_size
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
+
+
+def _run_mega_get_polling(cmd: list[str], download_dir: str) -> subprocess.CompletedProcess:
+    """Run mega-get with no fixed overall timeout, polling _mega_dir_size()
+    every _MEGA_POLL_INTERVAL seconds instead. Only gives up — killing the
+    process — after _MEGA_STALL_POLLS consecutive checks show no growth at
+    all, which a dead link (removed file, closed account, ...) hits almost
+    immediately since mega-get never writes a single byte for one; a
+    genuinely large, still-downloading file just keeps resetting the count
+    and is never cut off, however long it takes.
+
+    Returns a CompletedProcess-alike. A stall is reported as returncode -1
+    with an explanatory stderr message, distinguishable from any real
+    mega-get exit code (including the rate-limit one).
+    """
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        creationflags=_MEGA_WIN_FLAGS,
+    )
+    last_size = _mega_dir_size(download_dir)
+    stalled = 0
+    next_progress_check = time.time() + _MEGA_POLL_INTERVAL
+    while True:
+        # Waits for exit, but wakes up at least once a second so a real,
+        # fast mega-get error/success is reported right away rather than
+        # sitting unnoticed until the next progress check.
+        try:
+            proc.wait(timeout=max(0.0, min(1.0, next_progress_check - time.time())))
+            stdout, stderr = proc.communicate()
+            return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+        except subprocess.TimeoutExpired:
+            pass
+        if time.time() < next_progress_check:
+            continue
+        next_progress_check = time.time() + _MEGA_POLL_INTERVAL
+        size = _mega_dir_size(download_dir)
+        if size > last_size:
+            last_size = size
+            stalled = 0
+            continue
+        stalled += 1
+        if stalled >= _MEGA_STALL_POLLS:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+            return subprocess.CompletedProcess(
+                cmd, -1, stdout,
+                f'no download progress for {_MEGA_STALL_POLLS * _MEGA_POLL_INTERVAL}s — '
+                'likely a dead link (file removed, account closed, ...)',
+            )
+
 
 # ---------------------------------------------------------------------------
 # Background worker for mega.nz rate-limited retries.
@@ -3310,18 +3393,7 @@ class _MegaWorker:
         cmd += [job['link'], job['download_dir']]
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True, text=True, timeout=_MEGA_TIMEOUT,
-                creationflags=_MEGA_WIN_FLAGS,
-            )
-        except subprocess.TimeoutExpired:
-            hint = _mega_filename_hint(job['download_dir'], before)
-            self._log(f'{job["basename"]}: timed out after {_MEGA_TIMEOUT // 60} min (file: {hint})')
-            self._results.put({'success': False, 'link': job['link'],
-                               'download_dir': job['download_dir'], 'basename': job['basename'],
-                               'filename': hint, 'before': before})
-            return
+            result = _run_mega_get_polling(cmd, job['download_dir'])
         except OSError as e:
             self._log(f'{job["basename"]}: OS error: {e}')
             self._results.put({'success': False, 'link': job['link'],
