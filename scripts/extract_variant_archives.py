@@ -20,6 +20,22 @@ writes the funscripts back out with that tag folded in:
     Iwara - some video [Source](Soothing).funscript
     Iwara - some video [Source](Moderate).funscript
 
+As of ~2026-08-19 (confirmed against real pixeldrain samples) some archives
+also bundle the video file itself alongside the funscripts, e.g.:
+
+    musouduki bride.zip
+        musouduki bride.mp4
+        musouduki bride.funscript
+        musouduki bride.pitch.funscript
+        musouduki bride.surge.funscript
+
+A bundled video gets no variant tag — it's the same video shared across
+every intensity variant, only the scripts differ — and is instead routed
+through the same AV-similarity + resolution comparison downloadContent.py
+already uses when a post links the same video twice (see
+_extract_video()), which also guards against the collision risk of two
+variant archives each bundling their own copy of the same video.
+
 Passwords are resolved from creator_db.py's SQLite history first (fastest,
 no browser), falling back to a live Discord fetch via discord_passwords.py
 only when every known password fails — a creator can (and Pize has)
@@ -49,6 +65,13 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import action_log
 import creator_db
+from downloadContent import (
+    _closer_to_target_resolution,
+    _get_max_resolution,
+    _is_av_similar,
+    _is_video_filename,
+    _video_quality,
+)
 
 _ARCHIVE_EXTS = ('.rar', '.zip', '.7z')
 _AXIS_SUFFIXES = ('.surge', '.pitch', '.roll', '.twist', '.sway')  # keep in sync with check_funscripts.py
@@ -111,10 +134,56 @@ def _funscript_base_name(extracted_dir: str) -> str | None:
     return None
 
 
-def extract_one(archive_path: str, creator_key: str) -> bool:
+def _extract_video(tmp_video_path: str, folder: str, trash_root: str) -> None:
+    """Move a video extracted from a bundled archive into *folder*.
+
+    No variant tag gets folded in — unlike funscripts, the video is the same
+    file shared across every intensity variant. That means two variant
+    archives for the same post can each bundle their own copy of it, so this
+    mirrors the AV-similarity + resolution check downloadContent.py already
+    applies when a post links the same video twice (see project memory
+    project_quality_replace_on_av_match): if an AV-similar video is already
+    in *folder*, keep whichever resolution fits MAX_RESOLUTION better and
+    name the survivor after whichever copy is kept (preserves any existing
+    funscript-name match); otherwise the video is new and is moved in as-is.
+    """
+    filename = os.path.basename(tmp_video_path)
+    similar = _is_av_similar(tmp_video_path, folder)
+    if similar:
+        max_res = _get_max_resolution()
+        new_h = (_video_quality(tmp_video_path) or {}).get('height', 0)
+        old_h = (_video_quality(similar) or {}).get('height', 0)
+        if _closer_to_target_resolution(new_h, old_h, max_res):
+            kept_name = os.path.basename(similar)
+            print(f'  [extract] {filename} ({new_h}p) fits MAX_RESOLUTION better than '
+                  f'existing {kept_name} ({old_h}p) — replacing')
+            trash_dest = action_log.soft_delete(trash_root, similar)
+            action_log.record('soft_delete', orig_path=similar, trash_path=trash_dest)
+            dest_path = similar  # same path — new content takes the old name back
+            shutil.move(tmp_video_path, dest_path)
+            action_log.record('copy', dst=dest_path)
+        else:
+            print(f'  [extract] {filename} — AV-similar to existing '
+                  f'{os.path.basename(similar)}, keeping existing (equal/better resolution)')
+        return
+
+    dest_path = os.path.join(folder, filename)
+    if os.path.exists(dest_path):
+        print(f'  [extract] {filename} — a same-named file already exists and wasn\'t '
+              'recognized as the same video (ffmpeg/fpcalc unavailable, or genuinely '
+              'different) — leaving both; check by hand')
+        return
+    shutil.move(tmp_video_path, dest_path)
+    action_log.record('copy', dst=dest_path)
+    print(f'  [extract] {filename}')
+
+
+def extract_one(archive_path: str, creator_key: str, base_path: str) -> bool:
     """Extract *archive_path* in place, renaming its funscripts with the archive's
-    variant tag folded in. Returns True on success (including "nothing new to do,
-    already extracted before")."""
+    variant tag folded in and routing any bundled video through _extract_video()
+    (no tag — see its docstring). *base_path* is only used as the trash root for
+    a video replaced during that routing. Returns True on success (including
+    "nothing new to do, already extracted before")."""
     folder = os.path.dirname(archive_path)
     archive_stem = Path(archive_path).stem
 
@@ -145,27 +214,33 @@ def extract_one(archive_path: str, creator_key: str) -> bool:
             creator_db.mark_confirmed(creator_key, password_used)
 
         base_name = _funscript_base_name(tmp)
-        if base_name is None:
-            print(f'  [extract] "{os.path.basename(archive_path)}" extracted but contained no .funscript — skipping')
+        videos = [f for f in os.listdir(tmp) if _is_video_filename(f)]
+        if base_name is None and not videos:
+            print(f'  [extract] "{os.path.basename(archive_path)}" extracted but contained no '
+                  '.funscript or video — skipping')
             creator_db.record_extraction(archive_path, 'failed', password_used)
             return False
 
-        tag = _variant_tag(archive_stem, base_name)
-        for f in os.listdir(tmp):
-            if not f.lower().endswith('.funscript'):
-                continue
-            stem = Path(f).stem
-            axis = ''
-            for sfx in _AXIS_SUFFIXES:
-                if stem.endswith(sfx):
-                    axis, stem = sfx, stem[: -len(sfx)]
-                    break
-            dest_path = os.path.join(folder, f'{stem}{tag}{axis}.funscript')
-            if os.path.exists(dest_path):
-                continue  # already extracted (this run or a previous one)
-            shutil.move(os.path.join(tmp, f), dest_path)
-            action_log.record('copy', dst=dest_path)
-            print(f'  [extract] {os.path.basename(dest_path)}')
+        if base_name is not None:
+            tag = _variant_tag(archive_stem, base_name)
+            for f in os.listdir(tmp):
+                if not f.lower().endswith('.funscript'):
+                    continue
+                stem = Path(f).stem
+                axis = ''
+                for sfx in _AXIS_SUFFIXES:
+                    if stem.endswith(sfx):
+                        axis, stem = sfx, stem[: -len(sfx)]
+                        break
+                dest_path = os.path.join(folder, f'{stem}{tag}{axis}.funscript')
+                if os.path.exists(dest_path):
+                    continue  # already extracted (this run or a previous one)
+                shutil.move(os.path.join(tmp, f), dest_path)
+                action_log.record('copy', dst=dest_path)
+                print(f'  [extract] {os.path.basename(dest_path)}')
+
+        for f in videos:
+            _extract_video(os.path.join(tmp, f), folder, base_path)
 
     creator_db.record_extraction(archive_path, 'extracted', password_used)
     return True
@@ -190,7 +265,7 @@ def scan_and_extract(base_path: str, creator_key: str | None = None) -> None:
                 continue
 
             print(f'[archive] {os.path.relpath(archive_path, base_path)}')
-            if extract_one(archive_path, creator_key):
+            if extract_one(archive_path, creator_key, base_path):
                 extracted += 1
             else:
                 failed += 1
