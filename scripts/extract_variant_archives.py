@@ -34,12 +34,17 @@ every intensity variant, only the scripts differ — and is instead routed
 through the same AV-similarity + resolution comparison downloadContent.py
 already uses when a post links the same video twice (see
 _extract_video()), which also guards against the collision risk of two
-variant archives each bundling their own copy of the same video. Once a
-bundled video is safely extracted, the archive itself is trashed — keeping
-a multi-hundred-MB zip around after pulling its video out would just be a
-second, unused copy of the same media. A funscript-only archive is left in
-place as before (see extract_one()): there's no real duplication cost to
-justify removing it.
+variant archives each bundling their own copy of the same video.
+
+Every archive gets trashed once everything it held is safely out and
+accounted for — funscripts always are once extraction succeeds, and a
+bundled video is too (newly placed, or an already-existing AV-matched copy
+confirmed and kept) — so a successful run never leaves an archive behind,
+funscript-only or not. Soft-deleted via action_log, not removed outright:
+recoverable from .trash for TRASH_RETENTION_DAYS, same as everything else
+this project deletes. The one exception is a video left unresolved in
+_extract_video (a same-name collision that couldn't be confirmed as a
+duplicate) — its archive is kept, since it's the only remaining copy.
 
 Passwords are resolved from creator_db.py's SQLite history first (fastest,
 no browser), falling back to a live Discord fetch via discord_passwords.py
@@ -48,9 +53,10 @@ re-encrypt archives under a new password without warning, so this doesn't
 assume "first thing that ever worked" stays valid forever, nor does it
 re-launch a browser on every single archive.
 
-The archive itself is left in place either way — this only ever adds files,
-never deletes, and extracted-vs-failed state is tracked in creator_db so a
-repeat run doesn't burn time re-extracting or re-testing what already ran.
+Extracted-vs-failed state is tracked in creator_db so a repeat run doesn't
+burn time re-extracting or re-testing what already ran — including an
+archive that got trashed, since it no longer shows up in a directory scan
+at all.
 
 Usage:
     python scripts/extract_variant_archives.py [path] [creator_key]
@@ -200,10 +206,10 @@ def extract_one(archive_path: str, creator_key: str, base_path: str) -> bool:
     """Extract *archive_path* in place, renaming its funscripts with the archive's
     variant tag folded in and routing any bundled video through _extract_video()
     (no tag — see its docstring). *base_path* is the trash root, used both for a
-    video replaced during that routing and — if the archive held a video at all —
-    for the archive itself afterward, so a large already-extracted video doesn't
-    also linger duplicated inside its now-redundant zip. Returns True on success
-    (including "nothing new to do, already extracted before")."""
+    video replaced during that routing and, once everything the archive held is
+    safely extracted, for the archive itself — a successful run never leaves an
+    archive behind. Returns True on success (including "nothing new to do,
+    already extracted before")."""
     folder = os.path.dirname(archive_path)
     archive_stem = Path(archive_path).stem
 
@@ -265,18 +271,22 @@ def extract_one(archive_path: str, creator_key: str, base_path: str) -> bool:
         video_results = [_extract_video(os.path.join(tmp, f), folder, base_path) for f in videos]
         videos_saved = all(video_results)
 
-    if videos and videos_saved:
-        # Every bundled video is now fully represented on disk as its own
-        # extracted (or already-existing, AV-matched) file — keeping the
-        # archive too would just be a second, potentially huge copy of the
-        # same media sitting unused. Funscript-only archives are left in
-        # place (see module docstring): they're tiny, so there's no real
-        # duplication cost to justify removing them. A video left unresolved
-        # in _extract_video (same-name collision, not confirmed as a
-        # duplicate) also keeps the archive — it's the only remaining copy.
+    if videos_saved:
+        # Everything the archive held is now fully represented on disk —
+        # funscripts always are once we get here (extraction succeeded), and
+        # any bundled video is too (newly placed, or an already-existing
+        # AV-matched copy confirmed and kept) — so the archive itself never
+        # needs to stick around; no archives should be left behind by a
+        # successful run. videos_saved is vacuously True when the archive
+        # held no video at all (all([]) == True), so a funscript-only
+        # archive is trashed here same as a bundled one. The one case that
+        # keeps the archive is a video left unresolved in _extract_video
+        # (same-name collision, not confirmed as a duplicate) — it's the
+        # only remaining copy of that video.
         trash_dest = action_log.soft_delete(base_path, archive_path)
         action_log.record('soft_delete', orig_path=archive_path, trash_path=trash_dest)
-        print(f'  [extract] {os.path.basename(archive_path)} — video extracted, archive trashed')
+        reason = 'video extracted' if videos else 'funscripts extracted'
+        print(f'  [extract] {os.path.basename(archive_path)} — {reason}, archive trashed')
 
     creator_db.record_extraction(archive_path, 'extracted', password_used)
     return True
