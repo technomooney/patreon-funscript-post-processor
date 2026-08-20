@@ -34,7 +34,12 @@ every intensity variant, only the scripts differ — and is instead routed
 through the same AV-similarity + resolution comparison downloadContent.py
 already uses when a post links the same video twice (see
 _extract_video()), which also guards against the collision risk of two
-variant archives each bundling their own copy of the same video.
+variant archives each bundling their own copy of the same video. Once a
+bundled video is safely extracted, the archive itself is trashed — keeping
+a multi-hundred-MB zip around after pulling its video out would just be a
+second, unused copy of the same media. A funscript-only archive is left in
+place as before (see extract_one()): there's no real duplication cost to
+justify removing it.
 
 Passwords are resolved from creator_db.py's SQLite history first (fastest,
 no browser), falling back to a live Discord fetch via discord_passwords.py
@@ -134,18 +139,30 @@ def _funscript_base_name(extracted_dir: str) -> str | None:
     return None
 
 
-def _extract_video(tmp_video_path: str, folder: str, trash_root: str) -> None:
+def _extract_video(tmp_video_path: str, folder: str, trash_root: str) -> bool:
     """Move a video extracted from a bundled archive into *folder*.
 
     No variant tag gets folded in — unlike funscripts, the video is the same
     file shared across every intensity variant. That means two variant
-    archives for the same post can each bundle their own copy of it, so this
-    mirrors the AV-similarity + resolution check downloadContent.py already
-    applies when a post links the same video twice (see project memory
-    project_quality_replace_on_av_match): if an AV-similar video is already
-    in *folder*, keep whichever resolution fits MAX_RESOLUTION better and
-    name the survivor after whichever copy is kept (preserves any existing
-    funscript-name match); otherwise the video is new and is moved in as-is.
+    archives for the same post can each bundle their own copy of it — and a
+    post can *also* already have this same video sitting in *folder* from its
+    plain, unencrypted "video link" (downloaded before the archive was even
+    opened) — so this mirrors the AV-similarity + resolution check
+    downloadContent.py already applies when a post links the same video
+    twice (see project memory project_quality_replace_on_av_match): if an
+    AV-similar video is already in *folder*, keep whichever resolution fits
+    MAX_RESOLUTION better — replacing the existing file only on a genuine
+    upgrade, keeping it as-is (and discarding the archive's copy) if the
+    already-downloaded one is equal or better — naming the survivor after
+    whichever copy is kept (preserves any existing funscript-name match).
+    A video with no AV-similar match in *folder* is new and is moved in
+    as-is.
+
+    Returns True if the video ended up safely represented on disk somewhere
+    (newly placed, or an existing copy confirmed and kept) — False if it was
+    left behind, unsaved, in the tmp dir (an unresolved same-name collision),
+    meaning the source archive still holds the only copy and must not be
+    trashed.
     """
     filename = os.path.basename(tmp_video_path)
     similar = _is_av_similar(tmp_video_path, folder)
@@ -165,25 +182,28 @@ def _extract_video(tmp_video_path: str, folder: str, trash_root: str) -> None:
         else:
             print(f'  [extract] {filename} — AV-similar to existing '
                   f'{os.path.basename(similar)}, keeping existing (equal/better resolution)')
-        return
+        return True
 
     dest_path = os.path.join(folder, filename)
     if os.path.exists(dest_path):
         print(f'  [extract] {filename} — a same-named file already exists and wasn\'t '
               'recognized as the same video (ffmpeg/fpcalc unavailable, or genuinely '
               'different) — leaving both; check by hand')
-        return
+        return False
     shutil.move(tmp_video_path, dest_path)
     action_log.record('copy', dst=dest_path)
     print(f'  [extract] {filename}')
+    return True
 
 
 def extract_one(archive_path: str, creator_key: str, base_path: str) -> bool:
     """Extract *archive_path* in place, renaming its funscripts with the archive's
     variant tag folded in and routing any bundled video through _extract_video()
-    (no tag — see its docstring). *base_path* is only used as the trash root for
-    a video replaced during that routing. Returns True on success (including
-    "nothing new to do, already extracted before")."""
+    (no tag — see its docstring). *base_path* is the trash root, used both for a
+    video replaced during that routing and — if the archive held a video at all —
+    for the archive itself afterward, so a large already-extracted video doesn't
+    also linger duplicated inside its now-redundant zip. Returns True on success
+    (including "nothing new to do, already extracted before")."""
     folder = os.path.dirname(archive_path)
     archive_stem = Path(archive_path).stem
 
@@ -239,8 +259,24 @@ def extract_one(archive_path: str, creator_key: str, base_path: str) -> bool:
                 action_log.record('copy', dst=dest_path)
                 print(f'  [extract] {os.path.basename(dest_path)}')
 
-        for f in videos:
-            _extract_video(os.path.join(tmp, f), folder, base_path)
+        # List comprehension, not all(generator, ...) — every video must actually get
+        # processed even if an earlier one comes back unresolved; short-circuiting
+        # would skip later videos' side effects (moving/matching them) entirely.
+        video_results = [_extract_video(os.path.join(tmp, f), folder, base_path) for f in videos]
+        videos_saved = all(video_results)
+
+    if videos and videos_saved:
+        # Every bundled video is now fully represented on disk as its own
+        # extracted (or already-existing, AV-matched) file — keeping the
+        # archive too would just be a second, potentially huge copy of the
+        # same media sitting unused. Funscript-only archives are left in
+        # place (see module docstring): they're tiny, so there's no real
+        # duplication cost to justify removing them. A video left unresolved
+        # in _extract_video (same-name collision, not confirmed as a
+        # duplicate) also keeps the archive — it's the only remaining copy.
+        trash_dest = action_log.soft_delete(base_path, archive_path)
+        action_log.record('soft_delete', orig_path=archive_path, trash_path=trash_dest)
+        print(f'  [extract] {os.path.basename(archive_path)} — video extracted, archive trashed')
 
     creator_db.record_extraction(archive_path, 'extracted', password_used)
     return True
