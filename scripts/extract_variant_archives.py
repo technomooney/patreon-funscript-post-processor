@@ -292,13 +292,24 @@ def extract_one(archive_path: str, creator_key: str, base_path: str) -> bool:
     return True
 
 
-def scan_and_extract(base_path: str, creator_key: str | None = None) -> None:
+def scan_and_extract(base_path: str, creator_key: str | None = None, ignore_manual: bool = False) -> None:
+    """*ignore_manual*: process archives in '.manual'-marked folders too. Those
+    folders are skipped by default, same as every other automated script in
+    this project (fix_garbled_names, prefixFix, ...) -- .manual means "don't
+    touch this folder without a human looking first". This is meant as a
+    one-off override for a specific run, not a persisted setting."""
     base_path = os.path.normpath(base_path)
     creator_key = (creator_key or os.path.basename(base_path)).strip().lower()
     action_log.start('extract_variant_archives', base_path)
 
-    found = extracted = skipped = failed = 0
+    found = extracted = skipped = failed = manual_skipped = 0
     for root, _dirs, files in os.walk(base_path):
+        if '.manual' in files and not ignore_manual:
+            has_archive = any(f.lower().endswith(_ARCHIVE_EXTS) for f in files)
+            if has_archive:
+                print(f'  SKIP (manual)  {root}')
+                manual_skipped += 1
+            continue
         for f in files:
             if not f.lower().endswith(_ARCHIVE_EXTS):
                 continue
@@ -317,16 +328,20 @@ def scan_and_extract(base_path: str, creator_key: str | None = None) -> None:
                 failed += 1
 
     action_log.finish()
+    manual_note = f', {manual_skipped} folder(s) skipped (.manual)' if manual_skipped else ''
     print(f'\n[done] {found} archive(s) found — {extracted} extracted, '
-          f'{skipped} already done, {failed} failed.')
+          f'{skipped} already done, {failed} failed{manual_note}.')
 
 
 def _main() -> None:
     args = sys.argv[1:]
     path = args[0] if args else input('Enter full directory path to scan: ').strip()
     creator_key = args[1] if len(args) > 1 else None
+    ignore_manual = input(
+        'Also process folders marked .manual? (y/n, default n): '
+    ).strip().lower() == 'y'
     try:
-        scan_and_extract(path, creator_key)
+        scan_and_extract(path, creator_key, ignore_manual=ignore_manual)
     finally:
         try:
             import discord_passwords
