@@ -3016,6 +3016,10 @@ def _extract_mega_password(text: str) -> str | None:
 # doesn't change between mega links from the same creator in a single run.
 _discord_password_cache: dict[str, str | None] = {}
 
+# Password-protected variant archives (see extract_variant_archives.py) --
+# kept in sync with that script's own _ARCHIVE_EXTS.
+_VARIANT_ARCHIVE_EXTS = ('.rar', '.zip', '.7z')
+
 
 def _fetch_discord_password_cached(creator_key: str) -> str | None:
     """Look up *creator_key*'s latest Discord-posted password, once per run.
@@ -5216,6 +5220,20 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                     original_name = Path(_decode_filename(_last_fetch_original_name)).stem
                 else:
                     original_name = None
+
+                if downloaded.lower().endswith(_VARIANT_ARCHIVE_EXTS):
+                    # A password-protected variant archive (see
+                    # extract_variant_archives.py) -- get its creator's current
+                    # Discord password on record now, not only whenever
+                    # extraction eventually runs. fetch_password_history only
+                    # looks back a bounded number of messages, so a password
+                    # valid at download time can scroll out of that window
+                    # before a deferred extraction run ever looks it up;
+                    # capturing it here (cached per creator per run, same as
+                    # the mega-password lookup above) means creator_db already
+                    # has it on file regardless of how long extraction waits.
+                    _fetch_discord_password_cached(
+                        os.path.basename(os.path.normpath(base_path)).strip().lower())
 
                 kept = _save_downloaded(downloaded, folder, newly_downloaded,
                                         original_name=original_name)
