@@ -82,17 +82,25 @@ def _folder_key_map(folders):
     return result
 
 
-def _unique_dest_path(dest_path):
-    """If dest_path exists, find a free ' (synced N)' variant."""
+def _backup_existing_file(dest_path):
+    """If dest_path exists, move it aside to '<name>.bak' so the incoming file
+    can be copied in under its real name instead of spawning a ' (synced N)'
+    sibling. Only one backup generation is kept -- a prior .bak from an
+    earlier sync is overwritten, not stacked into .bak2, .bak3, ...
+
+    Returns the backup path, or None if there was nothing to back up.
+
+    Only called for a file find_missing_files already proved differs by
+    content from anything in the destination -- never based on the name
+    alone -- so a same-name/same-content file is left untouched and simply
+    not re-copied.
+    """
     if not os.path.exists(dest_path):
-        return dest_path
-    base, ext = os.path.splitext(dest_path)
-    n = 2
-    while True:
-        candidate = f"{base} (synced {n}){ext}"
-        if not os.path.exists(candidate):
-            return candidate
-        n += 1
+        return None
+    backup = f"{dest_path}.bak"
+    os.replace(dest_path, backup)
+    action_log.record('rename', old_path=dest_path, new_path=backup)
+    return backup
 
 
 def find_missing_files(src_root, dest_root, funscripts_only):
@@ -208,7 +216,10 @@ def sync_existing_folders(source, destination, common_folders):
     print("Checks folders that already exist in both source and destination")
     print("for files present in source but missing from the destination —")
     print("compared by content, not just filename, so a file already copied")
-    print("under a different name won't be re-copied.")
+    print("under a different name won't be re-copied. If a same-named file")
+    print("exists but its content differs, the old one is renamed to")
+    print("<filename>.bak (one generation kept) instead of copying the new")
+    print("one in as a ' (synced 2)' sibling.")
     print()
 
     if not common_folders:
@@ -258,10 +269,13 @@ def sync_existing_folders(source, destination, common_folders):
     errors = 0
     for i, (folder, src_full, rel) in enumerate(all_missing, 1):
         dest_root = os.path.join(destination, folder)
-        dest_path = _unique_dest_path(os.path.join(dest_root, rel))
+        dest_path = os.path.join(dest_root, rel)
         print(f"  [{i}/{len(all_missing)}] {folder}/{rel}")
         try:
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            backup = _backup_existing_file(dest_path)
+            if backup:
+                print(f"    (existing file differs -- backed up to {os.path.basename(backup)})")
             shutil.copy2(src_full, dest_path)
             action_log.record('copy', dst=dest_path)
             copied += 1
