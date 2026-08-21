@@ -803,15 +803,20 @@ def _sanitize_filename_stem(name: str) -> str:
     return re.sub(r'\s+', ' ', cleaned).strip()
 
 
-def _page_title_override(title: str, site_suffix_re: re.Pattern) -> str | None:
-    """Turn a browser page <title> into an override_name for _direct_fetch.
+def _page_title_override(title: str, site_suffix_re: re.Pattern | None = None) -> str | None:
+    """Turn a page/video title into an override_name for _direct_fetch (or, for a
+    non-_direct_fetch handler like iwara's yt-dlp path, straight into
+    _last_fetch_original_name).
 
-    Strips a trailing site-name suffix (e.g. ' - Hanime1.me'), sanitizes the
-    result for filesystem use, and appends a harmless placeholder extension
-    so downstream Path(...).stem calls don't truncate at an internal dot in
-    the real title (e.g. 'Vol. 2'). Returns None if nothing usable is left.
+    Strips a trailing site-name suffix (e.g. ' - Hanime1.me') when
+    *site_suffix_re* is given -- a browser <title> tag carries one, a yt-dlp
+    metadata title doesn't -- sanitizes the result for filesystem use, and
+    appends a harmless placeholder extension so downstream Path(...).stem
+    calls don't truncate at an internal dot in the real title (e.g. 'Vol. 2').
+    Returns None if nothing usable is left.
     """
-    cleaned = _sanitize_filename_stem(site_suffix_re.sub('', title or ''))
+    text = site_suffix_re.sub('', title or '') if site_suffix_re else (title or '')
+    cleaned = _sanitize_filename_stem(text)
     return f'{cleaned}.title' if cleaned else None
 
 
@@ -2598,14 +2603,16 @@ def _iwara_ytdlp_auth_args() -> list[str]:
     return []
 
 
-def _iwara_ytdlp_formats(ytdlp_prefix: list[str], url: str, auth_args: list[str]) -> list[dict] | None:
-    """Return yt-dlp's reported format list for *url*, or None on failure."""
+def _iwara_ytdlp_metadata(ytdlp_prefix: list[str], url: str, auth_args: list[str]) -> dict | None:
+    """Return yt-dlp's full -j metadata dict for *url* (formats, title, ...), or None
+    on failure. One call covers both the format list and the real video title --
+    no separate request needed for either."""
     cmd = [*ytdlp_prefix, *auth_args, '--no-warnings', '--no-playlist', '-j', url]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if result.returncode != 0:
             return None
-        return json.loads(result.stdout).get('formats') or []
+        return json.loads(result.stdout)
     except (subprocess.SubprocessError, OSError, json.JSONDecodeError):
         return None
 
@@ -2646,13 +2653,23 @@ def _download_iwara_ytdlp(url: str, download_dir: str) -> bool:
     API client in _download_iwara_api. yt-dlp has no format filter that
     understands iwara's unsized 'Source' format, so the format list is fetched
     separately and scored with the same policy as the API handler.
+
+    yt-dlp always writes the fixed '_iwara_ytdlp_temp' stem regardless of the
+    real title (-o's %(title)s isn't used, since the chosen format id has to be
+    picked from the metadata first anyway) -- so on success this sets
+    _last_fetch_original_name from that same metadata's 'title' field, the same
+    way _direct_fetch does for the other iwara tiers. Without it, this being
+    the primary tier now (yt-dlp fixed upstream, see project memory) meant
+    every iwara download fell back to saving under the literal temp name.
     """
+    global _last_fetch_original_name
     ytdlp_prefix = _ytdlp_cmd()
     if ytdlp_prefix is None:
         return False
 
     auth_args = _iwara_ytdlp_auth_args()
-    formats = _iwara_ytdlp_formats(ytdlp_prefix, url, auth_args)
+    metadata = _iwara_ytdlp_metadata(ytdlp_prefix, url, auth_args)
+    formats = (metadata or {}).get('formats') or []
     if not formats:
         print('  [iwara.tv/yt-dlp] could not list formats')
         return False
@@ -2672,7 +2689,12 @@ def _download_iwara_ytdlp(url: str, download_dir: str) -> bool:
     ]
     try:
         result = subprocess.run(cmd, timeout=3600)
-        return result.returncode == 0
+        if result.returncode != 0:
+            return False
+        title = metadata.get('title')
+        if title:
+            _last_fetch_original_name = _page_title_override(title)
+        return True
     except subprocess.TimeoutExpired:
         print('  [iwara.tv/yt-dlp] timed out after 1 hour')
     except Exception as e:
