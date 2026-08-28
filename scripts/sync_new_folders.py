@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -32,6 +33,52 @@ def _sha256_file(path, chunk_size=1 << 20):
                 break
             h.update(chunk)
     return h.hexdigest()
+
+
+def _funscript_data(path):
+    """The actual point data of a .funscript -- actions, inverted, range --
+    the fields that affect playback -- as a hashable fingerprint. Ignores
+    'metadata' (creator/title/tags/...) and 'version', and is immune to
+    pure JSON formatting differences (whitespace, key order) -- so a copy
+    the Patreon downloader re-touched or re-saved on a later pass, without
+    changing a single point, still fingerprints identically.
+
+    None if the file isn't parseable in the expected shape (corrupt, or
+    not actually a funscript despite the extension) -- the caller falls
+    back to a raw byte comparison rather than silently treating it as "no
+    match anywhere".
+    """
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        actions = data['actions']
+        points = tuple((a['at'], a['pos']) for a in actions)
+        return (points, data.get('inverted', False), data.get('range', 90))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError):
+        return None
+
+
+def _content_key(path):
+    """Fingerprint used to decide whether two files hold the same data.
+
+    A parseable .funscript is compared by its point data (see
+    _funscript_data), not its bytes -- format/whitespace/metadata changes
+    don't matter, only whether the actual points, inverted flag, and range
+    match. Everything else -- a non-funscript file, or a .funscript that
+    fails to parse -- falls back to a raw SHA256 of its bytes.
+
+    Note this only ever compares one *specific* file against another --
+    a source video's .pitch.funscript missing from the destination while
+    its .twist.funscript is already there (or vice versa) is a per-file
+    question, not a folder-wide one, so a script simply lacking an axis
+    another one has is expected and never flagged as some kind of
+    inconsistency here.
+    """
+    if path.lower().endswith(_FUNSCRIPT_EXT):
+        data = _funscript_data(path)
+        if data is not None:
+            return ('funscript', data)
+    return ('bytes', _sha256_file(path))
 
 
 def _scoped_files(root, funscripts_only):
@@ -107,15 +154,27 @@ def find_missing_files(src_root, dest_root, funscripts_only):
     """Return a list of (src_full_path, relpath) present in src_root but not,
     by content, anywhere in dest_root (scoped to funscripts_only if set).
 
-    A file counts as already present if a byte-identical file exists in the
+    A file counts as already present if a matching file exists in the
     destination, regardless of filename — a file that was renamed after
-    copying (e.g. by fix_garbled_names) is not re-copied.
+    copying (e.g. by fix_garbled_names) is not re-copied. For a
+    .funscript, "matching" means the same points (see _content_key), not
+    the same bytes, so a copy the downloader re-touched/re-saved with
+    reformatted JSON isn't flagged as missing just because its byte size
+    changed — which also means funscripts aren't sized-bucketed the way
+    other files are below (two byte-different files can hold identical
+    points). Everything else still matches on exact byte content.
     """
     dest_rel_files = list(_scoped_files(dest_root, funscripts_only))
+
+    dest_funscript_keys = set()
     dest_size_map = defaultdict(list)
     for rel in dest_rel_files:
+        full = os.path.join(dest_root, rel)
+        if rel.lower().endswith(_FUNSCRIPT_EXT):
+            dest_funscript_keys.add(_content_key(full))
+            continue
         try:
-            size = os.path.getsize(os.path.join(dest_root, rel))
+            size = os.path.getsize(full)
         except OSError:
             continue
         dest_size_map[size].append(rel)
@@ -130,6 +189,12 @@ def find_missing_files(src_root, dest_root, funscripts_only):
     missing = []
     for rel in _scoped_files(src_root, funscripts_only):
         src_full = os.path.join(src_root, rel)
+
+        if rel.lower().endswith(_FUNSCRIPT_EXT):
+            if _content_key(src_full) not in dest_funscript_keys:
+                missing.append((src_full, rel))
+            continue
+
         try:
             size = os.path.getsize(src_full)
         except OSError:
