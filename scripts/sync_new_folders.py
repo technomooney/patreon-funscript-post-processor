@@ -386,6 +386,22 @@ def sync_existing_folders(source, destination, common_folders, *,
     print(f"Done — copied: {copied}, errors: {errors}")
 
 
+def run(source, destination, *, auto_confirm=None, run_symmetry=None,
+        funscripts_only=None, auto_confirm_copy=None):
+    """sync_new_folders() + sync_existing_folders() as one call, wrapped in
+    the action_log start/finish pair main() below used to own directly --
+    so a caller (run_unattended.py) gets correct undo journaling without
+    needing to know that detail. *source*/*destination* must already be
+    validated, existing, absolute paths. The four keyword params bypass
+    the same prompts sync_existing_folders()/sync_new_folders() already
+    document; each stays interactive when left None."""
+    action_log.start('sync_new_folders', destination)
+    common_folders = sync_new_folders(source, destination, auto_confirm=auto_confirm)
+    sync_existing_folders(source, destination, common_folders, run_symmetry=run_symmetry,
+                           funscripts_only=funscripts_only, auto_confirm_copy=auto_confirm_copy)
+    action_log.finish()
+
+
 def main():
     print()
     print("========================================")
@@ -414,10 +430,7 @@ def main():
         print("Source and destination are the same directory — nothing to do.")
         return
 
-    action_log.start('sync_new_folders', destination)
-    common_folders = sync_new_folders(source, destination)
-    sync_existing_folders(source, destination, common_folders)
-    action_log.finish()
+    run(source, destination)
 
 
 if __name__ == "__main__":
