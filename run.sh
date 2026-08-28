@@ -112,6 +112,14 @@ while true; do
     echo "     scripts/creator_scripts/ to add one without editing this menu —"
     echo "     see scripts/creator_scripts/README.md for the contract."
     echo ""
+    echo "  p) Consolidate packs      — for creators (e.g. Pize) who repost"
+    echo "     already-released videos+scripts inside a later collection post:"
+    echo "     finds a video sitting with no local funscript next to it whose"
+    echo "     script only survives in one of these packs (confirmed by actual"
+    echo "     audio/video comparison, not filename), keeps whichever copy fits"
+    echo "     MAX_RESOLUTION better in the pack folder, and removes the"
+    echo "     redundant copy — not every creator does this, most won't need it"
+    echo ""
     echo "  u) Update dependencies    — upgrade pip packages in the venv (incl. yt-dlp,"
     echo "     undetected-chromedriver, selenium) — run this if downloads start failing"
     echo "     after a site or browser update"
@@ -121,14 +129,15 @@ while true; do
     echo "     question — run this if a saved credential expires or gets revoked"
     echo ""
     echo "  z) Undo last action       — reverse the most recent renames/copies/dedupe"
-    echo "     from options 1-8, or a creator script (s) (one level deep — running any"
-    echo "     of them again replaces what 'last action' means)"
+    echo "     from options 1-8, a creator script (s), or consolidate packs (p)"
+    echo "     (one level deep — running any of them again replaces what 'last"
+    echo "     action' means)"
     echo ""
     echo "  q) Exit"
     echo ""
 
     while true; do
-        read -rp "Choose a program to run (1-10, s=creator scripts, u=update deps, c=update creds, z=undo last, q=exit): " choice
+        read -rp "Choose a program to run (1-10, s=creator scripts, p=consolidate packs, u=update deps, c=update creds, z=undo last, q=exit): " choice
         case "$choice" in
             q|Q)
                 echo ""
@@ -150,6 +159,11 @@ while true; do
             s|S)
                 echo ""
                 .venv/bin/python scripts/creator_scripts_menu.py
+                break
+                ;;
+            p|P)
+                echo ""
+                .venv/bin/python scripts/consolidate_packs.py
                 break
                 ;;
             z|Z)
@@ -208,7 +222,7 @@ while true; do
                 break
                 ;;
             *)
-                echo "Invalid choice. Please enter 1-10, s, u, c, z, or q to exit."
+                echo "Invalid choice. Please enter 1-10, s, p, u, c, z, or q to exit."
                 ;;
         esac
     done

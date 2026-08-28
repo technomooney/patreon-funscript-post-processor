@@ -59,11 +59,20 @@ def _undo_soft_delete(entry: dict) -> str:
     return f'restored from trash: {os.path.basename(orig_path)}'
 
 
+def _undo_create_marker(entry: dict) -> str:
+    path = entry['path']
+    if not os.path.exists(path):
+        return f'SKIP — marker already gone: {path}'
+    os.remove(path)
+    return f'removed marker: {os.path.basename(path)}'
+
+
 _HANDLERS = {
     'rename': _undo_rename,
     'copy': _undo_copy,
     'copytree': _undo_copytree,
     'soft_delete': _undo_soft_delete,
+    'create_marker': _undo_create_marker,
 }
 
 

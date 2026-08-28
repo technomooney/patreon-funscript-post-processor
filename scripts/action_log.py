@@ -57,7 +57,9 @@ def start(script: str, root_dir: str) -> None:
 
 
 def record(op: str, **fields) -> None:
-    """Record one reversible change. op is 'rename', 'copy', 'copytree', or 'soft_delete'."""
+    """Record one reversible change. op is 'rename', 'copy', 'copytree',
+    'soft_delete', or 'create_marker' (a plain marker file undo_last_action
+    just deletes -- e.g. consolidate_packs.py's '.manual')."""
     entry = {'op': op}
     entry.update(fields)
     _entries.append(entry)
