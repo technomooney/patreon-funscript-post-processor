@@ -43,22 +43,8 @@ fi
 DEPS_MARKER=".venv/.deps_updated_at"
 DEPS_MAX_AGE_DAYS=7
 
-while true; do
+print_help() {
     echo ""
-    echo "========================================"
-    echo "  Patreon Downloader Post-Processor"
-    echo "========================================"
-    echo ""
-    if [ -f "$DEPS_MARKER" ]; then
-        deps_age_days=$(( ($(date +%s) - $(cat "$DEPS_MARKER")) / 86400 ))
-        if [ "$deps_age_days" -gt "$DEPS_MAX_AGE_DAYS" ]; then
-            echo "  [deps] Dependencies are $deps_age_days day(s) old — choose 'ru' below to update."
-            echo ""
-        fi
-    else
-        echo "  [deps] Dependency update status unknown — choose 'ru' below to update."
-        echo ""
-    fi
     echo "  1) Sync new folders       — copy folders that are new in the Patreon"
     echo "     downloader output into the post-processor working directory, then"
     echo "     optionally check existing folders for files missing by content"
@@ -144,15 +130,58 @@ while true; do
     echo "     (set up via 'sa') start to finish with no prompts; writes its own"
     echo "     log file under that creator's _reports/ folder"
     echo ""
+}
+
+while true; do
+    echo ""
+    echo "========================================"
+    echo "  Patreon Downloader Post-Processor"
+    echo "========================================"
+    echo ""
+    if [ -f "$DEPS_MARKER" ]; then
+        deps_age_days=$(( ($(date +%s) - $(cat "$DEPS_MARKER")) / 86400 ))
+        if [ "$deps_age_days" -gt "$DEPS_MAX_AGE_DAYS" ]; then
+            echo "  [deps] Dependencies are $deps_age_days day(s) old — choose 'ru' below to update."
+            echo ""
+        fi
+    else
+        echo "  [deps] Dependency update status unknown — choose 'ru' below to update."
+        echo ""
+    fi
+    echo "  1) Sync new folders          — copy new folders in, then sync existing ones (run first)"
+    echo "  2) Fix file prefixes         — strip the attachment ID prefix from filenames"
+    echo "  3) Download content          — download videos/files linked in description.json"
+    echo "  4) Extract variant archives  — extract password-protected per-variant script archives"
+    echo "  5) Funscript-metadata download — fetch a video from a funscript's own video_url field"
+    echo "  6) Fix garbled names         — 4-pass cleanup: extensions, mojibake, funscript-video match"
+    echo "  7) Check funscript match     — find videos missing a funscript, suggest/auto-rename"
+    echo "  8) Dedupe (+ consolidate)    — remove exact duplicates, fix cross-folder pack redundancy"
+    echo "  9) Generate HTML             — build description.html in each post folder"
+    echo "  10) Audit report             — build _reports/audit_report.html from folder logs"
+    echo ""
+    echo "  n)  Creator naming scripts   — one-creator naming-quirk fixes (drop-in plugins)"
+    echo "  p)  Consolidate packs        — fix videos whose script only lives in a repost/pack folder"
+    echo "  sa) Set up unattended run    — configure a creator's steps/order/answers"
+    echo "  sc) Update credentials       — re-enter a service login/API key"
+    echo "  ru) Update dependencies      — upgrade pip packages in the venv"
+    echo "  rz) Undo last action         — reverse the most recent change"
+    echo "  ra) Run unattended           — replay a creator's saved config, zero prompts"
+    echo ""
+    echo "  h) Help — full description of every option above"
+    echo ""
     echo "  q) Exit"
     echo ""
 
     while true; do
-        read -rp "Choose a program to run (1-10, n=creator scripts, p=consolidate packs, sa/sc=settings, ru/rz/ra=run, q=exit): " choice
+        read -rp "Choose a program to run (1-10, n, p, sa, sc, ru, rz, ra, h=help, q=exit): " choice
         case "$choice" in
             q|Q)
                 echo ""
                 exit 0
+                ;;
+            h|H)
+                print_help
+                break
                 ;;
             ru|RU)
                 echo ""
@@ -243,7 +272,7 @@ while true; do
                 break
                 ;;
             *)
-                echo "Invalid choice. Please enter 1-10, n, p, sa, sc, ru, rz, ra, or q to exit."
+                echo "Invalid choice. Please enter 1-10, n, p, sa, sc, ru, rz, ra, h, or q to exit."
                 ;;
         esac
     done
