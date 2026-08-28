@@ -103,15 +103,30 @@ def _try_fix_mojibake(name: str) -> str | None:
 # Main workflow
 # ---------------------------------------------------------------------------
 
-def main():
-    filePath, extList = getUserInput()
-    print(extList)
+def run(filePath: str, extList: list, reprocess_all: bool) -> None:
+    """The actual work, with every choice already made -- no prompts. Used
+    directly by run_unattended.py; main() below is just the interactive
+    wrapper that collects those choices first."""
     fileList, fileRoots = getFileList(filePath, extList)
 
     # Group files by folder so we can skip/log at the folder level.
     folder_map: dict[str, list[str]] = {}
     for file, root in zip(fileList, fileRoots):
         folder_map.setdefault(root, []).append(file)
+
+    action_log.start('prefixFix', os.path.abspath(filePath))
+    for folder in sorted(folder_map):
+        if not reprocess_all and folder_log.has_run(folder, 'prefixFix'):
+            print(f'  [skip] already processed: {os.path.basename(folder)}')
+            continue
+        renames = processAndRename(folder_map[folder], [folder] * len(folder_map[folder]))
+        folder_log.append_run(folder, 'prefixFix', renames=renames)
+    action_log.finish()
+
+
+def main():
+    filePath, extList = getUserInput()
+    print(extList)
 
     # Normal runs skip folders folder_log already marked done - cheap, and
     # processAndRename is a no-op on anything already prefix-free anyway, but
@@ -124,14 +139,7 @@ def main():
     ).strip().lower()
     reprocess_all = reprocess_ans == 'y'
 
-    action_log.start('prefixFix', os.path.abspath(filePath))
-    for folder in sorted(folder_map):
-        if not reprocess_all and folder_log.has_run(folder, 'prefixFix'):
-            print(f'  [skip] already processed: {os.path.basename(folder)}')
-            continue
-        renames = processAndRename(folder_map[folder], [folder] * len(folder_map[folder]))
-        folder_log.append_run(folder, 'prefixFix', renames=renames)
-    action_log.finish()
+    run(filePath, extList, reprocess_all)
 
 
 def getUserInput():
