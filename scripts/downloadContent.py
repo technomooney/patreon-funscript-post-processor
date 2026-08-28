@@ -28,6 +28,7 @@ from selenium.common.exceptions import TimeoutException, WebDriverException
 import urllib3.exceptions
 import action_log
 import folder_log
+import funscript_utils
 
 load_dotenv(os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '.env')))
 
@@ -4125,14 +4126,25 @@ _DEDUP_EXCLUDED_FILES = {'.manual', '.links', folder_log.FILENAME, action_log.JO
 
 
 def _dedup_existing(base_path: str) -> int:
-    """Hash every file under *base_path* and remove exact duplicates.
+    """Remove exact duplicates under *base_path*.
 
-    For each set of identical files the oldest (earliest mtime) is kept;
-    all others are moved into a '.trash' folder rather than deleted
-    outright — recoverable via the undo-last-action menu option while it's
-    still the most recent run, and by hand from '.trash' itself for up to
-    TRASH_RETENTION_DAYS (default 14) afterward. Returns the number of
-    files removed.
+    Every file is fingerprinted first: a '.funscript' by its actual point
+    data (actions/inverted/range — see funscript_utils.funscript_data), not
+    its bytes, so two copies with identical points but different JSON
+    formatting or a different 'metadata' block still count as the same
+    file; everything else (and a funscript that fails to parse) by a plain
+    byte hash, as before.
+
+    For each set of identical files, which one is kept differs by type:
+    a funscript group keeps whichever copy has the richest 'metadata'
+    (most non-empty fields — video_url, title, tags, ...), since the point
+    data is identical either way and a richer copy is strictly more useful;
+    everything else keeps the oldest (earliest mtime), same as always.
+    Either way, all the other copies are moved into a '.trash' folder
+    rather than deleted outright — recoverable via the undo-last-action
+    menu option while it's still the most recent run, and by hand from
+    '.trash' itself for up to TRASH_RETENTION_DAYS (default 14) afterward.
+    Returns the number of files removed.
 
     This project's own per-folder bookkeeping files (_DEDUP_EXCLUDED_FILES)
     are never candidates, regardless of content — see that constant's
@@ -4166,11 +4178,22 @@ def _dedup_existing(base_path: str) -> int:
                 candidates.append(full)
 
     total = len(candidates)
-    hash_to_paths: dict[str, list[str]] = {}
+    hash_to_paths: dict[tuple, list[str]] = {}
 
     completed = 0
-    def _hash_one(fpath: str) -> tuple[str, str]:
-        return fpath, _file_hash(fpath, show_progress=False)
+    def _hash_one(fpath: str) -> tuple[str, tuple]:
+        # A .funscript is fingerprinted by its actual point data (see
+        # funscript_utils.funscript_data), not its bytes, so a copy that
+        # got re-touched/re-saved with reformatted JSON -- or just a
+        # richer/thinner 'metadata' block -- still groups with its
+        # content-identical siblings instead of surviving as a false
+        # "distinct" file. Falls back to the plain byte hash for anything
+        # else, and for a funscript that fails to parse.
+        if fpath.lower().endswith(funscript_utils.FUNSCRIPT_EXT):
+            data = funscript_utils.funscript_data(fpath)
+            if data is not None:
+                return fpath, ('funscript', data)
+        return fpath, ('bytes', _file_hash(fpath, show_progress=False))
 
     _env_threads = os.getenv('DEDUP_THREADS', '').strip()
     verbose = os.getenv('DEDUP_VERBOSE', 'false').strip().lower() not in ('false', '0', 'no')
@@ -4209,10 +4232,19 @@ def _dedup_existing(base_path: str) -> int:
 
     removed = 0
     try:
-        for paths in hash_to_paths.values():
+        for key, paths in hash_to_paths.items():
             if len(paths) < 2:
                 continue
-            paths.sort(key=os.path.getmtime)   # oldest first
+            if key[0] == 'funscript':
+                # Same points/inverted/range (that's what grouped them here) --
+                # prefer whichever copy carries more descriptive metadata
+                # (video_url, title, tags, ...) over whichever is merely
+                # older, since a richer copy is strictly more useful and the
+                # data itself is identical either way. Oldest-first only
+                # breaks a tie when richness is equal too.
+                paths.sort(key=lambda p: (-funscript_utils.metadata_richness(p), os.path.getmtime(p)))
+            else:
+                paths.sort(key=os.path.getmtime)   # oldest first
             keeper = paths[0]
             for dup in paths[1:]:
                 print(f'  [dedup] keeping  {_safe(os.path.basename(keeper))}')

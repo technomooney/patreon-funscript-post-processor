@@ -1,14 +1,14 @@
 import hashlib
-import json
 import os
 import re
 import shutil
 from collections import defaultdict
 
 import action_log
+import funscript_utils
 
 _JUNK_NAMES = {'thumbs.db', 'desktop.ini'}
-_FUNSCRIPT_EXT = '.funscript'
+_FUNSCRIPT_EXT = funscript_utils.FUNSCRIPT_EXT
 
 # Patreon post IDs run 6-9 digits in every folder name observed in this
 # project (e.g. "[167073603] 2026-08-18 title"). Matching folders by this
@@ -35,37 +35,15 @@ def _sha256_file(path, chunk_size=1 << 20):
     return h.hexdigest()
 
 
-def _funscript_data(path):
-    """The actual point data of a .funscript -- actions, inverted, range --
-    the fields that affect playback -- as a hashable fingerprint. Ignores
-    'metadata' (creator/title/tags/...) and 'version', and is immune to
-    pure JSON formatting differences (whitespace, key order) -- so a copy
-    the Patreon downloader re-touched or re-saved on a later pass, without
-    changing a single point, still fingerprints identically.
-
-    None if the file isn't parseable in the expected shape (corrupt, or
-    not actually a funscript despite the extension) -- the caller falls
-    back to a raw byte comparison rather than silently treating it as "no
-    match anywhere".
-    """
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        actions = data['actions']
-        points = tuple((a['at'], a['pos']) for a in actions)
-        return (points, data.get('inverted', False), data.get('range', 90))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError):
-        return None
-
-
 def _content_key(path):
     """Fingerprint used to decide whether two files hold the same data.
 
     A parseable .funscript is compared by its point data (see
-    _funscript_data), not its bytes -- format/whitespace/metadata changes
-    don't matter, only whether the actual points, inverted flag, and range
-    match. Everything else -- a non-funscript file, or a .funscript that
-    fails to parse -- falls back to a raw SHA256 of its bytes.
+    funscript_utils.funscript_data), not its bytes -- format/whitespace/
+    metadata changes don't matter, only whether the actual points, inverted
+    flag, and range match. Everything else -- a non-funscript file, or a
+    .funscript that fails to parse -- falls back to a raw SHA256 of its
+    bytes.
 
     Note this only ever compares one *specific* file against another --
     a source video's .pitch.funscript missing from the destination while
@@ -75,7 +53,7 @@ def _content_key(path):
     inconsistency here.
     """
     if path.lower().endswith(_FUNSCRIPT_EXT):
-        data = _funscript_data(path)
+        data = funscript_utils.funscript_data(path)
         if data is not None:
             return ('funscript', data)
     return ('bytes', _sha256_file(path))
