@@ -250,6 +250,41 @@ def _apply(base_path: str, candidate: dict) -> str:
     return note
 
 
+def consolidate(base_path: str) -> tuple[int, int]:
+    """Non-interactive entry point: find every candidate under *base_path*
+    and consolidate it immediately, no preview or confirmation prompt --
+    for a caller (dedupe_only.py's dedupe step) that already treats this
+    as routine, deliberate housekeeping the same way dedupe itself runs
+    with no per-file confirmation, relying on the same soft-delete/trash/
+    undo safety net rather than an interactive gate. Safe to call
+    unconditionally: a creator with no repost/pack pattern costs almost
+    nothing here (find_candidates' cheap first pass finds no name-matched
+    pairs at all, so the AV-comparison thread pool never has anything to
+    check). Returns (consolidated_count, error_count); does nothing and
+    returns (0, 0) if nothing is found.
+    """
+    candidates = find_candidates(base_path)
+    if not candidates:
+        return 0, 0
+    candidates = _resolve_actions(candidates)
+
+    print(f'\n[consolidate] {len(candidates)} pack-redundant video(s) found — consolidating...')
+    action_log.start(_SCRIPT_NAME, base_path)
+    done = errors = 0
+    for i, c in enumerate(candidates, 1):
+        print(f'  [{i}/{len(candidates)}] {os.path.basename(c["orig_folder"])}')
+        try:
+            note = _apply(base_path, c)
+            print(f'    {note}')
+            done += 1
+        except OSError as e:
+            print(f'    ERROR: {e}')
+            errors += 1
+    action_log.finish()
+    print(f'[consolidate] done — consolidated: {done}, errors: {errors}')
+    return done, errors
+
+
 def main() -> None:
     print()
     print("========================================")

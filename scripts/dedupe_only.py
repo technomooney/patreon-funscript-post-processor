@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-Run temp-file cleanup and duplicate removal without doing a full download.
+Run temp-file cleanup, duplicate removal, and pack consolidation without
+doing a full download. This is the only place _dedup_existing ever runs --
+downloads no longer auto-dedupe at the start of a run, so this is a
+deliberate step, not a background one.
 
 Usage
 -----

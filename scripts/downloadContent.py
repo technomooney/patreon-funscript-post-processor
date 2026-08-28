@@ -4150,8 +4150,15 @@ def _dedup_existing(base_path: str) -> int:
     are never candidates, regardless of content — see that constant's
     comment for why '.manual' specifically would otherwise be a real bug.
 
-    Controlled by the DEDUP_EXISTING env var (default 'true').
-    Set DEDUP_EXISTING=false in .env to skip this scan.
+    Finishes by running consolidate_packs.consolidate() over the same
+    base_path, no confirmation prompt (same reasoning as the rest of this
+    function) — a video whose only local funscript lives in a repost/
+    collection folder elsewhere is exactly the kind of cross-folder
+    redundancy plain exact-hash dedup above can't catch (different
+    encodes never hash the same), so it belongs in the same "clean up
+    this library" pass. Only called explicitly (the "Dedupe only" menu
+    option) — nothing in this project calls _dedup_existing automatically
+    anymore.
     """
     action_log.start('dedupe_only', base_path)
 
@@ -4162,7 +4169,7 @@ def _dedup_existing(base_path: str) -> int:
     print('\n[dedup] Cleaning temp files...')
     _cleanup_temp_files_recursive(base_path)
 
-    print('[dedup] Scanning for duplicates (set DEDUP_EXISTING=false to skip)...')
+    print('[dedup] Scanning for duplicates...')
 
     # Collect all candidate files first so we can show a total count.
     candidates: list[str] = []
@@ -4262,6 +4269,13 @@ def _dedup_existing(base_path: str) -> int:
         print(f'[dedup] done — removed {removed} duplicate(s) from {total} files scanned')
     else:
         print(f'[dedup] done — no duplicates found ({total} files scanned)')
+
+    try:
+        import consolidate_packs  # lazy: avoids a circular import at module load time
+        consolidate_packs.consolidate(base_path)
+    except Exception as e:
+        print(f'[dedup] consolidate-packs step failed: {e}')
+
     return removed
 
 
@@ -4983,11 +4997,6 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
         ans = input("Download even without a funscript file? (y/n, default n): ").strip().lower()
         require_funscript = ans != 'y'
 
-    # Deduplicate existing videos unless the user has opted out.
-    dedup_existing = os.getenv('DEDUP_EXISTING', 'true').strip().lower() not in ('false', '0', 'no')
-    if dedup_existing:
-        _dedup_existing(base_path)
-
     # Load known failures so they can be skipped (SKIP_KNOWN_FAILURES=true).
     skip_known = os.getenv('SKIP_KNOWN_FAILURES', 'false').strip().lower() not in ('false', '0', 'no')
     known_failure_links: set[str] = set()
@@ -5035,8 +5044,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
         print("Aborted.")
         return
 
-    # Separate run from _dedup_existing()'s own start()/finish() above — this
-    # becomes the new undo target once anything actually gets saved below, via
+    # Becomes the undo target once anything actually gets saved below, via
     # _save_downloaded()'s and the AV-replace block's action_log.record() calls.
     action_log.start(script_name, base_path)
 

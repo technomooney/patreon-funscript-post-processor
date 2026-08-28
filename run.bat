@@ -72,9 +72,11 @@ echo      report fuzzy-match suggestions, cross-checked against video/funscript
 echo      duration; can auto-rename a lone unmatched video to its funscript's
 echo      name when duration confirms it unambiguously (asks first)
 echo.
-echo   8^) Dedupe only            -- clean leftover temp files and remove
-echo      exact duplicate files (moved to .trash, undoable) without running
-echo      a full download
+echo   8^) Dedupe only            -- clean leftover temp files, remove exact
+echo      duplicate files (a funscript compares by its points, keeping
+echo      whichever copy has richer metadata -- not just whichever is oldest),
+echo      then runs pack consolidation (see 'p') over the same folder --
+echo      all moved to .trash, undoable, no full download involved
 echo.
 echo   9^) Generate HTML          -- build a description.html visual overview
 echo      in each post folder

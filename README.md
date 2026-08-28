@@ -115,7 +115,6 @@ All settings live in `.env` (created by setup). Key options:
 |----------|---------|-------------|
 | `BROWSER_HEADLESS` | `true` | Run Brave in headless mode. Set to `false` if sites block automation |
 | `MAX_RESOLUTION` | `1080` | Maximum download resolution |
-| `DEDUP_EXISTING` | `true` | Auto-dedup at the start of each download run. Option 7 always runs regardless of this |
 | `SKIP_KNOWN_FAILURES` | `false` | Skip links listed in `failed_downloads.csv` |
 | `DEDUP_VERBOSE` | `false` | Print one line per file during dedup. Warning: very noisy on large libraries |
 | `TRASH_RETENTION_DAYS` | `14` | Days a soft-deleted (dedup) file stays in `.trash` before permanent removal. Separate from the one-run-deep "undo last action" journal |
