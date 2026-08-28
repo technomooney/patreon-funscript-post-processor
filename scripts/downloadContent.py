@@ -4963,13 +4963,17 @@ def collect_tasks_from_funscript_metadata(base_path: str) -> tuple[list, list]:
     return tasks, failures
 
 
-def find_and_download_from_funscript_metadata(base_path: str) -> None:
+def find_and_download_from_funscript_metadata(
+        base_path: str, *, resume: bool | None = None, auto_confirm: bool | None = None) -> None:
     """Entry point for the 'download from funscript URL metadata' menu option —
     builds tasks via collect_tasks_from_funscript_metadata() and runs them
     through the normal find_and_download() engine (same domain handlers, same
     retry/AV-similarity/quality-replace logic, same undo/progress-resume
     support), just tagged with its own script name and report filenames so it
-    never overwrites — or gets confused with — the regular download run's."""
+    never overwrites — or gets confused with — the regular download run's.
+
+    *resume*/*auto_confirm*: passed straight through to find_and_download()
+    (there's no require_funscript prompt here — tasks are always prebuilt)."""
     tasks, failures = collect_tasks_from_funscript_metadata(base_path)
     if not tasks:
         print("No funscripts with a usable video_url and no existing video found.")
@@ -4979,11 +4983,14 @@ def find_and_download_from_funscript_metadata(base_path: str) -> None:
         base_path, tasks=tasks, failures=failures,
         script_name='downloadFromFunscriptMetadata',
         report_suffix='_funscript_metadata',
+        resume=resume, auto_confirm=auto_confirm,
     )
 
 
 def find_and_download(base_path: str, tasks: list | None = None, failures: list | None = None,
-                       script_name: str = 'downloadContent', report_suffix: str = ''):
+                       script_name: str = 'downloadContent', report_suffix: str = '',
+                       *, require_funscript: bool | None = None, resume: bool | None = None,
+                       auto_confirm: bool | None = None):
     """*tasks*/*failures*: pre-built task list (collect_tasks()'s return shape)
     to run instead of scanning description.json — used by
     find_and_download_from_funscript_metadata(). None (the default) collects
@@ -4991,11 +4998,18 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
     *script_name*/*report_suffix*: what to stamp folder_log entries and
     report filenames with, so a non-default caller's output doesn't overwrite
     or get confused with the regular download run's.
+
+    *require_funscript*/*resume*/*auto_confirm*: bypass this function's three
+    prompts (require_funscript only applies when *tasks* isn't prebuilt) when
+    given (True/False) instead of asking interactively. Each left as None
+    (the default) still prompts exactly as before. Used by
+    run_unattended.py to run this step with no prompts at all.
     """
     prebuilt = tasks is not None
     if not prebuilt:
-        ans = input("Download even without a funscript file? (y/n, default n): ").strip().lower()
-        require_funscript = ans != 'y'
+        if require_funscript is None:
+            ans = input("Download even without a funscript file? (y/n, default n): ").strip().lower()
+            require_funscript = ans != 'y'
 
     # Load known failures so they can be skipped (SKIP_KNOWN_FAILURES=true).
     skip_known = os.getenv('SKIP_KNOWN_FAILURES', 'false').strip().lower() not in ('false', '0', 'no')
@@ -5022,11 +5036,15 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
 
     tracker = ProgressTracker(base_path)
     if tracker.has_progress():
-        ans = input(
-            '\nA previous session was interrupted. Resume where it left off? '
-            '(y/n, default y): '
-        ).strip().lower()
-        if ans == 'n':
+        if resume is None:
+            ans = input(
+                '\nA previous session was interrupted. Resume where it left off? '
+                '(y/n, default y): '
+            ).strip().lower()
+            resume_it = ans != 'n'
+        else:
+            resume_it = resume
+        if not resume_it:
             tracker.clear()
             print('Starting fresh — all links will be re-attempted.')
         else:
@@ -5039,8 +5057,11 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
             status = ' [done]' if tracker.is_done(t['folder'], link) else ''
             print(f"    -> {link}{status}")
 
-    confirm = input("\nProceed with downloads? (y/n): ").strip().lower()
-    if confirm != 'y':
+    if auto_confirm is None:
+        confirm = input("\nProceed with downloads? (y/n): ").strip().lower() == 'y'
+    else:
+        confirm = auto_confirm
+    if not confirm:
         print("Aborted.")
         return
 
