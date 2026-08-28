@@ -43,6 +43,7 @@ Not run automatically -- most creators never repost like this -- it's its
 own menu option, pointed at whichever creator folder actually shows the
 pattern.
 """
+import concurrent.futures
 import os
 import shutil
 import sys
@@ -64,6 +65,19 @@ _FUNSCRIPT_EXT = '.funscript'
 _AXIS_SUFFIXES = ('.surge', '.pitch', '.roll', '.twist', '.sway')
 _MANUAL_MARKER = '.manual'
 _SCRIPT_NAME = 'consolidate_packs'
+
+
+def _max_workers() -> int:
+    """Same DEDUP_THREADS knob _dedup_existing already uses (set by the I/O
+    benchmark in setup_config.py, or manually in .env) -- the confirmatory
+    checks here are subprocess calls (ffprobe/fpcalc/ffmpeg) that release
+    the GIL while they run, so a thread pool pays off the same way it does
+    for dedupe's hashing, even though this isn't disk-throughput-bound the
+    way that benchmark actually measures."""
+    env = os.getenv('DEDUP_THREADS', '').strip()
+    if env.isdigit() and int(env) > 0:
+        return int(env)
+    return max(1, (os.cpu_count() or 4) - 2)
 
 
 def _funscript_stems(files: list[str]) -> set[str]:
@@ -111,30 +125,66 @@ def _scan(base_path: str):
     return folder_videos, folder_fs_stems, stem_to_videos
 
 
-def find_candidates(base_path: str) -> list[dict]:
-    """Return one entry per video that has no local matching funscript but
-    has an AV-confirmed duplicate elsewhere in a folder that does -- the
-    "pack". Filename-stem matching is only the cheap first pass; every
-    candidate is confirmed with _videos_are_similar before being reported,
-    so a same-named-but-actually-different video never gets flagged.
-    """
+def _name_matched_pairs(base_path: str):
+    """Cheap first pass: every (folder, video_path, [(pack_folder, pack_path), ...])
+    where video_path has no local matching funscript, but a same-stem video
+    exists in a different folder that does -- name-matched only, not yet
+    confirmed as actually the same content."""
     folder_videos, folder_fs_stems, stem_to_videos = _scan(base_path)
-    candidates = []
-    seen_videos: set[str] = set()
+    pending: list[tuple[str, str, list[tuple[str, str]]]] = []
 
     for folder, vids in folder_videos.items():
         local_stems = folder_fs_stems.get(folder, set())
         for stem, path in vids:
-            if stem in local_stems or path in seen_videos:
+            if stem in local_stems:
                 continue
-            for pack_folder, pack_path in stem_to_videos.get(stem, []):
-                if pack_folder == folder:
-                    continue
-                if stem not in folder_fs_stems.get(pack_folder, set()):
-                    continue  # that folder doesn't actually have the script either
-                if not _videos_are_similar(path, pack_path):
-                    continue
-                seen_videos.add(path)
+            packs = [
+                (pack_folder, pack_path)
+                for pack_folder, pack_path in stem_to_videos.get(stem, [])
+                if pack_folder != folder and stem in folder_fs_stems.get(pack_folder, set())
+            ]
+            if packs:
+                pending.append((folder, path, packs))
+
+    return pending
+
+
+def find_candidates(base_path: str) -> list[dict]:
+    """Return one entry per video that has no local matching funscript but
+    has an AV-confirmed duplicate elsewhere in a folder that does -- the
+    "pack". Filename-stem matching (_name_matched_pairs) is only the cheap
+    first pass; every candidate pair is confirmed with _videos_are_similar
+    before being reported, so a same-named-but-actually-different video
+    never gets flagged. The confirmatory checks run in a thread pool (see
+    _max_workers) since each one is a handful of subprocess calls, not
+    real CPU work in this process.
+    """
+    pending = _name_matched_pairs(base_path)
+    if not pending:
+        return []
+
+    # Flatten to individual (video, pack) pairs so every check -- including
+    # a video's 2nd/3rd candidate pack, if it has more than one -- runs
+    # concurrently, then re-group below by picking each video's first
+    # confirmed match in its original candidate order (same result the old
+    # sequential/short-circuiting loop would have found, just not
+    # necessarily the cheapest path to it).
+    checks = [(path, pack_path) for _folder, path, packs in pending for _pf, pack_path in packs]
+
+    similar: dict[tuple[str, str], bool] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers()) as ex:
+        futures = {ex.submit(_videos_are_similar, v, p): (v, p) for v, p in checks}
+        for future in concurrent.futures.as_completed(futures):
+            pair = futures[future]
+            try:
+                similar[pair] = future.result()
+            except Exception:
+                similar[pair] = False
+
+    candidates = []
+    for folder, path, packs in pending:
+        for pack_folder, pack_path in packs:
+            if similar.get((path, pack_path)):
                 candidates.append({
                     'orig_folder': folder,
                     'orig_video': path,
@@ -157,6 +207,13 @@ def _resolve_action(candidate: dict) -> dict:
     candidate['pack_height'] = pack_h
     candidate['replace'] = _closer_to_target_resolution(orig_h, pack_h, max_res)
     return candidate
+
+
+def _resolve_actions(candidates: list[dict]) -> list[dict]:
+    """_resolve_action for every candidate, in a thread pool -- each one is
+    two more ffprobe subprocess calls, same rationale as _max_workers."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers()) as ex:
+        return list(ex.map(_resolve_action, candidates))
 
 
 def _mark_consolidated(base_path: str, orig_folder: str, candidate: dict, note: str) -> None:
@@ -230,7 +287,7 @@ def main() -> None:
         print("\nNo consolidation candidates found.")
         return
 
-    candidates = [_resolve_action(c) for c in candidates]
+    candidates = _resolve_actions(candidates)
 
     print(f"\nFound {len(candidates)} video(s) to consolidate:")
     preview_limit = 30
