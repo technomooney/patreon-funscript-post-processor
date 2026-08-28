@@ -39,7 +39,9 @@ def process(root_dir: str, extensions: list[str]) -> int:
     lowercase dot-prefixed extensions, e.g. ['.funscript']. Returns the
     number of files renamed."""
     renamed = 0
-    for dirpath, _, filenames in os.walk(root_dir):
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        if action_log.TRASH_DIRNAME in dirnames:
+            dirnames.remove(action_log.TRASH_DIRNAME)
         if '.manual' in filenames:
             print(f'  SKIP (manual)  {dirpath}')
             continue

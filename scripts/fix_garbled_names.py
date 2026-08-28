@@ -196,7 +196,9 @@ def _resolve_new_name(filename: str, folder_name: str) -> tuple[str, str] | None
 def process(root_dir: str, dry_run: bool, skip_folders: set[str] | None = None) -> list[dict]:
     """Return report rows: old_path, new_path, strategy, status."""
     report: list[dict] = []
-    for dirpath, _, filenames in os.walk(root_dir):
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        if action_log.TRASH_DIRNAME in dirnames:
+            dirnames.remove(action_log.TRASH_DIRNAME)
         if '.manual' in filenames:
             print(f'  SKIP (manual)  {dirpath}')
             continue
@@ -456,7 +458,9 @@ def find_media_misnames(root_dir: str, dry_run: bool, skip_folders: set[str] | N
     Returns report rows: old_path, new_path, status.
     """
     report = []
-    for dirpath, _, filenames in os.walk(root_dir):
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        if action_log.TRASH_DIRNAME in dirnames:
+            dirnames.remove(action_log.TRASH_DIRNAME)
         if '.manual' in filenames:
             continue
         if skip_folders and dirpath in skip_folders:
@@ -528,7 +532,9 @@ def find_funscript_misnames(root_dir: str, dry_run: bool, skip_folders: set[str]
     Returns report rows: old_path, new_path, status.
     """
     report = []
-    for dirpath, _, filenames in os.walk(root_dir):
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        if action_log.TRASH_DIRNAME in dirnames:
+            dirnames.remove(action_log.TRASH_DIRNAME)
         if '.manual' in filenames:
             continue
         if skip_folders and dirpath in skip_folders:
@@ -595,7 +601,9 @@ def find_funscript_video_mismatches(
     Funscripts below threshold but above min_report are written to the report only.
     """
     report: list[dict] = []
-    for dirpath, _, filenames in os.walk(root_dir):
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        if action_log.TRASH_DIRNAME in dirnames:
+            dirnames.remove(action_log.TRASH_DIRNAME)
         if '.manual' in filenames:
             continue
         if skip_folders and dirpath in skip_folders:
@@ -715,6 +723,8 @@ if __name__ == '__main__':
     skip_set: set[str] = set()
     for _dp, _dirs, _fnames in os.walk(root):
         _dirs.sort()
+        if action_log.TRASH_DIRNAME in _dirs:
+            _dirs.remove(action_log.TRASH_DIRNAME)
         if '.manual' in _fnames:
             _dirs[:] = []
             continue
@@ -801,6 +811,8 @@ if __name__ == '__main__':
         # Walk root to find all folders that were visited (not skipped).
         for _dp, _dirs, _fnames in os.walk(root):
             _dirs.sort()
+            if action_log.TRASH_DIRNAME in _dirs:
+                _dirs.remove(action_log.TRASH_DIRNAME)
             if '.manual' in _fnames or _dp in skip_set:
                 _dirs[:] = []
                 continue

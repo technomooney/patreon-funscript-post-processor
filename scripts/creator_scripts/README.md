@@ -43,6 +43,21 @@ action_log.finish()
 
 See `mdemaxis_smooth_fix.py` in this folder for a real, working example.
 
+## Skip `.trash` when walking base_path
+
+If your script does its own `os.walk(base_path)`, prune out
+`action_log.TRASH_DIRNAME` the same way `mdemaxis_smooth_fix.py` does —
+soft-deleted files live there and shouldn't be renamed, re-hashed, or
+otherwise touched by anything except `action_log`'s own trash/undo
+machinery:
+
+```python
+for dirpath, dirnames, filenames in os.walk(base_path):
+    if action_log.TRASH_DIRNAME in dirnames:
+        dirnames.remove(action_log.TRASH_DIRNAME)
+    ...
+```
+
 ## Loading
 
 Every `.py` file in this folder (not starting with `_`) is imported and

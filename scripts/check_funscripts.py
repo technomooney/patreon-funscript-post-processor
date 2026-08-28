@@ -298,6 +298,8 @@ def scan(root_dir: str, do_rename: bool = False) -> list[FolderResult]:
 
     for dirpath, dirnames, filenames in os.walk(root_dir):
         dirnames.sort()
+        if action_log.TRASH_DIRNAME in dirnames:
+            dirnames.remove(action_log.TRASH_DIRNAME)
         result = _check_folder(dirpath, do_rename=do_rename)
         if result is None:
             continue

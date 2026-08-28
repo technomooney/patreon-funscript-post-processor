@@ -3845,8 +3845,11 @@ def _cleanup_temp_files(folder: str):
 
 
 def _cleanup_temp_files_recursive(base_path: str):
-    """Recursively remove leftover temp files under *base_path*."""
-    for dirpath, _, _ in os.walk(base_path):
+    """Recursively remove leftover temp files under *base_path* (.trash excluded --
+    a soft-deleted file's own cleanup is purge_old_trash's job, not this sweep's)."""
+    for dirpath, dirs, _ in os.walk(base_path):
+        if action_log.TRASH_DIRNAME in dirs:
+            dirs.remove(action_log.TRASH_DIRNAME)
         _cleanup_temp_files(dirpath)
 
 
@@ -4315,6 +4318,8 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
 
     for root, dirs, files in os.walk(base_path):
         dirs.sort()  # visit subdirectories in alphabetical order
+        if action_log.TRASH_DIRNAME in dirs:
+            dirs.remove(action_log.TRASH_DIRNAME)
         if '.manual' in files:
             manual_folders.append(root)
             continue
@@ -4467,6 +4472,8 @@ def _write_playlist(base_path: str, newly_downloaded: list[str] | None = None):
 
     video_files = []
     for root, dirs, files in os.walk(base_path):
+        if action_log.TRASH_DIRNAME in dirs:
+            dirs.remove(action_log.TRASH_DIRNAME)
         for f in files:
             # Skip temp files left by handlers
             if Path(f).stem.endswith('_temp'):
@@ -4840,6 +4847,8 @@ def collect_tasks_from_funscript_metadata(base_path: str) -> tuple[list, list]:
 
     for root, dirs, files in os.walk(base_path):
         dirs.sort()
+        if action_log.TRASH_DIRNAME in dirs:
+            dirs.remove(action_log.TRASH_DIRNAME)
         if '.manual' in files:
             continue
         if folder_log.has_run(root, 'downloadFromFunscriptMetadata'):

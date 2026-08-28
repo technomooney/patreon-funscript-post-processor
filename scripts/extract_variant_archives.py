@@ -303,7 +303,9 @@ def scan_and_extract(base_path: str, creator_key: str | None = None, ignore_manu
     action_log.start('extract_variant_archives', base_path)
 
     found = extracted = skipped = failed = manual_skipped = 0
-    for root, _dirs, files in os.walk(base_path):
+    for root, dirs, files in os.walk(base_path):
+        if action_log.TRASH_DIRNAME in dirs:
+            dirs.remove(action_log.TRASH_DIRNAME)
         if '.manual' in files and not ignore_manual:
             has_archive = any(f.lower().endswith(_ARCHIVE_EXTS) for f in files)
             if has_archive:

@@ -151,6 +151,8 @@ def getFileList(filePath: str, extList: list):
     fileRoots = []
     for root, dirs, files in os.walk(filePath):
         dirs.sort()
+        if action_log.TRASH_DIRNAME in dirs:
+            dirs.remove(action_log.TRASH_DIRNAME)
         if '.manual' in files:
             print(f"  SKIP (manual): {root}")
             continue
