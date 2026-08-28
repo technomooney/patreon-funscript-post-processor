@@ -167,16 +167,66 @@ def ensure_login(driver, timeout_minutes: int = 20) -> bool:
     return False
 
 
+def _looks_like_snowflake(value: str) -> bool:
+    """Discord IDs (guild/channel) are numeric snowflakes, ~17-20 digits."""
+    return value.isdigit() and 15 <= len(value) <= 21
+
+
+def _prompt_setup(creator_key: str) -> dict | None:
+    """Ask, right here, for *creator_key*'s Discord password channel and save
+    it -- there's no separate global setup step for this, since it's a
+    per-creator thing that's only ever needed the first time a password
+    lookup for that creator actually falls through to Discord. Returns the
+    saved discord config, or None if declined, not answerable (no TTY), or
+    left incomplete.
+    """
+    if not sys.stdin.isatty():
+        return None
+    print(f'  [discord] no Discord channel configured yet for "{creator_key}".')
+    if input('  [discord] set one up now? (y/n): ').strip().lower() != 'y':
+        return None
+
+    print('  [discord] needs Discord\'s Developer Mode on (User Settings > Advanced),')
+    print('  [discord] then right-click the server icon / the channel > Copy Server ID / Copy Channel ID.')
+
+    def _ask_id(label: str) -> str:
+        while True:
+            value = input(f'  [discord] {label}: ').strip()
+            if not value:
+                return ''
+            if _looks_like_snowflake(value):
+                return value
+            print('  [discord] that doesn\'t look like a Discord ID (should be a plain number) — try again, '
+                  'or leave blank to cancel.')
+
+    guild_id = _ask_id('server (guild) ID')
+    if not guild_id:
+        print('  [discord] skipped.')
+        return None
+    channel_id = _ask_id('channel ID')
+    if not channel_id:
+        print('  [discord] skipped.')
+        return None
+    note = input('  [discord] note (optional, e.g. "mega password channel"): ').strip()
+
+    creator_profiles.set_discord_channel(creator_key, guild_id, channel_id, note)
+    print(f'  [discord] saved — "{creator_key}" now points at that channel.')
+    return creator_profiles.get(creator_key).get('discord')
+
+
 def _load_channel_messages(creator_key: str, max_messages: int) -> tuple[list[str], dict] | None:
     """Navigate to *creator_key*'s configured Discord channel and return its recent
     message texts (newest first) alongside the channel config, or None on any
-    failure (no channel configured, login declined/timed out, channel didn't load)."""
+    failure (no channel configured and not set up when asked, login
+    declined/timed out, channel didn't load)."""
     profile = creator_profiles.get(creator_key)
     discord_cfg = profile.get('discord')
     if not discord_cfg or not discord_cfg.get('guild_id') or not discord_cfg.get('channel_id'):
-        print(f'  [discord] no Discord channel configured for "{creator_key}" '
-              f'— run: python scripts/discord_passwords.py set-channel {creator_key} <guild_id> <channel_id>')
-        return None
+        discord_cfg = _prompt_setup(creator_key)
+        if not discord_cfg:
+            print(f'  [discord] no Discord channel configured for "{creator_key}" '
+                  f'— run: python scripts/discord_passwords.py set-channel {creator_key} <guild_id> <channel_id>')
+            return None
 
     driver = _discord_driver()
     if not ensure_login(driver):
