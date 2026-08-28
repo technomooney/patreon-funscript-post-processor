@@ -12,7 +12,8 @@ Schema (informal, grows as needed):
 {
   "<creator_key>": {
     "discord": {"guild_id": "...", "channel_id": "...", "note": "..."},
-    "archive_links": {"note": "..."}
+    "archive_links": {"note": "..."},
+    "unattended": {"source": "...", "destination": "...", "steps": [...]}
   }
 }
 """
@@ -55,4 +56,21 @@ def set_discord_channel(creator_key: str, guild_id: str, channel_id: str, note: 
     if note:
         discord_cfg['note'] = note
     entry['discord'] = discord_cfg
+    save(profiles)
+
+
+def get_unattended_config(creator_key: str) -> dict | None:
+    """Return *creator_key*'s saved unattended-run config (source,
+    destination, ordered steps with their default answers), or None if
+    setup_unattended.py has never been run for this creator."""
+    return get(creator_key).get('unattended')
+
+
+def set_unattended_config(creator_key: str, config: dict) -> None:
+    """Save *creator_key*'s unattended-run config -- overwrites whatever was
+    there before in full (setup_unattended.py always writes the complete
+    steps list, not a partial update)."""
+    profiles = load()
+    entry = profiles.setdefault(creator_key, {})
+    entry['unattended'] = config
     save(profiles)
