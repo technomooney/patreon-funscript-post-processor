@@ -221,7 +221,11 @@ def find_missing_files(src_root, dest_index, funscripts_only):
     return missing
 
 
-def sync_new_folders(source, destination):
+def sync_new_folders(source, destination, *, auto_confirm=None):
+    """*auto_confirm*: skip the "copy N folders?" prompt and act as if the
+    user answered it directly -- True copies, False skips. None (the
+    default) prompts interactively exactly as before; used by
+    run_unattended.py to run this step with no prompt at all."""
     source_folders = {
         f for f in os.listdir(source)
         if os.path.isdir(os.path.join(source, f))
@@ -257,8 +261,11 @@ def sync_new_folders(source, destination):
             print(f"  ... and {len(new_folders) - preview_limit} more")
 
         print()
-        confirm = input(f"Copy {len(new_folders)} folder(s) to destination? (y/n): ").strip().lower()
-        if confirm != 'y':
+        if auto_confirm is None:
+            confirm = input(f"Copy {len(new_folders)} folder(s) to destination? (y/n): ").strip().lower() == 'y'
+        else:
+            confirm = auto_confirm
+        if not confirm:
             print("Skipped.")
         else:
             print()
@@ -281,7 +288,13 @@ def sync_new_folders(source, destination):
     return common_folders
 
 
-def sync_existing_folders(source, destination, common_folders):
+def sync_existing_folders(source, destination, common_folders, *,
+                           run_symmetry=None, funscripts_only=None, auto_confirm_copy=None):
+    """*run_symmetry*/*funscripts_only*/*auto_confirm_copy*: bypass the three
+    prompts below when given (True/False), instead of asking interactively.
+    Any left as None (the default) still prompts exactly as before -- so a
+    caller can pin some answers and let the rest stay interactive. Used by
+    run_unattended.py to run this step with no prompts at all."""
     print()
     print("========================================")
     print("  Symmetry Check (existing folders)")
@@ -303,13 +316,17 @@ def sync_existing_folders(source, destination, common_folders):
         print("No folders exist in both source and destination — nothing to check.")
         return
 
-    run_it = input("Run symmetry check on existing folders? (y/n): ").strip().lower()
-    if run_it != 'y':
+    if run_symmetry is None:
+        run_it = input("Run symmetry check on existing folders? (y/n): ").strip().lower() == 'y'
+    else:
+        run_it = run_symmetry
+    if not run_it:
         print("Skipped.")
         return
 
-    scope = input("Check funscripts only, or all files? [F/a] (default: funscripts only): ").strip().lower()
-    funscripts_only = scope != 'a'
+    if funscripts_only is None:
+        scope = input("Check funscripts only, or all files? [F/a] (default: funscripts only): ").strip().lower()
+        funscripts_only = scope != 'a'
     print(f"Scope: {'funscripts only' if funscripts_only else 'all files'}")
 
     print()
@@ -338,8 +355,11 @@ def sync_existing_folders(source, destination, common_folders):
         print(f"  ... and {len(all_missing) - preview_limit} more")
 
     print()
-    confirm = input(f"Copy {len(all_missing)} file(s) to destination? (y/n): ").strip().lower()
-    if confirm != 'y':
+    if auto_confirm_copy is None:
+        confirm = input(f"Copy {len(all_missing)} file(s) to destination? (y/n): ").strip().lower() == 'y'
+    else:
+        confirm = auto_confirm_copy
+    if not confirm:
         print("Cancelled.")
         return
 
