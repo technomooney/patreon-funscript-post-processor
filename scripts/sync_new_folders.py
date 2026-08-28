@@ -84,10 +84,15 @@ def _content_key(path):
 def _scoped_files(root, funscripts_only):
     """Yield paths (relative to root) of files under root, recursively.
 
-    Skips dotfiles and common OS junk. When funscripts_only is set, only
-    yields .funscript files.
+    Skips dotfiles and common OS junk, and never descends into '.trash' --
+    a dedupe/extraction pass's soft-deletes live there, and a file only
+    reachable through .trash isn't actually present as far as any of this
+    module's callers should be concerned (see find_missing_files). When
+    funscripts_only is set, only yields .funscript files.
     """
-    for dirpath, _dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root):
+        if action_log.TRASH_DIRNAME in dirnames:
+            dirnames.remove(action_log.TRASH_DIRNAME)
         for fn in filenames:
             if fn.startswith('.') or fn.lower() in _JUNK_NAMES:
                 continue
@@ -150,48 +155,74 @@ def _backup_existing_file(dest_path):
     return backup
 
 
-def find_missing_files(src_root, dest_root, funscripts_only):
-    """Return a list of (src_full_path, relpath) present in src_root but not,
-    by content, anywhere in dest_root (scoped to funscripts_only if set).
+def build_dest_content_index(destination_root, funscripts_only):
+    """Index of every file already present anywhere under destination_root
+    (.trash excluded -- see _scoped_files), for find_missing_files to check
+    a source file against.
 
-    A file counts as already present if a matching file exists in the
-    destination, regardless of filename — a file that was renamed after
-    copying (e.g. by fix_garbled_names) is not re-copied. For a
-    .funscript, "matching" means the same points (see _content_key), not
-    the same bytes, so a copy the downloader re-touched/re-saved with
-    reformatted JSON isn't flagged as missing just because its byte size
-    changed — which also means funscripts aren't sized-bucketed the way
-    other files are below (two byte-different files can hold identical
-    points). Everything else still matches on exact byte content.
+    Deliberately whole-tree, not per-post-folder: some creators (confirmed:
+    Pize) repost an already-downloaded script inside a later "collection"
+    post, and the destination's own dedupe pass (downloadContent._dedup_existing)
+    already collapses that to a single on-disk copy, wherever it happens to
+    be oldest -- which is not necessarily the file's own post's folder. A
+    folder-scoped search would see that folder as missing the file and copy
+    it right back in, only for the next dedupe run to remove it again. This
+    also means two byte-identical files that legitimately belong to two
+    different posts collapse to one entry here, same as dedupe already
+    treats them.
+
+    Returns (funscript_keys, size_map): funscript_keys is a set of
+    _content_key() results for every .funscript found; size_map maps
+    byte size -> list of full paths, for byte-hash matching everything
+    else (skipped entirely when funscripts_only is set).
     """
-    dest_rel_files = list(_scoped_files(dest_root, funscripts_only))
-
-    dest_funscript_keys = set()
-    dest_size_map = defaultdict(list)
-    for rel in dest_rel_files:
-        full = os.path.join(dest_root, rel)
+    funscript_keys = set()
+    size_map = defaultdict(list)
+    for rel in _scoped_files(destination_root, funscripts_only):
+        full = os.path.join(destination_root, rel)
         if rel.lower().endswith(_FUNSCRIPT_EXT):
-            dest_funscript_keys.add(_content_key(full))
+            funscript_keys.add(_content_key(full))
             continue
         try:
             size = os.path.getsize(full)
         except OSError:
             continue
-        dest_size_map[size].append(rel)
+        size_map[size].append(full)
+    return funscript_keys, size_map
 
+
+def find_missing_files(src_root, dest_index, funscripts_only):
+    """Return a list of (src_full_path, relpath) present in src_root but not,
+    by content, anywhere in dest_index (built once for the whole
+    destination tree by build_dest_content_index -- see its docstring for
+    why this isn't scoped to just this one folder).
+
+    A file counts as already present if a matching file exists anywhere in
+    the destination, regardless of filename or folder — a file that was
+    renamed after copying (e.g. by fix_garbled_names), or that already
+    lives in a different post's folder because a creator reposted it, is
+    not re-copied. For a .funscript, "matching" means the same points (see
+    _content_key), not the same bytes, so a copy the downloader
+    re-touched/re-saved with reformatted JSON isn't flagged as missing just
+    because its byte size changed — which also means funscripts aren't
+    sized-bucketed the way other files are below (two byte-different files
+    can hold identical points). Everything else still matches on exact
+    byte content.
+    """
+    funscript_keys, size_map = dest_index
     dest_hash_cache = {}
 
-    def dest_hash(rel):
-        if rel not in dest_hash_cache:
-            dest_hash_cache[rel] = _sha256_file(os.path.join(dest_root, rel))
-        return dest_hash_cache[rel]
+    def dest_hash(full):
+        if full not in dest_hash_cache:
+            dest_hash_cache[full] = _sha256_file(full)
+        return dest_hash_cache[full]
 
     missing = []
     for rel in _scoped_files(src_root, funscripts_only):
         src_full = os.path.join(src_root, rel)
 
         if rel.lower().endswith(_FUNSCRIPT_EXT):
-            if _content_key(src_full) not in dest_funscript_keys:
+            if _content_key(src_full) not in funscript_keys:
                 missing.append((src_full, rel))
             continue
 
@@ -200,7 +231,7 @@ def find_missing_files(src_root, dest_root, funscripts_only):
         except OSError:
             continue
 
-        candidates = dest_size_map.get(size, [])
+        candidates = size_map.get(size, [])
         if not candidates:
             missing.append((src_full, rel))
             continue
@@ -280,11 +311,14 @@ def sync_existing_folders(source, destination, common_folders):
     print()
     print("Checks folders that already exist in both source and destination")
     print("for files present in source but missing from the destination —")
-    print("compared by content, not just filename, so a file already copied")
-    print("under a different name won't be re-copied. If a same-named file")
-    print("exists but its content differs, the old one is renamed to")
-    print("<filename>.bak (one generation kept) instead of copying the new")
-    print("one in as a ' (synced 2)' sibling.")
+    print("compared by content (a funscript by its actual points, not raw")
+    print("bytes), not just filename, and against the whole destination")
+    print("tree, not just each file's own folder — so a script a creator")
+    print("reposted elsewhere (and your dedupe pass already collapsed to one")
+    print("copy) isn't flagged as missing and copied right back in. If a")
+    print("same-named file exists in the file's own folder but its content")
+    print("differs, the old one is renamed to <filename>.bak (one generation")
+    print("kept) instead of copying the new one in as a ' (synced 2)' sibling.")
     print()
 
     if not common_folders:
@@ -301,14 +335,16 @@ def sync_existing_folders(source, destination, common_folders):
     print(f"Scope: {'funscripts only' if funscripts_only else 'all files'}")
 
     print()
+    print("Indexing destination content...")
+    dest_index = build_dest_content_index(destination, funscripts_only)
+
     print(f"Scanning {len(common_folders)} folder(s)...")
     all_missing = []  # (dest_folder, src_full, relpath)
     for i, (src_folder, dest_folder) in enumerate(common_folders, 1):
         label = dest_folder if src_folder == dest_folder else f"{dest_folder}  (source: {src_folder})"
         print(f"  [{i}/{len(common_folders)}] {label}", end='\r')
         src_root = os.path.join(source, src_folder)
-        dest_root = os.path.join(destination, dest_folder)
-        for src_full, rel in find_missing_files(src_root, dest_root, funscripts_only):
+        for src_full, rel in find_missing_files(src_root, dest_index, funscripts_only):
             all_missing.append((dest_folder, src_full, rel))
     print()
 
