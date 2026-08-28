@@ -701,16 +701,12 @@ def find_funscript_video_mismatches(
     return report
 
 
-if __name__ == '__main__':
-    args = sys.argv[1:]
-    dry_run = '--dry-run' in args
-    dirs = [a for a in args if not a.startswith('--')]
-    if dirs:
-        root = os.path.abspath(dirs[0])
-    else:
-        entered = input("Enter full path to scan (leave blank for current directory): ").strip()
-        root = os.path.abspath(entered) if entered else os.getcwd()
-
+def run(root: str, dry_run: bool) -> None:
+    """The full four-pass pipeline (media/funscript-extension fixes, garbled-
+    name decode, funscript-to-video name match), with reporting and undo/
+    folder_log bookkeeping -- no prompts. Used directly by run_unattended.py;
+    the __main__ block below is just the interactive/CLI wrapper that
+    collects *root*/*dry_run* first."""
     print(f'Processing: {root}')
     if dry_run:
         print('(dry run — no changes will be made)')
@@ -825,3 +821,16 @@ if __name__ == '__main__':
             folder_log.append_run(_dp, 'fix_garbled_names', changes=_changes)
 
         action_log.finish()
+
+
+if __name__ == '__main__':
+    args = sys.argv[1:]
+    dry_run = '--dry-run' in args
+    dirs = [a for a in args if not a.startswith('--')]
+    if dirs:
+        root = os.path.abspath(dirs[0])
+    else:
+        entered = input("Enter full path to scan (leave blank for current directory): ").strip()
+        root = os.path.abspath(entered) if entered else os.getcwd()
+
+    run(root, dry_run)
