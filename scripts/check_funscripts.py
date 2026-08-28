@@ -390,6 +390,23 @@ def _write_csv(root_dir: str, results: list[FolderResult]):
     print(f'  Report written to: {csv_path}')
 
 
+def run(root: str, do_rename: bool) -> list[FolderResult]:
+    """scan() plus the undo journaling, printing, and CSV report -- no
+    prompts. Used directly by run_unattended.py; the __main__ block below
+    is just the interactive wrapper that collects *root*/*do_rename* first.
+    """
+    print(f'\nScanning: {root}\n')
+    if do_rename:
+        action_log.start('check_funscripts', root)
+    results = scan(root, do_rename=do_rename)
+    _print_results(results)
+    _write_csv(root, results)
+    if do_rename:
+        action_log.finish()
+    print()
+    return results
+
+
 if __name__ == '__main__':
     root = input('Enter full directory path to scan: ').strip()
     root = os.path.abspath(root)
@@ -405,12 +422,4 @@ if __name__ == '__main__':
     ).strip().lower()
     do_rename = rename_answer != 'n'
 
-    print(f'\nScanning: {root}\n')
-    if do_rename:
-        action_log.start('check_funscripts', root)
-    results = scan(root, do_rename=do_rename)
-    _print_results(results)
-    _write_csv(root, results)
-    if do_rename:
-        action_log.finish()
-    print()
+    run(root, do_rename)
