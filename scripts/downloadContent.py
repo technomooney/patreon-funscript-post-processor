@@ -4111,6 +4111,19 @@ def _is_av_similar(new_path: str, folder: str) -> str | None:
     return None
 
 
+# This project's own per-folder bookkeeping files -- never real downloaded
+# content, so never eligible for cross-folder duplicate removal. '.manual'
+# is the sharpest case: every one is an empty 0-byte file by convention, so
+# ANY two of them anywhere in base_path hash identically and exact-match
+# dedup would keep only the single oldest, silently stripping the marker
+# (and the "don't touch this folder automatically" protection it exists
+# for) from every other folder that had one. '.folder_log.json' and
+# '.last_action.json' are far less likely to collide (both carry
+# timestamps) but belong in the same "never dedup this" category on
+# principle -- it's project bookkeeping, not content.
+_DEDUP_EXCLUDED_FILES = {'.manual', '.links', folder_log.FILENAME, action_log.JOURNAL_FILENAME}
+
+
 def _dedup_existing(base_path: str) -> int:
     """Hash every file under *base_path* and remove exact duplicates.
 
@@ -4120,6 +4133,10 @@ def _dedup_existing(base_path: str) -> int:
     still the most recent run, and by hand from '.trash' itself for up to
     TRASH_RETENTION_DAYS (default 14) afterward. Returns the number of
     files removed.
+
+    This project's own per-folder bookkeeping files (_DEDUP_EXCLUDED_FILES)
+    are never candidates, regardless of content — see that constant's
+    comment for why '.manual' specifically would otherwise be a real bug.
 
     Controlled by the DEDUP_EXISTING env var (default 'true').
     Set DEDUP_EXISTING=false in .env to skip this scan.
@@ -4142,7 +4159,7 @@ def _dedup_existing(base_path: str) -> int:
         if action_log.TRASH_DIRNAME in dirs:
             dirs.remove(action_log.TRASH_DIRNAME)  # don't re-dedup our own trash
         for f in sorted(files):
-            if _is_temp_file(f):
+            if _is_temp_file(f) or f in _DEDUP_EXCLUDED_FILES:
                 continue
             full = os.path.join(root, f)
             if os.path.isfile(full):

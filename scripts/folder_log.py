@@ -2,7 +2,7 @@ import json
 import os
 import time
 
-_FILENAME = '.folder_log.json'
+FILENAME = '.folder_log.json'
 
 
 def _force_rerun() -> bool:
@@ -10,7 +10,7 @@ def _force_rerun() -> bool:
 
 
 def read(folder: str) -> list:
-    path = os.path.join(folder, _FILENAME)
+    path = os.path.join(folder, FILENAME)
     if not os.path.exists(path):
         return []
     try:
@@ -40,7 +40,7 @@ def append_run(folder: str, script: str, **data) -> None:
         record['force_rerun'] = True
     record.update(data)
     records.append(record)
-    path = os.path.join(folder, _FILENAME)
+    path = os.path.join(folder, FILENAME)
     tmp = path + '.tmp'
     try:
         with open(tmp, 'w', encoding='utf-8') as f:
