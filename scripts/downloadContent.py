@@ -4397,10 +4397,10 @@ def collect_tasks(base_path: str, require_funscript: bool = True,
             dirs.remove(action_log.TRASH_DIRNAME)
         if '.manual' in files:
             # '.consolidated' (always paired with '.manual' by consolidate_
-            # packs.py) marks an expected, already-resolved outcome, not a
-            # "human needs to look at this" folder -- report it separately
-            # and let ignore_consolidated re-process it without having to
-            # touch real '.manual' protection to do so.
+            # packs.py) marks an automated decision, not an actual person
+            # having looked at the folder the way a real '.manual' does --
+            # report it separately and let ignore_consolidated re-process it
+            # without having to touch real '.manual' protection to do so.
             if '.consolidated' in files:
                 consolidated_folders.append(root)
                 if not ignore_consolidated:
@@ -4642,8 +4642,9 @@ def _write_manual_folders(base_path: str, manual_folders: list):
 def _write_consolidated_folders(base_path: str, consolidated_folders: list, ignored: bool):
     """Print and write the list of '.consolidated' folders (see
     consolidate_packs.py) to _reports/consolidated_folders.txt — kept
-    separate from manual_folders.txt since these were skipped as expected,
-    routine housekeeping, not because a human needs to look at them."""
+    separate from manual_folders.txt since these were skipped because an
+    automated decision emptied them, not because a person manually
+    handled them the way a real '.manual' folder implies."""
     if not consolidated_folders:
         return
     txt_path = os.path.join(_reports_dir(base_path), 'consolidated_folders.txt')

@@ -40,15 +40,16 @@ copy lives, for the audit report and for a human glancing at the folder
 later.
 
 Also marked '.consolidated' -- a second, more specific marker alongside
-'.manual'. '.manual' alone would work for the "don't touch this folder"
-part, but it means "a human needs to look at this" everywhere else in the
-project (the manual_folders report, generate_html's badge, ...), and a
-folder that ended up here isn't that -- it's an expected, already-resolved
-outcome, not something that needs a second look. collect_tasks() checks for
-'.consolidated' specifically so it can report these separately from genuine
-'.manual' folders, and so a run can be told to re-check them anyway (see its
-ignore_consolidated parameter / find_and_download's prompt) without also
-having to blow away real '.manual' protection to do it.
+'.manual'. '.manual' means a human already looked at this folder and
+handled it themselves -- it's a "done by a person, leave it alone" marker,
+not a request for anyone to go look -- and everywhere else in the project
+(the manual_folders report, generate_html's badge, ...) it's reported and
+shown on that assumption. A folder consolidate_packs marks got there by an
+automated decision, not an actual person looking at it, so '.consolidated'
+keeps that distinction visible: collect_tasks() reports these separately
+from genuine '.manual' folders, and a run can be told to re-check them
+anyway (see its ignore_consolidated parameter / find_and_download's prompt)
+without also having to blow away real '.manual' protection to do it.
 
 Not run automatically -- most creators never repost like this -- it's its
 own menu option, pointed at whichever creator folder actually shows the

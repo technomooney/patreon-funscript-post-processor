@@ -349,9 +349,10 @@ def extract_one(archive_path: str, creator_key: str, base_path: str) -> bool:
 def scan_and_extract(base_path: str, creator_key: str | None = None, ignore_manual: bool = False) -> None:
     """*ignore_manual*: process archives in '.manual'-marked folders too. Those
     folders are skipped by default, same as every other automated script in
-    this project (fix_garbled_names, prefixFix, ...) -- .manual means "don't
-    touch this folder without a human looking first". This is meant as a
-    one-off override for a specific run, not a persisted setting."""
+    this project (fix_garbled_names, prefixFix, ...) -- .manual means a human
+    already looked at and handled this folder themselves, so automation
+    leaves it alone. This is meant as a one-off override for a specific run,
+    not a persisted setting."""
     base_path = os.path.normpath(base_path)
     creator_key = (creator_key or os.path.basename(base_path)).strip().lower()
     action_log.start('extract_variant_archives', base_path)
