@@ -2646,6 +2646,26 @@ def _choose_iwara_format_id(formats: list[dict], max_res: int) -> str | None:
     return source_ids[0] if source_ids else candidates[0]['format_id']
 
 
+def _ytdlp_name_from_metadata(metadata: dict | None) -> str | None:
+    """A real title from yt-dlp's -j metadata, or -- when 'title' is missing
+    or empty, which does happen -- a still-unique fallback built from the
+    video's own id/display_id. Either beats the alternative: every one of
+    these callers otherwise writes the exact same literal placeholder stem
+    regardless of the video's real identity, so two different videos in the
+    same folder silently collide and get disambiguated as '[alt2]'/'[alt3]'
+    (see project memory project_ytdlp_alt_collision) even though a real name
+    was findable, or at least a name that wouldn't collide with the next one.
+    None only when yt-dlp's metadata gave us nothing at all to go on.
+    """
+    if not metadata:
+        return None
+    title = metadata.get('title')
+    if title:
+        return title
+    vid = metadata.get('id') or metadata.get('display_id')
+    return f'video_{vid}' if vid else None
+
+
 def _download_iwara_ytdlp(url: str, download_dir: str) -> bool:
     """Download an iwara.tv video via yt-dlp's native extractor (fallback tier 1).
 
@@ -2692,9 +2712,9 @@ def _download_iwara_ytdlp(url: str, download_dir: str) -> bool:
         result = subprocess.run(cmd, timeout=3600)
         if result.returncode != 0:
             return False
-        title = metadata.get('title')
-        if title:
-            _last_fetch_original_name = _page_title_override(title)
+        name = _ytdlp_name_from_metadata(metadata)
+        if name:
+            _last_fetch_original_name = _page_title_override(name)
         return True
     except subprocess.TimeoutExpired:
         print('  [iwara.tv/yt-dlp] timed out after 1 hour')
@@ -3736,19 +3756,49 @@ def _ytdlp_cmd() -> list[str] | None:
     return [ytdlp] if ytdlp else None
 
 
+def _ytdlp_video_name(ytdlp_prefix: list[str], url: str) -> str | None:
+    """Best-effort real name for *url* via yt-dlp's own -j metadata (same
+    approach _iwara_ytdlp_metadata uses), so download_ytdlp's generic
+    fallback can give _save_downloaded a real name instead of every such
+    download sharing the literal '_ytdlp_temp' placeholder -- which silently
+    collided as '[alt2]'/'[alt3]' the moment a 2nd video from a domain with
+    no dedicated handler landed in the same folder (see project memory
+    project_ytdlp_alt_collision). Cheap (~1-3 s, no download) and run before
+    the real download starts. Returns None only when yt-dlp's metadata gave
+    us nothing at all — the caller then falls back to the placeholder
+    exactly as it always did.
+    """
+    cmd = [*ytdlp_prefix, '--no-warnings', '--no-playlist', '-j', url]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            return None
+        return _ytdlp_name_from_metadata(json.loads(result.stdout))
+    except (subprocess.SubprocessError, OSError, json.JSONDecodeError):
+        return None
+
+
 def download_ytdlp(_driver, url: str, download_dir: str) -> bool:
     """Generic video extractor using yt-dlp for sites without a dedicated handler.
 
     Selects the best available quality up to MAX_RESOLUTION and saves the
     result as _ytdlp_temp.<ext> so wait_for_download can find it and
-    _save_downloaded can rename it to the correct basename.
+    _save_downloaded can rename it to the correct basename -- unless
+    _ytdlp_video_title() manages to resolve the real title first, in which
+    case _last_fetch_original_name is set so _save_downloaded uses that
+    instead (see its docstring for why this matters).
 
     Install yt-dlp with:  pip install yt-dlp  or  pipx install yt-dlp
     """
+    global _last_fetch_original_name
     ytdlp_prefix = _ytdlp_cmd()
     if ytdlp_prefix is None:
         print('  [yt-dlp] not found — install with: pip install yt-dlp')
         return False
+
+    name = _ytdlp_video_name(ytdlp_prefix, url)
+    if name:
+        _last_fetch_original_name = _page_title_override(name)
 
     max_res = _get_max_resolution()
     output_tmpl = os.path.join(download_dir, '_ytdlp_temp.%(ext)s')
@@ -4276,6 +4326,12 @@ def _dedup_existing(base_path: str) -> int:
         consolidate_packs.consolidate(base_path)
     except Exception as e:
         print(f'[dedup] consolidate-packs step failed: {e}')
+
+    try:
+        import check_funscripts  # lazy, same reason as consolidate_packs above
+        check_funscripts.resolve_alt_tagged_videos(base_path)
+    except Exception as e:
+        print(f'[dedup] alt-tagged-video cleanup step failed: {e}')
 
     return removed
 

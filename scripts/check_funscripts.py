@@ -146,6 +146,23 @@ def _pick_representative(funscript_files: list[str]) -> str:
     return funscript_files[0]
 
 
+ALT_TAG_NAME_THRESHOLD = 0.90
+
+# This project's own auto-generated dedup-collision tag (see
+# downloadContent._save_downloaded's "name collision with different content"
+# fallback), not a creator-authored variant tag like '(SMOOTH)' -- kept
+# separate from _VARIANT_RE/_strip_variants (round parens) since it means
+# something different: "we couldn't tell this apart from an existing file by
+# name", not "this is a deliberate alternate cut".
+_ALT_TAG_RE = re.compile(r'^(?P<clean>.+) \[alt\d+\]$')
+
+
+def _strip_alt_tag(stem: str) -> str:
+    """Strip a trailing ' [alt2]'/' [alt3]'/... tag, if present."""
+    m = _ALT_TAG_RE.match(stem)
+    return m.group('clean') if m else stem
+
+
 def _duration_matches(video_s: float, script_s: float) -> bool:
     """True if a funscript's duration is consistent with covering *video_s*.
 
@@ -286,6 +303,185 @@ def _check_folder(folder: str, do_rename: bool = False) -> FolderResult | None:
                 })
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# '[altN]' dedup-collision cleanup
+#
+# downloadContent._save_downloaded tags a video '[alt2]'/'[alt3]'/... when
+# its expected destination filename is already taken by different content --
+# meant for the rare real case (two genuinely different videos that happen
+# to share a title), but a naming bug meant it also fired every time a
+# video's real title couldn't be resolved at all, leaving multiple different
+# videos all sharing one literal placeholder stem (see project memory
+# project_ytdlp_alt_collision -- fixed at the source, but this cleans up
+# what already landed on disk, and anything that slips through in the
+# future). There should be no '[altN]' video left with a resolvable real
+# name: try to give each one back its real name by matching it -- name
+# first, duration as a fallback when the tag text itself drags the name
+# score down -- against a funscript in the same folder no other video has
+# already claimed. Anything that can't be resolved with confidence is left
+# untouched and written to a report instead of guessed at.
+# ---------------------------------------------------------------------------
+
+def find_alt_tagged_videos(folder: str) -> list[dict]:
+    """Every video in *folder* carrying the '[altN]' tag, as
+    [{'file', 'clean_stem'}, ...] -- clean_stem has both the tag and any
+    ordinary parenthetical variant stripped, ready to fuzzy-match against
+    _base_stem()'d funscript names. [] for a folder with none. Sorted by
+    filename so that when two '[altN]' videos could otherwise both claim the
+    same funscript, which one gets first pick is at least deterministic
+    rather than whatever order the filesystem happens to hand back.
+    """
+    try:
+        entries = sorted(os.listdir(folder))
+    except OSError:
+        return []
+    out = []
+    for f in entries:
+        if Path(f).suffix.lower() not in _VIDEO_EXTS:
+            continue
+        stem = Path(f).stem
+        alt_stripped = _strip_alt_tag(stem)
+        if alt_stripped == stem:
+            continue
+        out.append({'file': f, 'clean_stem': _strip_variants(alt_stripped)})
+    return out
+
+
+def _claimed_script_bases(folder_videos: list[str], script_bases: dict[str, list[str]]) -> set[str]:
+    """Funscript base stems already matched by an ordinary (non-'[altN]')
+    video in the folder -- an '[altN]' video must never be pointed at one of
+    these, even on a strong name/duration match."""
+    claimed = set()
+    for v in folder_videos:
+        if _strip_alt_tag(Path(v).stem) != Path(v).stem:
+            continue  # itself '[altN]'-tagged -- doesn't claim anything
+        vbase = _video_base(v)
+        if vbase in script_bases:
+            claimed.add(vbase)
+    return claimed
+
+
+def _resolve_alt_video(folder: str, video_file: str, clean_stem: str,
+                        script_bases: dict[str, list[str]], claimed_bases: set[str]) -> dict:
+    """Try to resolve one '[altN]'-tagged video to an unclaimed funscript base
+    in *folder*. Renames (and records via action_log) on a confident match;
+    otherwise returns enough detail for a human review report. Never raises,
+    never touches anything but *video_file* itself."""
+    video_path = os.path.join(folder, video_file)
+    candidates = {b: files for b, files in script_bases.items() if b not in claimed_bases}
+    result = {'file': video_file, 'folder': folder, 'suggestion': '', 'score': 0.0,
+              'action': 'unresolved', 'note': '', 'matched_base': None}
+
+    if not candidates:
+        result['note'] = 'no unclaimed funscript in this folder to compare against'
+        return result
+
+    best_base, best_score = max(
+        ((b, _fuzzy_score(clean_stem, b)) for b in candidates), key=lambda x: x[1])
+    result['suggestion'], result['score'] = best_base, round(best_score, 3)
+
+    if best_score >= ALT_TAG_NAME_THRESHOLD:
+        match_base = best_base
+    else:
+        # The tag text itself lowers the name score, so a real match can
+        # still legitimately fall short -- fall back to duration, but only
+        # act on it when exactly one unclaimed candidate's funscript fits
+        # this video's length; more than one is exactly as uncertain as none.
+        video_s = _video_duration(video_path)
+        dur_hits = []
+        if video_s:
+            for base, files in candidates.items():
+                fs_dur = _funscript_duration(os.path.join(folder, _pick_representative(files)))
+                if fs_dur and _duration_matches(video_s, fs_dur):
+                    dur_hits.append(base)
+        match_base = dur_hits[0] if len(dur_hits) == 1 else None
+        result['video_s'] = video_s
+
+    if not match_base:
+        result['note'] = (f'below {int(ALT_TAG_NAME_THRESHOLD * 100)}% name match and duration '
+                           f'did not confirm a single candidate -- needs manual check')
+        return result
+
+    new_name = match_base + Path(video_file).suffix
+    new_path = os.path.join(folder, new_name)
+    if os.path.exists(new_path):
+        result['note'] = f'target name already exists ({new_name}) -- leaving as-is'
+        return result
+
+    os.rename(video_path, new_path)
+    action_log.record('rename', old_path=video_path, new_path=new_path)
+    result.update(action='renamed', renamed_to=new_name, matched_base=match_base)
+    return result
+
+
+def _resolve_alt_tagged_in_folder(folder: str) -> list[dict]:
+    alt_videos = find_alt_tagged_videos(folder)
+    if not alt_videos:
+        return []
+    try:
+        entries = os.listdir(folder)
+    except OSError:
+        return []
+    scripts = [f for f in entries if f.lower().endswith(_SCRIPT_EXT)
+               and os.path.isfile(os.path.join(folder, f))]
+    videos = [f for f in entries if Path(f).suffix.lower() in _VIDEO_EXTS
+              and os.path.isfile(os.path.join(folder, f))]
+
+    script_bases: dict[str, list[str]] = {}
+    for s in scripts:
+        script_bases.setdefault(_base_stem(s), []).append(s)
+    claimed = _claimed_script_bases(videos, script_bases)
+
+    results = []
+    for av in alt_videos:
+        res = _resolve_alt_video(folder, av['file'], av['clean_stem'], script_bases, claimed)
+        if res['action'] == 'renamed':
+            claimed.add(res['matched_base'])  # don't let a 2nd '[altN]' video claim it too
+        results.append(res)
+    return results
+
+
+def resolve_alt_tagged_videos(root_dir: str) -> tuple[int, int]:
+    """Scan *root_dir* for '[altN]'-tagged videos and try to give each one
+    back its real name (see the section comment above). Renames are recorded
+    via action_log (undoable, same as everything else in this project);
+    whatever can't be resolved with confidence is written to
+    _reports/alt_video_review.csv instead of being touched or guessed at.
+    Returns (resolved_count, unresolved_count).
+    """
+    root_dir = os.path.abspath(root_dir)
+    resolved: list[dict] = []
+    unresolved: list[dict] = []
+
+    action_log.start('check_funscripts_alt_cleanup', root_dir)
+    for dirpath, dirnames, _filenames in os.walk(root_dir):
+        dirnames.sort()
+        if action_log.TRASH_DIRNAME in dirnames:
+            dirnames.remove(action_log.TRASH_DIRNAME)
+        for res in _resolve_alt_tagged_in_folder(dirpath):
+            (resolved if res['action'] == 'renamed' else unresolved).append(res)
+    action_log.finish()  # no-op if nothing was renamed -- doesn't clobber a prior undo target
+
+    if resolved:
+        print(f'\n[alt-video] resolved {len(resolved)} "[altN]" video(s) back to their real name:')
+        for r in resolved:
+            print(f'    {r["file"]}  ->  {r["renamed_to"]}')
+        for r in resolved:
+            folder_log.append_run(r['folder'], 'check_funscripts', alt_resolved=r['renamed_to'])
+
+    if unresolved:
+        csv_path = os.path.join(_reports_dir(root_dir), 'alt_video_review.csv')
+        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=['folder', 'file', 'suggestion', 'score', 'note'])
+            writer.writeheader()
+            for r in unresolved:
+                writer.writerow({k: r.get(k, '') for k in ('folder', 'file', 'suggestion', 'score', 'note')})
+        print(f'\n[alt-video] {len(unresolved)} "[altN]" video(s) could not be confidently resolved '
+              f'-- written to {csv_path} for manual review.')
+
+    return len(resolved), len(unresolved)
 
 
 # ---------------------------------------------------------------------------
