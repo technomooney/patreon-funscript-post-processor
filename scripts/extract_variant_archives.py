@@ -179,10 +179,26 @@ def _extract(archive_path: str, dest: str, password: str | None) -> bool:
     return result.returncode == 0
 
 
+def _walk_files(root_dir: str) -> list[str]:
+    """Every file's full path under *root_dir*, recursively — some archives
+    wrap everything in one subfolder instead of putting funscripts/videos
+    loose at the zip root (confirmed live, user-reported 2026-09-12: a
+    "no .funscript or video" false negative on an archive that genuinely had
+    both, just one level down in a folder inside the zip). A flat
+    os.listdir() of the extraction dir would only ever see that subfolder's
+    name, not what's actually in it."""
+    paths = []
+    for dirpath, _dirs, files in os.walk(root_dir):
+        paths.extend(os.path.join(dirpath, f) for f in files)
+    return paths
+
+
 def _funscript_base_name(extracted_dir: str) -> str | None:
     """Base name shared by the extracted .funscript files, with any axis suffix
-    (.pitch, .roll, ...) stripped — None if the archive held no funscript at all."""
-    for f in os.listdir(extracted_dir):
+    (.pitch, .roll, ...) stripped — None if the archive held no funscript at all,
+    anywhere in the extracted tree (see _walk_files)."""
+    for path in _walk_files(extracted_dir):
+        f = os.path.basename(path)
         if not f.lower().endswith('.funscript'):
             continue
         stem = Path(f).stem
@@ -293,8 +309,9 @@ def extract_one(archive_path: str, creator_key: str, base_path: str) -> bool:
                 return False
             creator_db.mark_confirmed(creator_key, password_used)
 
+        extracted_files = _walk_files(tmp)
         base_name = _funscript_base_name(tmp)
-        videos = [f for f in os.listdir(tmp) if _is_video_filename(f)]
+        videos = [p for p in extracted_files if _is_video_filename(p)]
         if base_name is None and not videos:
             print(f'  [extract] "{os.path.basename(archive_path)}" extracted but contained no '
                   '.funscript or video — skipping')
@@ -303,7 +320,8 @@ def extract_one(archive_path: str, creator_key: str, base_path: str) -> bool:
 
         if base_name is not None:
             tag = _variant_tag(archive_stem, base_name)
-            for f in os.listdir(tmp):
+            for path in extracted_files:
+                f = os.path.basename(path)
                 if not f.lower().endswith('.funscript'):
                     continue
                 stem = Path(f).stem
@@ -315,14 +333,14 @@ def extract_one(archive_path: str, creator_key: str, base_path: str) -> bool:
                 dest_path = os.path.join(folder, f'{stem}{tag}{axis}.funscript')
                 if os.path.exists(dest_path):
                     continue  # already extracted (this run or a previous one)
-                shutil.move(os.path.join(tmp, f), dest_path)
+                shutil.move(path, dest_path)
                 action_log.record('copy', dst=dest_path)
                 print(f'  [extract] {os.path.basename(dest_path)}')
 
         # List comprehension, not all(generator, ...) — every video must actually get
         # processed even if an earlier one comes back unresolved; short-circuiting
         # would skip later videos' side effects (moving/matching them) entirely.
-        video_results = [_extract_video(os.path.join(tmp, f), folder, base_path) for f in videos]
+        video_results = [_extract_video(path, folder, base_path) for path in videos]
         videos_saved = all(video_results)
 
     if videos_saved:
