@@ -468,8 +468,22 @@ def resolve_alt_tagged_videos(root_dir: str) -> tuple[int, int]:
         print(f'\n[alt-video] resolved {len(resolved)} "[altN]" video(s) back to their real name:')
         for r in resolved:
             print(f'    {r["file"]}  ->  {r["renamed_to"]}')
+        # Own script name, distinct from 'check_funscripts' itself -- a run
+        # here has no 'missing'/'total_videos' fields, and generate_audit_report
+        # treats the *last* 'check_funscripts' folder_log entry as the current
+        # missing-funscript count; sharing the name would make that reads as
+        # "0 missing" (or drop real missing videos) any time this cleanup
+        # happens to run after a real check_funscripts scan. Grouped one
+        # folder_log entry per folder (not per video) so a folder with
+        # several resolved videos gets one run entry, not several.
+        by_folder: dict[str, list[dict]] = {}
         for r in resolved:
-            folder_log.append_run(r['folder'], 'check_funscripts', alt_resolved=r['renamed_to'])
+            by_folder.setdefault(r['folder'], []).append(r)
+        for folder, items in by_folder.items():
+            folder_log.append_run(
+                folder, 'check_funscripts_alt_cleanup',
+                renamed=[{'from': it['file'], 'to': it['renamed_to']} for it in items],
+            )
 
     if unresolved:
         csv_path = os.path.join(_reports_dir(root_dir), 'alt_video_review.csv')

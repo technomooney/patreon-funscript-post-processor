@@ -29,6 +29,11 @@ _LABELS  = {
     'fix_garbled_names':'Name Fix',
     'check_funscripts': 'FS Check',
     'generate_html':    'HTML',
+    # Not in _SCRIPTS/the coverage progress bars -- this only ever runs for a
+    # folder that actually had a '[altN]' dedup-collision video (see
+    # check_funscripts.resolve_alt_tagged_videos), not every folder, so a
+    # "done / total" bar for it would be misleadingly low by design.
+    'check_funscripts_alt_cleanup': 'Alt Cleanup',
 }
 _LINK_STATUS_CLASS = {
     'downloaded':          'ok',
@@ -89,6 +94,7 @@ _CSV_META: dict[str, dict] = {
     'uncertain_downloads.csv':    {'title': 'Uncertain Downloads',         'path_cols': {'save_directory'},                'order': 7},
     'many_funscripts.csv':        {'title': 'Folders with Many Funscripts','path_cols': {'folder'},                        'order': 8},
     'mega_error6.csv':            {'title': 'Mega Error Log',              'path_cols': set(),                             'order': 9},
+    'alt_video_review.csv':       {'title': 'Alt-Tagged Video Review',     'path_cols': {'folder'},                        'order': 10},
 }
 
 
@@ -317,6 +323,16 @@ def _render_run(run: dict) -> str:
         else:
             parts.append(f'<span class="empty-note">All {total_v} video(s) have matching funscripts.</span>')
 
+    elif script == 'check_funscripts_alt_cleanup':
+        renamed = run.get('renamed', [])
+        if renamed:
+            parts.append('<div class="run-renames">')
+            parts.extend(_render_rename_row(r.get('from', ''), r.get('to', ''), '[altN] resolved')
+                         for r in renamed)
+            parts.append('</div>')
+        else:
+            parts.append('<span class="empty-note">No "[altN]" videos to resolve.</span>')
+
     elif script == 'generate_html':
         parts.append('<span class="empty-note">description.html written.</span>')
 
@@ -370,6 +386,8 @@ def generate(base: str) -> str:
                 n_renames += sum(1 for c in run.get('changes', []) if c.get('status') == 'renamed')
             elif s == 'check_funscripts':
                 last_fs_check = run
+            elif s == 'check_funscripts_alt_cleanup':
+                n_renames += len(run.get('renamed', []))
         if last_fs_check is not None:
             n_missing_scripts += len(last_fs_check.get('missing', []))
         for s in scripts_seen:
@@ -672,6 +690,7 @@ body {
 .s-prefixFix        { background: #2a1e40; color: #9070c8; border: 1px solid #40306a; }
 .s-fix_garbled_names{ background: #1e2e1e; color: #70b070; border: 1px solid #2a4a2a; }
 .s-check_funscripts { background: #1a2e3a; color: #60b8c8; border: 1px solid #264860; }
+.s-check_funscripts_alt_cleanup { background: #2a1e2e; color: #b06fc0; border: 1px solid #46284a; }
 .s-generate_html    { background: #2e2a1a; color: #c0a040; border: 1px solid #4a4020; }
 
 .run-fs-check { }
