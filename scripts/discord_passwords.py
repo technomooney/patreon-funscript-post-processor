@@ -62,6 +62,51 @@ def _looks_like_password(value: str) -> bool:
     value = value.strip()
     return len(value) >= 4 and any(c.isalnum() for c in value)
 
+
+# Some creators label each password with the post date range/month and post
+# type ("Collection"/"standalone post") it applies to, instead of (or as well
+# as) the plain "PW: xxxx" convention _PASSWORD_RE anchors on, e.g.:
+#   "2026.08.16-2026.08.31 standalone post PW😀  2<[58I@@ihW2Ga"
+# Several labels can also share one trailing value, full/half-width-comma
+# separated, with only the last one carrying it:
+#   "2026.02-07 standalone post PW，2026.02-07 Collection per month PW，
+#    2026.09.01 standalone post PW😀  y7$X#mQ2!vK9*pB5@wT4"
+# Illustrative examples given by the user, not yet confirmed against a real
+# post (unlike _PASSWORD_RE's prose form) — kept deliberately best-effort:
+# see creator_db.record_password_labels/get_password_history for how a
+# mis-parsed or unmatched label just fails to help, never blocks anything.
+# "PW[^\w\s,，]*" swallows an emoji glued onto "PW" without also eating past
+# a following comma/digit into the next clause or the value itself.
+_LABELED_PASSWORD_RE = re.compile(
+    r'(?P<date>\d{4}(?:[.\-]\d{1,2}){0,2}\s*[-~]\s*(?:\d{4}[.\-])?\d{1,2}(?:[.\-]\d{1,2})?'
+    r'|\d{4}(?:[.\-]\d{1,2}){0,2})'
+    r'\s*(?P<kind>collection(?:\s+per\s+month)?|standalone(?:\s+post)?)?'
+    r'[^\S\n]*PW[^\w\s,，]*'
+    r'[^\S\n]*(?P<value>[^\s,，;]+)?',
+    re.IGNORECASE,
+)
+
+
+def parse_labeled_passwords(text: str) -> list[dict]:
+    """Parse zero or more {'date_label', 'kind', 'password'} entries out of
+    one Discord message (see _LABELED_PASSWORD_RE above for the shapes
+    handled). A label with no value of its own inherits the next label's
+    value — the shared-trailing-password shape — so every label in a chain
+    like that ends up mapped to the same password."""
+    entries: list[dict] = []
+    pending: list[tuple[str, str]] = []
+    for m in _LABELED_PASSWORD_RE.finditer(text):
+        kind = (m.group('kind') or '').lower()
+        kind = 'collection' if kind.startswith('collection') else ('standalone' if kind else '')
+        pending.append((m.group('date').strip(), kind))
+        value = m.group('value')
+        if value and _looks_like_password(value):
+            pw = value.strip()
+            for date_label, k in pending:
+                entries.append({'date_label': date_label, 'kind': k, 'password': pw})
+            pending = []
+    return entries
+
 _driver = None  # module-level singleton so repeated lookups in one run share one login session
 
 
@@ -288,17 +333,24 @@ def fetch_password_history(creator_key: str, max_messages: int = 50) -> list[str
     texts, discord_cfg = loaded
 
     passwords: list[str] = []
+    labeled: list[dict] = []
     for text in texts:
+        labeled.extend(parse_labeled_passwords(text))
         match = _PASSWORD_RE.search(text)
         if match and _looks_like_password(match.group(1)):
             pw = match.group(1).strip()
             if pw not in passwords:
                 passwords.append(pw)
+    for entry in labeled:
+        if entry['password'] not in passwords:
+            passwords.append(entry['password'])
 
     if passwords:
         print(f'  [discord] found {len(passwords)} distinct password(s) for "{creator_key}" '
               f'in channel {discord_cfg["channel_id"]}')
         creator_db.record_passwords(creator_key, passwords)
+        if labeled:
+            creator_db.record_password_labels(creator_key, labeled)
     else:
         print(f'  [discord] no password-looking message found in the last {max_messages} '
               f'messages of channel {discord_cfg["channel_id"]}')
@@ -358,4 +410,8 @@ def _main() -> None:
 
 
 if __name__ == '__main__':
-    _main()
+    try:
+        _main()
+    except KeyboardInterrupt:
+        print('\n\nCancelled.')
+        close()

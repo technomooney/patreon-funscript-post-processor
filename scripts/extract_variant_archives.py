@@ -47,11 +47,19 @@ _extract_video (a same-name collision that couldn't be confirmed as a
 duplicate) — its archive is kept, since it's the only remaining copy.
 
 Passwords are resolved from creator_db.py's SQLite history first (fastest,
-no browser), falling back to a live Discord fetch via discord_passwords.py
-only when every known password fails — a creator can (and Pize has)
-re-encrypt archives under a new password without warning, so this doesn't
-assume "first thing that ever worked" stays valid forever, nor does it
-re-launch a browser on every single archive.
+no browser, tried in most-likely-current order — see creator_db.
+get_password_history, which also tries a password whose Discord label
+matches this archive's own post date/type first when one is known), falling
+back to a live Discord fetch via discord_passwords.py only when every known
+password fails — a creator can (and Pize has) re-encrypt archives under a
+new password without warning, so this doesn't assume "first thing that ever
+worked" stays valid forever. That Discord fetch happens at most once per run
+(per creator), not once per failing archive — repeatedly reloading the same
+Discord channel for archives that all need the same not-yet-known password
+wastes time and, well before that, just looks like automated abuse of the
+account to Discord. A password the one fetch turns up is saved to creator_db
+(with the date it was first seen) same as always, so every archive after the
+first still benefits from it via the normal local-history lookup above.
 
 Extracted-vs-failed state is tracked in creator_db so a repeat run doesn't
 burn time re-extracting or re-testing what already ran — including an
@@ -65,6 +73,7 @@ Usage:
 path's own top-level folder name (e.g. ".../Patreon/Pize" -> "pize"), the
 same convention downloadContent.py uses for the Discord password lookup.
 """
+import datetime
 import os
 import re
 import shutil
@@ -76,6 +85,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import action_log
 import creator_db
+import generate_html
 from downloadContent import (
     _closer_to_target_resolution,
     _get_max_resolution,
@@ -86,6 +96,44 @@ from downloadContent import (
 
 _ARCHIVE_EXTS = ('.rar', '.zip', '.7z')
 _AXIS_SUFFIXES = ('.surge', '.pitch', '.roll', '.twist', '.sway')  # keep in sync with check_funscripts.py
+
+# Discord-fetched password history, keyed by creator — populated at most once
+# per creator per run (see extract_one), same rationale as downloadContent.
+# _fetch_discord_password_cached: a browser reload of the same channel for
+# every archive that fails the same not-yet-known password is both wasted
+# time and enough repeated automated navigation to look like abuse.
+_discord_history_cache: dict[str, list[str]] = {}
+
+
+def _fetch_discord_history_cached(creator_key: str) -> list[str]:
+    if creator_key not in _discord_history_cache:
+        import discord_passwords
+        _discord_history_cache[creator_key] = discord_passwords.fetch_password_history(creator_key)
+    return _discord_history_cache[creator_key]
+
+
+def _post_context(archive_path: str) -> tuple[datetime.date | None, bool | None]:
+    """Best-effort (post_date, is_collection) for the post folder *archive_path*
+    lives directly in, parsed from this project's '[id] YYYY-MM-DD title'
+    folder-naming convention (generate_html._parse_folder_name) — used only to
+    move a Discord-labeled password (see discord_passwords.parse_labeled_
+    passwords) ahead of the rest in creator_db.get_password_history's try
+    order. is_collection is a plain 'does the title say so' check, matching
+    how creators actually name these (confirmed real examples: "Free
+    multi-axis Collection", "Laffey collection", ... — see project memory
+    project_archival_collection_links). Returns (None, None) if the folder
+    name doesn't match — callers treat that as "no hint", same as any other
+    unmatched/unparseable label.
+    """
+    folder_name = os.path.basename(os.path.dirname(archive_path))
+    _post_id, date_str, title = generate_html._parse_folder_name(folder_name)
+    if not date_str:
+        return None, None
+    try:
+        post_date = datetime.date.fromisoformat(date_str)
+    except ValueError:
+        return None, None
+    return post_date, 'collection' in title.lower()
 
 
 def _normalize_variant_tag(raw: str) -> str:
@@ -217,18 +265,24 @@ def extract_one(archive_path: str, creator_key: str, base_path: str) -> bool:
         password_used: str | None = None
         tried: set[str] = set()
         if not _extract(archive_path, tmp, None):
-            for pw in creator_db.get_password_history(creator_key):
+            post_date, is_collection = _post_context(archive_path)
+            for pw in creator_db.get_password_history(creator_key, post_date, is_collection):
                 tried.add(pw)
                 if _extract(archive_path, tmp, pw):
                     password_used = pw
                     break
             if password_used is None:
-                print(f'  [extract] no known password worked for "{os.path.basename(archive_path)}" '
-                      f'— fetching current passwords from Discord for "{creator_key}"...')
-                import discord_passwords
-                for pw in discord_passwords.fetch_password_history(creator_key):
+                if creator_key not in _discord_history_cache:
+                    print(f'  [extract] no known password worked for "{os.path.basename(archive_path)}" '
+                          f'— fetching current passwords from Discord for "{creator_key}" (once per run)...')
+                else:
+                    print(f'  [extract] no known password worked for "{os.path.basename(archive_path)}" '
+                          f'— already checked Discord for "{creator_key}" this run, not checking again.')
+                _fetch_discord_history_cached(creator_key)  # persists any new finds (+ labels) to creator_db
+                for pw in creator_db.get_password_history(creator_key, post_date, is_collection):
                     if pw in tried:
                         continue  # already tried above, from the local history this fetch just re-confirmed
+                    tried.add(pw)
                     if _extract(archive_path, tmp, pw):
                         password_used = pw
                         break
@@ -353,4 +407,7 @@ def _main() -> None:
 
 
 if __name__ == '__main__':
-    _main()
+    try:
+        _main()
+    except KeyboardInterrupt:
+        print('\n\nCancelled.')
