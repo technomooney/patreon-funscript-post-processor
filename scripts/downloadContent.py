@@ -203,10 +203,27 @@ KNOWN_DOMAINS = [
 # recognise mega domains outside of the KNOWN_DOMAINS/DOMAIN_HANDLERS lookup.
 _MEGA_DOMAINS = ('mega.nz', 'mega.co.nz')
 
+# Domains downloaded first within a task, ahead of every other link (see
+# their use in collect_tasks' validated_links.sort()) -- creators most often
+# use these for a lower-quality bundle (video+funscript together, sometimes
+# as a password-protected archive) alongside a separate higher-quality
+# source link in the same post. Downloading them first means any video they
+# carry (loose, or extracted from an archive -- see the inline extraction
+# step in find_and_download) is already sitting in the folder by the time a
+# later link's own video downloads, so the existing AV-similarity check can
+# compare the two and keep whichever fits MAX_RESOLUTION better instead of
+# ending up with both.
+_PRIORITY_DOWNLOAD_DOMAINS = _MEGA_DOMAINS + ('pixeldrain.com', 'disk.yandex.com', 'disk.yandex.ru')
+
 
 def _is_mega_domain(url: str) -> bool:
     d = get_domain(url)
     return any(d == m or d.endswith('.' + m) for m in _MEGA_DOMAINS)
+
+
+def _is_priority_download_domain(url: str) -> bool:
+    d = get_domain(url)
+    return any(d == m or d.endswith('.' + m) for m in _PRIORITY_DOWNLOAD_DOMAINS)
 
 
 # Links to these domains are creator pages / social profiles — no file to download.
@@ -4575,11 +4592,9 @@ def collect_tasks(base_path: str, require_funscript: bool = True,
                 if pw:
                     _mega_link_passwords[link] = pw
 
-        # Download mega links first: they're often a lower-quality bundle (e.g.
-        # 540p + funscript) alongside a separate higher-quality source link in the
-        # same post — downloading mega first lets the AV-similarity check compare
-        # the source against it and keep whichever fits MAX_RESOLUTION better.
-        validated_links.sort(key=lambda l: 0 if _is_mega_domain(l) else 1)
+        # Download mega/pixeldrain/yandex-disk links first -- see
+        # _PRIORITY_DOWNLOAD_DOMAINS for why.
+        validated_links.sort(key=lambda l: 0 if _is_priority_download_domain(l) else 1)
 
         # Always download every link using its original filename.
         # Funscript-to-video matching is handled separately by check_funscripts.py.
@@ -4829,9 +4844,34 @@ def _find_existing_by_hash(folder: str, file_hash: str, exclude: str) -> str | N
     return None
 
 
+def _extract_archive_inline(saved_path: str, creator_key: str, base_path: str) -> None:
+    """Extract *saved_path* (a just-downloaded password-protected variant
+    archive, see _VARIANT_ARCHIVE_EXTS) right now, in place, instead of
+    leaving it for a later, separate extract_variant_archives.py run.
+
+    Why inline: a bundled video (see extract_variant_archives.py's own
+    docstring for that shape) needs to actually be sitting in the folder,
+    not still zipped up, before the existing AV-similarity check further up
+    this loop can compare it against a *later* link's own video in the same
+    task and keep whichever fits MAX_RESOLUTION better — deferring
+    extraction to after every link in the task has already downloaded would
+    let a redundant lower-quality copy sit around instead of ever being
+    compared. Lazy-imports extract_variant_archives (avoids a circular
+    import at module load time, same reason discord_passwords does it
+    lazily). Any failure here is non-fatal — the archive stays on disk
+    exactly as _save_downloaded left it, extractable normally by a later
+    manual run (menu option 4) same as always.
+    """
+    try:
+        import extract_variant_archives
+        extract_variant_archives.extract_one(saved_path, creator_key, base_path)
+    except Exception as e:
+        print(f'  [extract] inline extraction failed for {_safe(os.path.basename(saved_path))}: {e}')
+
+
 def _save_downloaded(downloaded: str, folder: str,
                      newly_downloaded: list[str],
-                     original_name: str | None = None) -> bool:
+                     original_name: str | None = None) -> str | None:
     """Hash *downloaded*, check for duplicates, then move into place.
 
     The file is kept under its own download name — no renaming to funscript
@@ -4843,8 +4883,10 @@ def _save_downloaded(downloaded: str, folder: str,
       2. Any file in *folder* with the same hash — catches duplicates.
       3. Name collision with different content — saved as [alt2], [alt3], etc.
 
-    Returns True if the file was kept (and added to *newly_downloaded*).
-    Always removes *downloaded* if the content is a duplicate.
+    Returns the path the file was actually saved to (its own name, or an
+    '[altN]'-tagged one on a name collision — see 3 above), or None if it was
+    a duplicate and removed instead. Always removes *downloaded* if the
+    content is a duplicate.
     """
     new_hash = _file_hash(downloaded)
 
@@ -4861,7 +4903,7 @@ def _save_downloaded(downloaded: str, folder: str,
         prior = _session_hashes[new_hash]
         print(f'  [SKIP] identical to already-downloaded file: {_safe(os.path.basename(prior))}')
         os.remove(downloaded)
-        return False
+        return None
 
     # --- 2. folder-level dedup ---
     existing_match = _find_existing_by_hash(folder, new_hash, exclude=downloaded)
@@ -4869,7 +4911,7 @@ def _save_downloaded(downloaded: str, folder: str,
         os.remove(downloaded)
         print(f'  [SKIP] identical file already on disk: {_safe(os.path.basename(existing_match))}')
         _session_hashes[new_hash] = existing_match
-        return False
+        return None
 
     # --- 3. name collision with different content — keep both ---
     if os.path.exists(dest_path):
@@ -4886,14 +4928,14 @@ def _save_downloaded(downloaded: str, folder: str,
         _session_hashes[new_hash] = alt_path
         newly_downloaded.append(alt_path)
         action_log.record('copy', dst=alt_path)
-        return True
+        return alt_path
 
     os.rename(downloaded, dest_path)
     print(f'  Saved as: {_safe(dest_name)}')
     _session_hashes[new_hash] = dest_path
     newly_downloaded.append(dest_path)
     action_log.record('copy', dst=dest_path)
-    return True
+    return dest_path
 
 
 # ---------------------------------------------------------------------------
@@ -5174,6 +5216,11 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
     # _save_downloaded()'s and the AV-replace block's action_log.record() calls.
     action_log.start(script_name, base_path)
 
+    # Same convention as collect_tasks' mega-password lookup and
+    # extract_variant_archives.py itself: the lowercased top-level scanned
+    # folder name, since description.json carries no creator field of its own.
+    creator_key = os.path.basename(os.path.normpath(base_path)).strip().lower()
+
     driver = setup_driver(tasks[0]['folder'])
 
     # State tracked so KeyboardInterrupt can finish/clean the active download.
@@ -5202,8 +5249,10 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                 for fname in new_files:
                     fpath = os.path.join(res['download_dir'], fname)
                     orig = Path(_decode_filename(fname)).stem
-                    _save_downloaded(fpath, res['download_dir'], newly_downloaded,
-                                     original_name=orig)
+                    saved_path = _save_downloaded(fpath, res['download_dir'], newly_downloaded,
+                                                  original_name=orig)
+                    if saved_path and saved_path.lower().endswith(_VARIANT_ARCHIVE_EXTS):
+                        _extract_archive_inline(saved_path, creator_key, base_path)
                 tracker.mark_done(res['download_dir'], res['link'])
                 link_statuses.setdefault(res['download_dir'], {})[res['link']] = 'downloaded'
                 print(f'  [mega.nz] background download finished: {_safe(res["basename"])}')
@@ -5413,7 +5462,8 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                 else:
                     original_name = None
 
-                if downloaded.lower().endswith(_VARIANT_ARCHIVE_EXTS):
+                is_archive = downloaded.lower().endswith(_VARIANT_ARCHIVE_EXTS)
+                if is_archive:
                     # A password-protected variant archive (see
                     # extract_variant_archives.py) -- get its creator's current
                     # Discord password on record now, not only whenever
@@ -5424,15 +5474,21 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                     # capturing it here (cached per creator per run, same as
                     # the mega-password lookup above) means creator_db already
                     # has it on file regardless of how long extraction waits.
-                    _fetch_discord_password_cached(
-                        os.path.basename(os.path.normpath(base_path)).strip().lower())
+                    _fetch_discord_password_cached(creator_key)
 
-                kept = _save_downloaded(downloaded, folder, newly_downloaded,
-                                        original_name=original_name)
+                saved_path = _save_downloaded(downloaded, folder, newly_downloaded,
+                                              original_name=original_name)
                 tracker.mark_done(folder, link)
                 link_statuses.setdefault(folder, {})[link] = 'downloaded'
-                if kept:
+                if saved_path:
                     saved_for_folder += 1
+                    if is_archive:
+                        # Extract right now -- see _extract_archive_inline's
+                        # docstring for why this can't wait for a later,
+                        # separate run: a later link *in this same task* may
+                        # need to AV-compare its own video against whatever
+                        # this archive bundles.
+                        _extract_archive_inline(saved_path, creator_key, base_path)
 
             _cleanup_temp_files(folder)
 
