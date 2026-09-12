@@ -3896,17 +3896,41 @@ def _link_matches_handler_filter(url: str, patterns: list[str]) -> bool:
 # Main scanning + download logic
 # ---------------------------------------------------------------------------
 
-def _cleanup_temp_files(folder: str):
-    """Remove any leftover temp files created by the download handlers."""
+def _cleanup_temp_files(folder: str, base_path: str, protected: set[str] = frozenset()):
+    """Remove any leftover temp files created by the download handlers.
+
+    *protected*: absolute paths that must never be touched even though their
+    name matches — specifically, whatever _save_downloaded just successfully
+    saved *this run*. Naming alone can't tell a genuinely-abandoned partial
+    download apart from a fully-saved, real video whose real title simply
+    couldn't be resolved (its stem is then the literal '_ytdlp_temp'/
+    '_iwara_ytdlp_temp' placeholder, which also "looks like" a temp file) --
+    that used to mean this sweep deleted such a video outright, permanently
+    and silently, moments after it was saved (root-caused 2026-09-12, see
+    project memory project_ytdlp_alt_collision: the *only* reason any
+    '[altN]' copy of one ever survived to be found is that its tag broke the
+    name match here, protecting it by accident). The real fix is giving these
+    files a real name in the first place (done, see download_ytdlp /
+    _download_iwara_ytdlp), but this sweep must never repeat that mistake
+    for whatever slips through anyway.
+
+    Soft-deletes via action_log (recoverable from .trash / undoable), not a
+    hard os.remove -- same safety net every other destructive operation in
+    this project already gets; there was never a good reason for this one
+    function to be the exception.
+    """
     for f in os.listdir(folder):
+        path = os.path.join(folder, f)
+        if os.path.abspath(path) in protected:
+            continue
         stem = Path(f).stem  # strips last extension, e.g. _iwara_temp.mp4.part → _iwara_temp.mp4
         outer_stem = Path(stem).stem  # strips one more, e.g. _iwara_temp.mp4 → _iwara_temp
         is_temp = outer_stem.endswith('_temp') or stem.endswith('_temp')
         is_part = f.endswith('.part')
         if is_temp or is_part:
-            path = os.path.join(folder, f)
             try:
-                os.remove(path)
+                trash_dest = action_log.soft_delete(base_path, path)
+                action_log.record('soft_delete', orig_path=path, trash_path=trash_dest)
                 print(f'  [cleanup] removed temp file: {f}')
             except OSError as e:
                 print(f'  [cleanup] could not remove {f}: {e}')
@@ -3918,7 +3942,7 @@ def _cleanup_temp_files_recursive(base_path: str):
     for dirpath, dirs, _ in os.walk(base_path):
         if action_log.TRASH_DIRNAME in dirs:
             dirs.remove(action_log.TRASH_DIRNAME)
-        _cleanup_temp_files(dirpath)
+        _cleanup_temp_files(dirpath, base_path)
 
 
 def _is_temp_file(filename: str) -> bool:
@@ -5235,6 +5259,13 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
     global _last_fetch_original_name, _last_download_skipped
     completed_cleanly = False
 
+    def _protected() -> set[str]:
+        """Absolute paths of everything successfully saved so far this run --
+        passed to every _cleanup_temp_files() call below so it can never
+        delete a file just because its (possibly ugly) real name happens to
+        look like a temp file. See _cleanup_temp_files' own docstring."""
+        return {os.path.abspath(p) for p in newly_downloaded}
+
     mega_worker: _MegaWorker | None = None
 
     def _drain_mega_results() -> None:
@@ -5277,7 +5308,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
 
             _drain_mega_results()
             print(f"\n[{task_idx}/{total}] {_safe(basename)}")
-            _cleanup_temp_files(folder)
+            _cleanup_temp_files(folder, base_path, protected=_protected())
 
             # Health-check the browser before touching the task; restart if dead.
             driver = _ensure_driver_alive(driver, folder)
@@ -5490,7 +5521,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                         # this archive bundles.
                         _extract_archive_inline(saved_path, creator_key, base_path)
 
-            _cleanup_temp_files(folder)
+            _cleanup_temp_files(folder, base_path, protected=_protected())
 
         # Wait for all background mega retries to finish, then process results.
         if mega_worker is not None:
@@ -5530,10 +5561,10 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
             else:
                 if in_progress:
                     print('  Download did not complete in time — removing temp files.')
-                _cleanup_temp_files(current_folder)
+                _cleanup_temp_files(current_folder, base_path, protected=_protected())
         except KeyboardInterrupt:
             print('\n  Cancelled — removing temp files.')
-            _cleanup_temp_files(current_folder)
+            _cleanup_temp_files(current_folder, base_path, protected=_protected())
 
     finally:
         action_log.finish()
