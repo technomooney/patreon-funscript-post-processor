@@ -86,6 +86,7 @@ def _run_download(cfg: dict, fields: dict) -> None:
     downloadContent.find_and_download(
         cfg['destination'],
         require_funscript=fields.get('require_funscript', True),
+        ignore_consolidated=fields.get('ignore_consolidated', False),
         resume=fields.get('resume', True),
         auto_confirm=True,
     )

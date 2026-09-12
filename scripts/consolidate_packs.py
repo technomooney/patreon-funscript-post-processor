@@ -39,6 +39,17 @@ here: collect_tasks, fix_garbled_names, prefixFix, generate_html's badge,
 copy lives, for the audit report and for a human glancing at the folder
 later.
 
+Also marked '.consolidated' -- a second, more specific marker alongside
+'.manual'. '.manual' alone would work for the "don't touch this folder"
+part, but it means "a human needs to look at this" everywhere else in the
+project (the manual_folders report, generate_html's badge, ...), and a
+folder that ended up here isn't that -- it's an expected, already-resolved
+outcome, not something that needs a second look. collect_tasks() checks for
+'.consolidated' specifically so it can report these separately from genuine
+'.manual' folders, and so a run can be told to re-check them anyway (see its
+ignore_consolidated parameter / find_and_download's prompt) without also
+having to blow away real '.manual' protection to do it.
+
 Not run automatically -- most creators never repost like this -- it's its
 own menu option, pointed at whichever creator folder actually shows the
 pattern.
@@ -64,6 +75,8 @@ _FUNSCRIPT_EXT = '.funscript'
 # keep in sync with check_funscripts.py / extract_variant_archives.py
 _AXIS_SUFFIXES = ('.surge', '.pitch', '.roll', '.twist', '.sway')
 _MANUAL_MARKER = '.manual'
+# keep in sync with downloadContent.collect_tasks / generate_html
+_CONSOLIDATED_MARKER = '.consolidated'
 _SCRIPT_NAME = 'consolidate_packs'
 
 
@@ -217,11 +230,12 @@ def _resolve_actions(candidates: list[dict]) -> list[dict]:
 
 
 def _mark_consolidated(base_path: str, orig_folder: str, candidate: dict, note: str) -> None:
-    marker_path = os.path.join(orig_folder, _MANUAL_MARKER)
-    if not os.path.exists(marker_path):
-        with open(marker_path, 'w', encoding='utf-8'):
-            pass
-        action_log.record('create_marker', path=marker_path)
+    for marker in (_MANUAL_MARKER, _CONSOLIDATED_MARKER):
+        marker_path = os.path.join(orig_folder, marker)
+        if not os.path.exists(marker_path):
+            with open(marker_path, 'w', encoding='utf-8'):
+                pass
+            action_log.record('create_marker', path=marker_path)
 
     folder_log.append_run(
         orig_folder, _SCRIPT_NAME,

@@ -7,7 +7,8 @@ standalone description.html next to it showing:
   - Post metadata (ID, date, title) parsed from the folder name
   - Rendered rich-text from the ProseMirror description.json
   - Local files listed by type (images shown inline using relative paths)
-  - A "manual" badge if a .manual file is present
+  - A "manual" badge if a .manual file is present, or "consolidated" instead
+    if a .consolidated file is present too (see consolidate_packs.py)
 
 Usage
 -----
@@ -194,6 +195,16 @@ body {
     white-space: nowrap;
 }
 
+.consolidated-badge {
+    font-size: .72rem;
+    background: #2a3a5a;
+    color: #80a8d0;
+    border: 1px solid #3a5a7a;
+    border-radius: 4px;
+    padding: .15rem .5rem;
+    white-space: nowrap;
+}
+
 /* ---- Description ---- */
 .description {
     font-size: .93rem;
@@ -317,7 +328,8 @@ def _render_page(folder_path: str, folder_name: str) -> str:
     """Return a complete HTML document for the post in *folder_path*."""
     desc_path = os.path.join(folder_path, 'description.json')
     post_id, date, title = _parse_folder_name(folder_name)
-    is_manual = os.path.exists(os.path.join(folder_path, '.manual'))
+    is_consolidated = os.path.exists(os.path.join(folder_path, '.consolidated'))
+    is_manual = os.path.exists(os.path.join(folder_path, '.manual')) and not is_consolidated
 
     # --- Render description ---
     try:
@@ -355,7 +367,9 @@ def _render_page(folder_path: str, folder_name: str) -> str:
     if date:
         header_parts.append(f'<span class="post-date">{_escape(date)}</span>')
     header_parts.append(f'<span class="post-title">{_escape(title)}</span>')
-    if is_manual:
+    if is_consolidated:
+        header_parts.append('<span class="consolidated-badge">↻ consolidated</span>')
+    elif is_manual:
         header_parts.append('<span class="manual-badge">✔ manual</span>')
     header_parts.append('</header>')
 

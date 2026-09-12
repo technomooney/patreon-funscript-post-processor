@@ -4114,15 +4114,16 @@ def _is_av_similar(new_path: str, folder: str) -> str | None:
 
 # This project's own per-folder bookkeeping files -- never real downloaded
 # content, so never eligible for cross-folder duplicate removal. '.manual'
-# is the sharpest case: every one is an empty 0-byte file by convention, so
-# ANY two of them anywhere in base_path hash identically and exact-match
-# dedup would keep only the single oldest, silently stripping the marker
-# (and the "don't touch this folder automatically" protection it exists
+# and '.consolidated' are the sharpest case: every one is an empty 0-byte
+# file by convention, so ANY two of them anywhere in base_path hash
+# identically and exact-match dedup would keep only the single oldest,
+# silently stripping the marker (and the "don't touch this folder
+# automatically" protection, or the "already consolidated" skip, it exists
 # for) from every other folder that had one. '.folder_log.json' and
 # '.last_action.json' are far less likely to collide (both carry
 # timestamps) but belong in the same "never dedup this" category on
 # principle -- it's project bookkeeping, not content.
-_DEDUP_EXCLUDED_FILES = {'.manual', '.links', folder_log.FILENAME, action_log.JOURNAL_FILENAME}
+_DEDUP_EXCLUDED_FILES = {'.manual', '.consolidated', '.links', folder_log.FILENAME, action_log.JOURNAL_FILENAME}
 
 
 def _dedup_existing(base_path: str) -> int:
@@ -4358,7 +4359,8 @@ def _previously_seen_links(folder: str) -> set[str]:
     }
 
 
-def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list, list, list, list]:
+def collect_tasks(base_path: str, require_funscript: bool = True,
+                   ignore_consolidated: bool = False) -> tuple[list, list, list, list, list]:
     """
     Walk *base_path* looking for folders that contain a description.json and,
     when *require_funscript* is True, at least one .funscript.
@@ -4369,13 +4371,23 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
     Pixeldrain list URLs (/l/<id>) are automatically expanded into individual
     file URLs (/u/<file_id>) before tasks are created.
 
-    Returns (tasks, failures, many_funscripts, manual_folders).
+    *ignore_consolidated*: process a folder marked '.consolidated' (see
+    consolidate_packs.py) anyway, instead of skipping it like every other
+    '.manual' folder. Off by default — these folders were deliberately
+    emptied of their own video by consolidate_packs (its script/funscripts
+    now live in the pack folder instead), so re-scanning them for downloads
+    is wasted work unless something upstream changed. A one-off override for
+    a specific run, not a persisted setting — same convention as
+    extract_variant_archives.py's ignore_manual.
+
+    Returns (tasks, failures, many_funscripts, manual_folders, consolidated_folders).
     Unsupported domains are added to failures instead of aborting the run.
     """
     tasks = []
     failures = []
     many_funscripts = []
     manual_folders = []
+    consolidated_folders = []
 
     axis_suffixes = ('.surge', '.pitch', '.roll', '.twist', '.sway')
 
@@ -4384,8 +4396,18 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
         if action_log.TRASH_DIRNAME in dirs:
             dirs.remove(action_log.TRASH_DIRNAME)
         if '.manual' in files:
-            manual_folders.append(root)
-            continue
+            # '.consolidated' (always paired with '.manual' by consolidate_
+            # packs.py) marks an expected, already-resolved outcome, not a
+            # "human needs to look at this" folder -- report it separately
+            # and let ignore_consolidated re-process it without having to
+            # touch real '.manual' protection to do so.
+            if '.consolidated' in files:
+                consolidated_folders.append(root)
+                if not ignore_consolidated:
+                    continue
+            else:
+                manual_folders.append(root)
+                continue
         links_file = os.path.join(root, '.links')
         has_links_file = os.path.isfile(links_file)
         # previously_seen non-empty means: this folder already completed a
@@ -4511,7 +4533,7 @@ def collect_tasks(base_path: str, require_funscript: bool = True) -> tuple[list,
             'links': validated_links,
         })
 
-    return tasks, failures, many_funscripts, manual_folders
+    return tasks, failures, many_funscripts, manual_folders, consolidated_folders
 
 
 def _write_playlist(base_path: str, newly_downloaded: list[str] | None = None):
@@ -4615,6 +4637,22 @@ def _write_manual_folders(base_path: str, manual_folders: list):
     for path in manual_folders:
         print(f"  {path}")
     print(f"  (list written to: {txt_path})")
+
+
+def _write_consolidated_folders(base_path: str, consolidated_folders: list, ignored: bool):
+    """Print and write the list of '.consolidated' folders (see
+    consolidate_packs.py) to _reports/consolidated_folders.txt — kept
+    separate from manual_folders.txt since these were skipped as expected,
+    routine housekeeping, not because a human needs to look at them."""
+    if not consolidated_folders:
+        return
+    txt_path = os.path.join(_reports_dir(base_path), 'consolidated_folders.txt')
+    with open(txt_path, 'w', encoding='utf-8') as f:
+        for path in consolidated_folders:
+            f.write(path + '\n')
+    verb = 're-checked anyway' if ignored else 'skipped'
+    print(f"\n{verb.capitalize()} {len(consolidated_folders)} previously-consolidated folder(s) "
+          f"(list written to: {txt_path})")
 
 
 def _write_many_funscripts_csv(base_path: str, many_funscripts: list):
@@ -4990,7 +5028,7 @@ def find_and_download_from_funscript_metadata(
 def find_and_download(base_path: str, tasks: list | None = None, failures: list | None = None,
                        script_name: str = 'downloadContent', report_suffix: str = '',
                        *, require_funscript: bool | None = None, resume: bool | None = None,
-                       auto_confirm: bool | None = None):
+                       auto_confirm: bool | None = None, ignore_consolidated: bool | None = None):
     """*tasks*/*failures*: pre-built task list (collect_tasks()'s return shape)
     to run instead of scanning description.json — used by
     find_and_download_from_funscript_metadata(). None (the default) collects
@@ -4999,17 +5037,24 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
     report filenames with, so a non-default caller's output doesn't overwrite
     or get confused with the regular download run's.
 
-    *require_funscript*/*resume*/*auto_confirm*: bypass this function's three
-    prompts (require_funscript only applies when *tasks* isn't prebuilt) when
-    given (True/False) instead of asking interactively. Each left as None
-    (the default) still prompts exactly as before. Used by
-    run_unattended.py to run this step with no prompts at all.
+    *require_funscript*/*resume*/*auto_confirm*/*ignore_consolidated*: bypass
+    this function's four prompts (require_funscript and ignore_consolidated
+    only apply when *tasks* isn't prebuilt) when given (True/False) instead
+    of asking interactively. Each left as None (the default) still prompts
+    exactly as before. Used by run_unattended.py to run this step with no
+    prompts at all.
     """
     prebuilt = tasks is not None
     if not prebuilt:
         if require_funscript is None:
             ans = input("Download even without a funscript file? (y/n, default n): ").strip().lower()
             require_funscript = ans != 'y'
+        if ignore_consolidated is None:
+            ans = input(
+                "Re-check folders already consolidated by pack consolidation? "
+                "(y/n, default n): "
+            ).strip().lower()
+            ignore_consolidated = ans == 'y'
 
     # Load known failures so they can be skipped (SKIP_KNOWN_FAILURES=true).
     skip_known = os.getenv('SKIP_KNOWN_FAILURES', 'false').strip().lower() not in ('false', '0', 'no')
@@ -5024,10 +5069,13 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
         failures = failures or []
         many_funscripts: list = []
         manual_folders: list = []
+        consolidated_folders: list = []
     else:
-        tasks, failures, many_funscripts, manual_folders = collect_tasks(base_path, require_funscript=require_funscript)
+        tasks, failures, many_funscripts, manual_folders, consolidated_folders = collect_tasks(
+            base_path, require_funscript=require_funscript, ignore_consolidated=bool(ignore_consolidated))
     _write_many_funscripts_csv(base_path, many_funscripts)
     _write_manual_folders(base_path, manual_folders)
+    _write_consolidated_folders(base_path, consolidated_folders, ignored=bool(ignore_consolidated))
 
     if not tasks:
         print("No valid download tasks found.")

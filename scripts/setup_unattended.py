@@ -105,6 +105,8 @@ def _ask_step_fields(step_id: str, saved: dict) -> dict:
         return {
             'require_funscript': _ask_bool('Require a funscript to already exist before downloading?',
                                             saved.get('require_funscript', True)),
+            'ignore_consolidated': _ask_bool('Re-check folders already consolidated by pack consolidation?',
+                                              saved.get('ignore_consolidated', False)),
             'resume': _ask_bool('Auto-resume an interrupted previous session?',
                                  saved.get('resume', True)),
         }
