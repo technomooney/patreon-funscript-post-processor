@@ -36,6 +36,36 @@ already uses when a post links the same video twice (see
 _extract_video()), which also guards against the collision risk of two
 variant archives each bundling their own copy of the same video.
 
+As of ~2026-08-13 (confirmed live, user-reported 2026-09-12) Pize's current
+packaging nests things one level deeper still, wrapping everything in one
+subfolder and putting each variant's funscript in its *own* inner archive
+instead of a bare .funscript:
+
+    [Yuluer] Citlali.zip
+        [Yuluer] Citlali/
+            [Yuluer] Citlali.mp4
+            [Yuluer] Citlali(medium).rar   <- itself contains a .funscript
+            [Yuluer] Citlali(soothing).rar <- ditto
+
+_walk_files() finds content anywhere in the extracted tree (not just the top
+level, which a flat directory listing would miss entirely), and
+_extract_nested_archives() opens any inner .rar/.zip/.7z it finds the same
+way the outer one was opened (same creator_db password history — almost
+always the same password both layers) before anything is treated as "this
+archive's real content."
+
+Separately, some archives (also confirmed live: Pize's monthly "Free
+multi-axis Collection"/"Laffey collection"/etc. posts, both the collection
+posts' own attached archive *and*, oddly, the same bulk archive occasionally
+turning up attached to an unrelated single-video post too) bundle dozens of
+completely unrelated videos+funscripts in one zip — a bulk collection, not
+a single post's variant set. extract_one() detects this (more than one
+distinct funscript base name inside) and refuses to auto-extract it into
+whatever one folder the archive happened to be sitting in, since blindly
+extracting would scatter unrelated videos across the wrong posts. Left in
+place for a human to sort out by hand — there is no dedicated per-video
+redistribution feature (yet).
+
 Every archive gets trashed once everything it held is safely out and
 accounted for — funscripts always are once extraction succeeds, and a
 bundled video is too (newly placed, or an already-existing AV-matched copy
@@ -171,12 +201,30 @@ def _run_7z(cmd: list[str]) -> subprocess.CompletedProcess:
 
 
 def _extract(archive_path: str, dest: str, password: str | None) -> bool:
+    """Extract *archive_path* into *dest* with the given password (None = no
+    password). On failure, removes anything 7z wrote to *dest* before hitting
+    the error -- confirmed live this session: a wrong password against a zip
+    can still leave a corrupted-but-present output file behind rather than
+    writing nothing at all, which would otherwise contaminate a later retry
+    with a different password, or a caller's "what does this archive
+    actually contain" analysis once every password has been tried.
+    """
+    os.makedirs(dest, exist_ok=True)
+    before = set(os.listdir(dest))
     cmd = ['7z', 'x', '-y', f'-o{dest}', f'-p{password}' if password else '-p', archive_path]
     try:
         result = _run_7z(cmd)
+        ok = result.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
-        return False
-    return result.returncode == 0
+        ok = False
+    if not ok:
+        for name in set(os.listdir(dest)) - before:
+            path = os.path.join(dest, name)
+            try:
+                shutil.rmtree(path) if os.path.isdir(path) else os.remove(path)
+            except OSError:
+                pass
+    return ok
 
 
 def _walk_files(root_dir: str) -> list[str]:
@@ -193,10 +241,13 @@ def _walk_files(root_dir: str) -> list[str]:
     return paths
 
 
-def _funscript_base_name(extracted_dir: str) -> str | None:
-    """Base name shared by the extracted .funscript files, with any axis suffix
-    (.pitch, .roll, ...) stripped — None if the archive held no funscript at all,
-    anywhere in the extracted tree (see _walk_files)."""
+def _funscript_base_names(extracted_dir: str) -> set[str]:
+    """Every distinct funscript base name (axis suffix stripped) found
+    anywhere in the extracted tree (see _walk_files). A normal single-post
+    variant archive has exactly one — more than one means this is actually a
+    bulk multi-video collection (see module docstring), not something
+    extract_one() should extract automatically."""
+    bases = set()
     for path in _walk_files(extracted_dir):
         f = os.path.basename(path)
         if not f.lower().endswith('.funscript'):
@@ -204,9 +255,69 @@ def _funscript_base_name(extracted_dir: str) -> str | None:
         stem = Path(f).stem
         for sfx in _AXIS_SUFFIXES:
             if stem.endswith(sfx):
-                return stem[: -len(sfx)]
-        return stem
-    return None
+                stem = stem[: -len(sfx)]
+                break
+        bases.add(stem)
+    return bases
+
+
+def _extract_nested_archives(tmp: str, creator_key: str, post_date, is_collection: bool,
+                              tried: set[str]) -> tuple[bool, dict[str, str]]:
+    """Recursively open any archive found *inside* the already-extracted
+    *tmp* tree (see module docstring — a variant's funscript is sometimes its
+    own inner .rar rather than a bare .funscript, with the funscript itself
+    left bare/untagged the same way the outer archive's funscript is — the
+    variant tag lives on whichever archive, inner or outer, actually wraps
+    it). Tries no password, then the same creator_db history the outer
+    archive used (nearly always the same password works at both layers) —
+    deliberately does not trigger a fresh Discord fetch on its own; if
+    that's genuinely not enough, this reports it and extract_one leaves the
+    outer archive untouched rather than losing whatever was inside the
+    still-locked inner one.
+
+    Each inner archive is extracted into its own subdirectory (named after
+    the inner archive's own stem) rather than flattened alongside it, so
+    every file that came out of it can be traced back to it afterward —
+    extract_one needs that to compute each funscript's variant tag from
+    *its own* wrapping archive's name, not the outer archive's.
+
+    Returns (all_opened, source_by_path): all_opened is True if every inner
+    archive found was opened (or none existed) — callers use this to decide
+    whether it's safe to trash the outer archive afterward. source_by_path
+    maps each path that came out of an inner archive to that archive's stem.
+    """
+    all_opened = True
+    source_by_path: dict[str, str] = {}
+    while True:
+        nested = [p for p in _walk_files(tmp) if p.lower().endswith(_ARCHIVE_EXTS)]
+        if not nested:
+            return all_opened, source_by_path
+        progressed = False
+        for archive in nested:
+            archive_stem = Path(archive).stem
+            dest = os.path.join(os.path.dirname(archive), archive_stem)
+            os.makedirs(dest, exist_ok=True)
+            opened = _extract(archive, dest, None)
+            if not opened:
+                for pw in creator_db.get_password_history(creator_key, post_date, is_collection):
+                    if pw in tried:
+                        continue
+                    tried.add(pw)
+                    if _extract(archive, dest, pw):
+                        opened = True
+                        break
+            if opened:
+                for path in _walk_files(dest):
+                    source_by_path[path] = archive_stem
+                os.remove(archive)
+                progressed = True
+                print(f'  [extract] opened nested archive: {os.path.basename(archive)}')
+            else:
+                print(f'  [extract] could not open nested archive: {os.path.basename(archive)} '
+                      '— no known password worked')
+                all_opened = False
+        if not progressed:
+            return all_opened, source_by_path  # nothing more openable this pass -- avoid spinning forever
 
 
 def _extract_video(tmp_video_path: str, folder: str, trash_root: str) -> bool:
@@ -276,12 +387,12 @@ def extract_one(archive_path: str, creator_key: str, base_path: str) -> bool:
     already extracted before")."""
     folder = os.path.dirname(archive_path)
     archive_stem = Path(archive_path).stem
+    post_date, is_collection = _post_context(archive_path)
 
     with tempfile.TemporaryDirectory() as tmp:
         password_used: str | None = None
         tried: set[str] = set()
         if not _extract(archive_path, tmp, None):
-            post_date, is_collection = _post_context(archive_path)
             for pw in creator_db.get_password_history(creator_key, post_date, is_collection):
                 tried.add(pw)
                 if _extract(archive_path, tmp, pw):
@@ -309,21 +420,42 @@ def extract_one(archive_path: str, creator_key: str, base_path: str) -> bool:
                 return False
             creator_db.mark_confirmed(creator_key, password_used)
 
+        # Some variants ship their funscript as its own inner archive rather
+        # than a bare .funscript (see module docstring) -- open those before
+        # deciding what this archive actually holds.
+        nested_ok, nested_sources = _extract_nested_archives(tmp, creator_key, post_date, is_collection, tried)
+
         extracted_files = _walk_files(tmp)
-        base_name = _funscript_base_name(tmp)
+        base_names = _funscript_base_names(tmp)
         videos = [p for p in extracted_files if _is_video_filename(p)]
-        if base_name is None and not videos:
+        if not base_names and not videos:
             print(f'  [extract] "{os.path.basename(archive_path)}" extracted but contained no '
                   '.funscript or video — skipping')
             creator_db.record_extraction(archive_path, 'failed', password_used)
             return False
 
+        if len(base_names) > 1:
+            # A bulk multi-video collection, not one post's variant set (see
+            # module docstring) -- extracting it here would scatter unrelated
+            # videos into whatever single folder this archive happened to be
+            # sitting in. Left in place; not something this script handles.
+            print(f'  [extract] "{os.path.basename(archive_path)}" holds funscripts for '
+                  f'{len(base_names)} different videos — looks like a bulk collection archive, '
+                  'not a single post\'s variant set. Leaving it in place; extract by hand.')
+            creator_db.record_extraction(archive_path, 'failed', password_used)
+            return False
+
+        base_name = next(iter(base_names), None)
         if base_name is not None:
-            tag = _variant_tag(archive_stem, base_name)
             for path in extracted_files:
                 f = os.path.basename(path)
                 if not f.lower().endswith('.funscript'):
                     continue
+                # A funscript's variant tag comes from whichever archive
+                # actually wraps it -- an inner archive's own name if it came
+                # from one (nested_sources), otherwise the outer archive's,
+                # same as before nested archives existed at all.
+                tag = _variant_tag(nested_sources.get(path, archive_stem), base_name)
                 stem = Path(f).stem
                 axis = ''
                 for sfx in _AXIS_SUFFIXES:
@@ -342,6 +474,17 @@ def extract_one(archive_path: str, creator_key: str, base_path: str) -> bool:
         # would skip later videos' side effects (moving/matching them) entirely.
         video_results = [_extract_video(path, folder, base_path) for path in videos]
         videos_saved = all(video_results)
+
+    if not nested_ok:
+        # An inner archive couldn't be opened -- its content is about to be
+        # lost once the TemporaryDirectory above is cleaned up. Leave the
+        # outer archive in place (never trashed) and mark this 'failed' so a
+        # later run retries from scratch, rather than reporting success over
+        # content that's actually gone.
+        print(f'  [extract] "{os.path.basename(archive_path)}" left in place — an inner '
+              'archive inside it could not be opened (see above); will retry next run.')
+        creator_db.record_extraction(archive_path, 'failed', password_used)
+        return False
 
     if videos_saved:
         # Everything the archive held is now fully represented on disk —
