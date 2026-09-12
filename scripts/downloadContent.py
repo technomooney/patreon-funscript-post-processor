@@ -1488,6 +1488,24 @@ def _get_max_resolution() -> int:
         return 1080
 
 
+def _get_skip_title_keywords() -> list[str]:
+    """SKIP_TITLE_KEYWORDS from the environment: semicolon-separated,
+    case-insensitive words/phrases (e.g. a creator's periodic vote/poll
+    posts, which never have a funscript and just clutter the library) --
+    [] (the default) disables this entirely."""
+    raw = os.getenv('SKIP_TITLE_KEYWORDS', '').strip()
+    return [kw.strip().lower() for kw in raw.split(';') if kw.strip()]
+
+
+def _matches_skip_keyword(folder_name: str, keywords: list[str]) -> str | None:
+    """The first keyword (if any) that appears in *folder_name*, case-insensitive."""
+    lowered = folder_name.lower()
+    for kw in keywords:
+        if kw in lowered:
+            return kw
+    return None
+
+
 def _parse_resolution(text: str) -> int:
     """Return the first resolution value (e.g., 1080) found in *text*, or 0."""
     for res in [2160, 1080, 720, 480, 360, 240]:
@@ -4477,6 +4495,13 @@ def collect_tasks(base_path: str, require_funscript: bool = True,
     a specific run, not a persisted setting — same convention as
     extract_variant_archives.py's ignore_manual.
 
+    SKIP_TITLE_KEYWORDS (semicolon-separated, case-insensitive, set via .env
+    or the setup wizard) skips a folder entirely, before any of the above,
+    when its name contains one of the configured words/phrases -- meant for
+    a creator's periodic vote/poll posts that never have a funscript and
+    just clutter the library with an irrelevant video. Empty (the default)
+    disables this.
+
     Returns (tasks, failures, many_funscripts, manual_folders, consolidated_folders).
     Unsupported domains are added to failures instead of aborting the run.
     """
@@ -4485,6 +4510,8 @@ def collect_tasks(base_path: str, require_funscript: bool = True,
     many_funscripts = []
     manual_folders = []
     consolidated_folders = []
+    skip_keywords = _get_skip_title_keywords()
+    keyword_skipped = 0
 
     axis_suffixes = ('.surge', '.pitch', '.roll', '.twist', '.sway')
 
@@ -4492,6 +4519,12 @@ def collect_tasks(base_path: str, require_funscript: bool = True,
         dirs.sort()  # visit subdirectories in alphabetical order
         if action_log.TRASH_DIRNAME in dirs:
             dirs.remove(action_log.TRASH_DIRNAME)
+        if skip_keywords:
+            hit = _matches_skip_keyword(os.path.basename(root), skip_keywords)
+            if hit:
+                print(f'[skip-keyword] "{hit}" matched: {_safe(os.path.basename(root))}')
+                keyword_skipped += 1
+                continue
         if '.manual' in files:
             # '.consolidated' (always paired with '.manual' by consolidate_
             # packs.py) marks an automated decision, not an actual person
@@ -4627,6 +4660,9 @@ def collect_tasks(base_path: str, require_funscript: bool = True,
             'basename': funscript_basename,
             'links': validated_links,
         })
+
+    if keyword_skipped:
+        print(f'[skip-keyword] {keyword_skipped} folder(s) skipped (SKIP_TITLE_KEYWORDS match)')
 
     return tasks, failures, many_funscripts, manual_folders, consolidated_folders
 

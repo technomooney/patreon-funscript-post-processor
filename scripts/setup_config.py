@@ -607,6 +607,16 @@ def main():
     _write_env('SKIP_KNOWN_FAILURES', 'true' if skip_known else 'false',
                comment='Skip previously-failed links from failed_downloads.csv. Original CSV entries are preserved.')
 
+    skip_keywords = _ask(
+        'Skip downloading folders whose title contains any of these words '
+        '(semicolon-separated, blank = off — e.g. for periodic vote/poll posts '
+        'that never have a funscript)',
+        current=_read_env('SKIP_TITLE_KEYWORDS'),
+    )
+    _write_env('SKIP_TITLE_KEYWORDS', skip_keywords,
+               comment='Semicolon-separated, case-insensitive words/phrases; a folder name containing any of '
+                        'them is skipped entirely before downloading. Blank disables this.')
+
     force_rerun = _ask_bool(
         'Force re-process all folders even if already logged as done? (true/false)\n'
         '  Each script records a .folder_log.json inside completed folders and\n'
