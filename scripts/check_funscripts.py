@@ -25,7 +25,7 @@ from pathlib import Path
 
 import action_log
 import folder_log
-from downloadContent import _video_duration
+from downloadContent import _is_temp_file, _video_duration
 
 # ---------------------------------------------------------------------------
 # Extension sets
@@ -306,32 +306,53 @@ def _check_folder(folder: str, do_rename: bool = False) -> FolderResult | None:
 
 
 # ---------------------------------------------------------------------------
-# '[altN]' dedup-collision cleanup
+# Garbage-named video cleanup ('[altN]' tags and bare temp placeholders)
 #
 # downloadContent._save_downloaded tags a video '[alt2]'/'[alt3]'/... when
 # its expected destination filename is already taken by different content --
 # meant for the rare real case (two genuinely different videos that happen
 # to share a title), but a naming bug meant it also fired every time a
 # video's real title couldn't be resolved at all, leaving multiple different
-# videos all sharing one literal placeholder stem (see project memory
+# videos all sharing one literal placeholder stem. When there was no 2nd
+# video to collide against, the same bug just left a single video under that
+# literal placeholder name with no tag at all (see project memory
 # project_ytdlp_alt_collision -- fixed at the source, but this cleans up
 # what already landed on disk, and anything that slips through in the
-# future). There should be no '[altN]' video left with a resolvable real
-# name: try to give each one back its real name by matching it -- name
-# first, duration as a fallback when the tag text itself drags the name
-# score down -- against a funscript in the same folder no other video has
-# already claimed. Anything that can't be resolved with confidence is left
-# untouched and written to a report instead of guessed at.
+# future). Neither shape should be left on disk with a resolvable real name:
+# try to give each one back its real name by matching it -- name first
+# (meaningless for a bare placeholder, whose "clean" name is nothing, so this
+# always falls through for those), duration as a fallback -- against a
+# funscript in the same folder no other video has already claimed. Anything
+# that can't be resolved with confidence is left untouched and written to a
+# report instead of guessed at.
 # ---------------------------------------------------------------------------
 
+def _is_garbage_named(filename: str) -> bool:
+    """True for a video whose name gives no real information to go on: either
+    the '[altN]' dedup-collision tag, or (no tag at all, because there was no
+    2nd video to collide against) the video's whole name is still the raw
+    yt-dlp/iwara-yt-dlp temp placeholder itself -- both outcomes of the same
+    underlying naming bug, see project memory project_ytdlp_alt_collision.
+    _is_temp_file() is reused here (not just its '_cleanup_temp_files' use)
+    because it's exactly the same shape of name to recognise.
+    """
+    stem = Path(filename).stem
+    return _strip_alt_tag(stem) != stem or _is_temp_file(filename)
+
+
 def find_alt_tagged_videos(folder: str) -> list[dict]:
-    """Every video in *folder* carrying the '[altN]' tag, as
-    [{'file', 'clean_stem'}, ...] -- clean_stem has both the tag and any
-    ordinary parenthetical variant stripped, ready to fuzzy-match against
-    _base_stem()'d funscript names. [] for a folder with none. Sorted by
-    filename so that when two '[altN]' videos could otherwise both claim the
-    same funscript, which one gets first pick is at least deterministic
-    rather than whatever order the filesystem happens to hand back.
+    """Every garbage-named video in *folder* (see _is_garbage_named), as
+    [{'file', 'clean_stem'}, ...]. clean_stem has the '[altN]' tag and any
+    ordinary parenthetical variant stripped for fuzzy-matching against
+    _base_stem()'d funscript names -- for a bare temp-placeholder video (no
+    tag, nothing real to strip) clean_stem is just the placeholder text
+    itself, which will fuzzy-match ~0 against any real funscript name and so
+    falls straight through to _resolve_alt_video's duration-only fallback,
+    the only signal that can actually work for one of these. [] for a folder
+    with none. Sorted by filename so that when two of these could otherwise
+    both claim the same funscript, which one gets first pick is at least
+    deterministic rather than whatever order the filesystem happens to hand
+    back.
     """
     try:
         entries = sorted(os.listdir(folder))
@@ -341,22 +362,20 @@ def find_alt_tagged_videos(folder: str) -> list[dict]:
     for f in entries:
         if Path(f).suffix.lower() not in _VIDEO_EXTS:
             continue
-        stem = Path(f).stem
-        alt_stripped = _strip_alt_tag(stem)
-        if alt_stripped == stem:
+        if not _is_garbage_named(f):
             continue
-        out.append({'file': f, 'clean_stem': _strip_variants(alt_stripped)})
+        out.append({'file': f, 'clean_stem': _strip_variants(_strip_alt_tag(Path(f).stem))})
     return out
 
 
 def _claimed_script_bases(folder_videos: list[str], script_bases: dict[str, list[str]]) -> set[str]:
-    """Funscript base stems already matched by an ordinary (non-'[altN]')
-    video in the folder -- an '[altN]' video must never be pointed at one of
-    these, even on a strong name/duration match."""
+    """Funscript base stems already matched by an ordinary (non-garbage-named)
+    video in the folder -- a garbage-named video must never be pointed at one
+    of these, even on a strong name/duration match."""
     claimed = set()
     for v in folder_videos:
-        if _strip_alt_tag(Path(v).stem) != Path(v).stem:
-            continue  # itself '[altN]'-tagged -- doesn't claim anything
+        if _is_garbage_named(v):
+            continue  # doesn't claim anything -- it's what we're trying to fix
         vbase = _video_base(v)
         if vbase in script_bases:
             claimed.add(vbase)
