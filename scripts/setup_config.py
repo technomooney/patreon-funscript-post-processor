@@ -709,14 +709,17 @@ def _configure_credentials() -> None:
 
 
 if __name__ == '__main__':
-    if '--credentials' in sys.argv:
-        print()
-        print('==============================================')
-        print('  Update credentials  (press Enter to keep current values)')
-        print('==============================================')
-        _configure_credentials()
-        print()
-        print('Done.')
-        print()
-    else:
-        main()
+    try:
+        if '--credentials' in sys.argv:
+            print()
+            print('==============================================')
+            print('  Update credentials  (press Enter to keep current values)')
+            print('==============================================')
+            _configure_credentials()
+            print()
+            print('Done.')
+            print()
+        else:
+            main()
+    except KeyboardInterrupt:
+        print('\n\nCancelled.')

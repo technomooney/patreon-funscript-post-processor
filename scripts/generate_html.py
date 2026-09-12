@@ -448,19 +448,22 @@ def generate(root_dir: str, dry_run: bool) -> int:
 
 
 if __name__ == '__main__':
-    args = sys.argv[1:]
-    dry_run = '--dry-run' in args
-    dirs = [a for a in args if not a.startswith('--')]
-    if dirs:
-        root = os.path.abspath(dirs[0])
-    else:
-        entered = input("Enter full path to scan (leave blank for current directory): ").strip()
-        root = os.path.abspath(entered) if entered else os.getcwd()
+    try:
+        args = sys.argv[1:]
+        dry_run = '--dry-run' in args
+        dirs = [a for a in args if not a.startswith('--')]
+        if dirs:
+            root = os.path.abspath(dirs[0])
+        else:
+            entered = input("Enter full path to scan (leave blank for current directory): ").strip()
+            root = os.path.abspath(entered) if entered else os.getcwd()
 
-    if not os.path.isdir(root):
-        print(f'Directory not found: {root}', file=sys.stderr)
-        sys.exit(1)
+        if not os.path.isdir(root):
+            print(f'Directory not found: {root}', file=sys.stderr)
+            sys.exit(1)
 
-    count = generate(root, dry_run)
-    label = 'would be written' if dry_run else 'written'
-    print(f'\nDone. {count} file(s) {label}.')
+        count = generate(root, dry_run)
+        label = 'would be written' if dry_run else 'written'
+        print(f'\nDone. {count} file(s) {label}.')
+    except KeyboardInterrupt:
+        print('\n\nCancelled.')

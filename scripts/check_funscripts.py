@@ -408,18 +408,21 @@ def run(root: str, do_rename: bool) -> list[FolderResult]:
 
 
 if __name__ == '__main__':
-    root = input('Enter full directory path to scan: ').strip()
-    root = os.path.abspath(root)
+    try:
+        root = input('Enter full directory path to scan: ').strip()
+        root = os.path.abspath(root)
 
-    if not os.path.isdir(root):
-        print(f'Directory not found: {root}')
-        sys.exit(1)
+        if not os.path.isdir(root):
+            print(f'Directory not found: {root}')
+            sys.exit(1)
 
-    rename_answer = input(
-        '\nWhen a folder has exactly one video that doesn\'t name-match any\n'
-        'funscript there, but exactly one funscript\'s duration unambiguously\n'
-        'matches the video\'s, rename the video to match it? (Y/n): '
-    ).strip().lower()
-    do_rename = rename_answer != 'n'
+        rename_answer = input(
+            '\nWhen a folder has exactly one video that doesn\'t name-match any\n'
+            'funscript there, but exactly one funscript\'s duration unambiguously\n'
+            'matches the video\'s, rename the video to match it? (Y/n): '
+        ).strip().lower()
+        do_rename = rename_answer != 'n'
 
-    run(root, do_rename)
+        run(root, do_rename)
+    except KeyboardInterrupt:
+        print('\n\nCancelled.')

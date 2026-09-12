@@ -31,15 +31,18 @@ import sys
 from downloadContent import find_and_download_from_funscript_metadata
 
 if __name__ == '__main__':
-    args = [a for a in sys.argv[1:] if not a.startswith('--')]
-    if args:
-        base_path = os.path.abspath(args[0])
-    else:
-        base_path = input('Enter full directory path to scan: ').strip()
-        base_path = os.path.abspath(base_path)
+    try:
+        args = [a for a in sys.argv[1:] if not a.startswith('--')]
+        if args:
+            base_path = os.path.abspath(args[0])
+        else:
+            base_path = input('Enter full directory path to scan: ').strip()
+            base_path = os.path.abspath(base_path)
 
-    if not os.path.isdir(base_path):
-        print(f'Directory not found: {base_path}')
-        sys.exit(1)
+        if not os.path.isdir(base_path):
+            print(f'Directory not found: {base_path}')
+            sys.exit(1)
 
-    find_and_download_from_funscript_metadata(base_path)
+        find_and_download_from_funscript_metadata(base_path)
+    except KeyboardInterrupt:
+        print('\n\nCancelled.')

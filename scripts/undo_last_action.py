@@ -135,9 +135,12 @@ def main(root_dir: str | None = None):
 
 
 if __name__ == "__main__":
-    _args = sys.argv[1:]
-    if _args:
-        _root_dir = _args[0]
-    else:
-        _root_dir = input("Folder to undo (press Enter for the last menu action): ").strip() or None
-    main(_root_dir)
+    try:
+        _args = sys.argv[1:]
+        if _args:
+            _root_dir = _args[0]
+        else:
+            _root_dir = input("Folder to undo (press Enter for the last menu action): ").strip() or None
+        main(_root_dir)
+    except KeyboardInterrupt:
+        print('\n\nCancelled.')

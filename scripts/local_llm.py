@@ -223,11 +223,14 @@ def generate(tag: str, system_prompt: str, user_prompt: str, timeout: int = 300)
 
 
 if __name__ == '__main__':
-    print('Local LLM setup check\n')
-    chosen = get_or_setup_model()
-    if not chosen:
-        sys.exit(1)
-    print(f'\nReady: {chosen}')
-    print('Sending a one-line test prompt...')
-    reply = generate(chosen, 'You are a helpful assistant.', 'Reply with exactly: OK')
-    print(f'Response: {reply!r}')
+    try:
+        print('Local LLM setup check\n')
+        chosen = get_or_setup_model()
+        if not chosen:
+            sys.exit(1)
+        print(f'\nReady: {chosen}')
+        print('Sending a one-line test prompt...')
+        reply = generate(chosen, 'You are a helpful assistant.', 'Reply with exactly: OK')
+        print(f'Response: {reply!r}')
+    except KeyboardInterrupt:
+        print('\n\nCancelled.')
