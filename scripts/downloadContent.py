@@ -4245,16 +4245,34 @@ def _dedup_existing(base_path: str) -> int:
     file; everything else (and a funscript that fails to parse) by a plain
     byte hash, as before.
 
-    For each set of identical files, which one is kept differs by type:
-    a funscript group keeps whichever copy has the richest 'metadata'
-    (most non-empty fields — video_url, title, tags, ...), since the point
-    data is identical either way and a richer copy is strictly more useful;
-    everything else keeps the oldest (earliest mtime), same as always.
-    Either way, all the other copies are moved into a '.trash' folder
-    rather than deleted outright — recoverable via the undo-last-action
-    menu option while it's still the most recent run, and by hand from
-    '.trash' itself for up to TRASH_RETENTION_DAYS (default 14) afterward.
-    Returns the number of files removed.
+    A multi-axis funscript is never compared file-by-file, though. A
+    variant (a main script plus whichever of its own .roll/.pitch/.twist/
+    .surge/.sway siblings exist, identified by folder + stem-without-axis)
+    is deduped as one atomic *set*: it only counts as a duplicate of
+    another variant's set when every axis it has matches that other
+    variant's corresponding axis, main included. No funscript player
+    associates one variant's axis file with a different variant's selected
+    main script, so removing even a single axis file because it happens to
+    content-match some other variant's same axis breaks the variant that
+    loses it — confirmed live (Pize's "PAC BABY" (soothing)/(medium)/
+    (exciting) set shares identical secondary axes across different main
+    scripts; per-file matching kept only one variant's axis files and
+    trashed the other variants' matching siblings, leaving them unplayable
+    as multi-axis). A partial match (main matches but an axis differs, or
+    vice versa, or the two sets don't carry the same axes at all) removes
+    nothing from either side.
+
+    For each set of identical files, which one is kept differs by type: a
+    funscript variant keeps whichever whole set carries the richest total
+    'metadata' (most non-empty fields — video_url, title, tags, ... —
+    summed across its files), since the point data is identical either way
+    and a richer copy is strictly more useful; everything else keeps the
+    oldest (earliest mtime), same as always. Either way, all the other
+    copies are moved into a '.trash' folder rather than deleted outright —
+    recoverable via the undo-last-action menu option while it's still the
+    most recent run, and by hand from '.trash' itself for up to
+    TRASH_RETENTION_DAYS (default 14) afterward. Returns the number of
+    files removed.
 
     This project's own per-folder bookkeeping files (_DEDUP_EXCLUDED_FILES)
     are never candidates, regardless of content — see that constant's
@@ -4295,47 +4313,32 @@ def _dedup_existing(base_path: str) -> int:
                 candidates.append(full)
 
     total = len(candidates)
-    hash_to_paths: dict[tuple, list[str]] = {}
+    bytes_groups: dict[tuple, list[str]] = {}
+    # variant_key = (folder, stem-without-axis) -- every file belonging to
+    # one multi-axis variant (its main script plus whichever of its own
+    # .roll/.pitch/.twist/.surge/.sway siblings exist) shares one entry
+    # here: {axis_or_None: (funscript_data, path)}.
+    variant_sets: dict[tuple, dict] = {}
 
     completed = 0
-    def _hash_one(fpath: str) -> tuple[str, tuple]:
+    def _hash_one(fpath: str) -> tuple[str, str, object]:
         # A .funscript is fingerprinted by its actual point data (see
         # funscript_utils.funscript_data), not its bytes, so a copy that
         # got re-touched/re-saved with reformatted JSON -- or just a
         # richer/thinner 'metadata' block -- still groups with its
         # content-identical siblings instead of surviving as a false
         # "distinct" file. Falls back to the plain byte hash for anything
-        # else, and for a funscript that fails to parse.
+        # else, and for a funscript that fails to parse -- those go through
+        # 'bytes' below exactly like any other file, one at a time.
         if fpath.lower().endswith(funscript_utils.FUNSCRIPT_EXT):
             data = funscript_utils.funscript_data(fpath)
             if data is not None:
                 axis = funscript_utils.axis_suffix(fpath)
-                if axis is None:
-                    return fpath, ('funscript', data)
-                # Axis-suffixed sibling (.roll/.pitch/...): creators commonly
-                # reuse the exact same secondary-axis choreography across
-                # several main-script variants of one video (e.g. a
-                # "(soothing)"/"(medium)"/"(exciting)" set), so two axis
-                # files can be byte-for-byte identical while belonging to
-                # completely different variants. Matching on axis content
-                # alone (as before) merged them and trashed the axis sibling
-                # one variant still needed to play correctly -- confirmed
-                # live on the "PAC BABY" multi-axis set. Fold in the paired
-                # main (non-axis) script's own content too, so two axis
-                # files only count as duplicates when their main scripts
-                # also match: a genuine repost still matches on both; two
-                # different variants sharing one axis's choreography no
-                # longer collide. No parseable sibling main script means
-                # there's nothing to disambiguate with, so the file is never
-                # merged with anything -- an extra copy kept beats a needed
-                # axis file wrongly deleted.
                 stem = Path(fpath).stem
-                main_path = os.path.join(os.path.dirname(fpath), stem[:-len(axis)] + funscript_utils.FUNSCRIPT_EXT)
-                main_data = funscript_utils.funscript_data(main_path) if os.path.isfile(main_path) else None
-                if main_data is None:
-                    return fpath, ('funscript-axis-unpaired', fpath)
-                return fpath, ('funscript-axis', axis, main_data, data)
-        return fpath, ('bytes', _file_hash(fpath, show_progress=False))
+                base_stem = stem[:-len(axis)] if axis else stem
+                variant_key = (os.path.dirname(fpath), base_stem)
+                return fpath, 'funscript', (variant_key, axis, data)
+        return fpath, 'bytes', _file_hash(fpath, show_progress=False)
 
     _env_threads = os.getenv('DEDUP_THREADS', '').strip()
     verbose = os.getenv('DEDUP_VERBOSE', 'false').strip().lower() not in ('false', '0', 'no')
@@ -4345,8 +4348,12 @@ def _dedup_existing(base_path: str) -> int:
             futures = {executor.submit(_hash_one, f): f for f in candidates}
             try:
                 for future in concurrent.futures.as_completed(futures):
-                    path, h = future.result()
-                    hash_to_paths.setdefault(h, []).append(path)
+                    path, kind, payload = future.result()
+                    if kind == 'bytes':
+                        bytes_groups.setdefault(payload, []).append(path)
+                    else:
+                        variant_key, axis, data = payload
+                        variant_sets.setdefault(variant_key, {})[axis] = (data, path)
                     completed += 1
                     size_mb = os.path.getsize(path) / (1 << 20)
                     if verbose:
@@ -4374,19 +4381,12 @@ def _dedup_existing(base_path: str) -> int:
 
     removed = 0
     try:
-        for key, paths in hash_to_paths.items():
+        # Plain byte-identical files (everything non-funscript, plus any
+        # funscript that failed to parse) -- unchanged: oldest kept.
+        for paths in bytes_groups.values():
             if len(paths) < 2:
                 continue
-            if key[0] in ('funscript', 'funscript-axis'):
-                # Same points/inverted/range (that's what grouped them here) --
-                # prefer whichever copy carries more descriptive metadata
-                # (video_url, title, tags, ...) over whichever is merely
-                # older, since a richer copy is strictly more useful and the
-                # data itself is identical either way. Oldest-first only
-                # breaks a tie when richness is equal too.
-                paths.sort(key=lambda p: (-funscript_utils.metadata_richness(p), os.path.getmtime(p)))
-            else:
-                paths.sort(key=os.path.getmtime)   # oldest first
+            paths.sort(key=os.path.getmtime)
             keeper = paths[0]
             for dup in paths[1:]:
                 print(f'  [dedup] keeping  {_safe(os.path.basename(keeper))}')
@@ -4397,6 +4397,81 @@ def _dedup_existing(base_path: str) -> int:
                     removed += 1
                 except OSError as e:
                     print(f'  [dedup] could not remove: {e}')
+
+        # Funscript variants, grouped by whole-set content fingerprint: a
+        # frozenset of (axis, data) covering every axis the variant has.
+        # Two variants only land in the same group when they carry the
+        # exact same axes and every one of those axes matches, main
+        # included -- a partial match (an axis differs, or the two variants
+        # don't have the same axes at all) never merges. No funscript
+        # player associates one variant's axis file with a different
+        # variant's selected main script, so a per-file match here would
+        # remove an axis file one surviving variant still needs -- see the
+        # function docstring for the live case this replaced.
+        fp_to_variants: dict[frozenset, list[tuple]] = {}
+        for variant_key, axis_map in variant_sets.items():
+            fingerprint = frozenset((axis, data) for axis, (data, _path) in axis_map.items())
+            fp_to_variants.setdefault(fingerprint, []).append((variant_key, axis_map))
+
+        import check_funscripts  # lazy: avoids a circular import at module load time
+
+        def _axis_sort_key(axis):
+            return (axis is not None, axis or '')
+
+        def _variant_sort_key(entry):
+            _variant_key, axis_map = entry
+            richness = sum(funscript_utils.metadata_richness(p) for _d, p in axis_map.values())
+            earliest = min(os.path.getmtime(p) for _d, p in axis_map.values())
+            return (-richness, earliest)
+
+        for entries in fp_to_variants.values():
+            if len(entries) < 2:
+                continue
+            # Prefer whichever whole variant carries the most descriptive
+            # metadata in total (summed across its files) -- the point data
+            # is identical either way -- oldest (earliest file mtime in the
+            # set) only breaks a tie.
+            entries.sort(key=_variant_sort_key)
+            (keeper_key, keeper_map), *losers = entries
+            for loser_key, loser_map in losers:
+                for axis in sorted(loser_map, key=_axis_sort_key):
+                    _ldata, dup = loser_map[axis]
+                    _kdata, keep = keeper_map[axis]
+                    print(f'  [dedup] keeping  {_safe(os.path.basename(keep))}')
+                    print(f'  [dedup] removing {_safe(os.path.basename(dup))}  ({_safe(os.path.dirname(dup))})')
+                    try:
+                        trash_dest = action_log.soft_delete(base_path, dup)
+                        action_log.record('soft_delete', orig_path=dup, trash_path=trash_dest)
+                        removed += 1
+                    except OSError as e:
+                        print(f'  [dedup] could not remove: {e}')
+
+            # Every axis this variant has matched some other variant's,
+            # main included -- the two are provably the same script despite
+            # different variant labels (e.g. "(smooth)" and "(moderate)"),
+            # so the label the keeper happens to carry no longer means
+            # anything. Strip it, unless the label-free name is already
+            # taken by something else (a genuinely distinct file) --
+            # then leave the label in place rather than risk a collision.
+            folder, base_stem = keeper_key
+            clean_stem = check_funscripts._strip_variants(base_stem)
+            if clean_stem != base_stem:
+                for axis, (_data, path) in keeper_map.items():
+                    new_name = clean_stem + (axis or '') + funscript_utils.FUNSCRIPT_EXT
+                    new_path = os.path.join(folder, new_name)
+                    if new_path == path:
+                        continue
+                    if os.path.exists(new_path):
+                        print(f'  [dedup] leaving variant label on {_safe(os.path.basename(path))} '
+                              f'-- {_safe(new_name)} already exists')
+                        continue
+                    try:
+                        os.rename(path, new_path)
+                        action_log.record('rename', old_path=path, new_path=new_path)
+                        print(f'  [dedup] renamed {_safe(os.path.basename(path))} -> {_safe(new_name)} '
+                              f'(variant label no longer meaningful)')
+                    except OSError as e:
+                        print(f'  [dedup] could not rename {_safe(os.path.basename(path))}: {e}')
     finally:
         action_log.finish()
 
