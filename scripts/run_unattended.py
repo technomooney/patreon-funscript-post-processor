@@ -89,6 +89,11 @@ def _run_download(cfg: dict, fields: dict) -> None:
         ignore_consolidated=fields.get('ignore_consolidated', False),
         resume=fields.get('resume', True),
         auto_confirm=True,
+        # Defaults to never fetching flagged collection redownloads
+        # unattended -- a network fetch of possibly many videos with no one
+        # watching is a bigger commitment than this runner otherwise makes;
+        # opt in per-creator via setup_unattended.py's config if ever wanted.
+        redownload_flagged=fields.get('redownload_flagged', False),
     )
 
 

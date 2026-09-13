@@ -60,11 +60,22 @@ posts' own attached archive *and*, oddly, the same bulk archive occasionally
 turning up attached to an unrelated single-video post too) bundle dozens of
 completely unrelated videos+funscripts in one zip — a bulk collection, not
 a single post's variant set. extract_one() detects this (more than one
-distinct funscript base name inside) and refuses to auto-extract it into
-whatever one folder the archive happened to be sitting in, since blindly
-extracting would scatter unrelated videos across the wrong posts. Left in
-place for a human to sort out by hand — there is no dedicated per-video
-redistribution feature (yet).
+distinct funscript base name inside) and, per the user's explicit request
+(2026-09-12), absorbs it via _handle_bulk_collection() rather than refusing
+it: everything is extracted loose into the collection's own folder (no
+attempt at per-video redistribution to each video's individual post folder
+elsewhere in the tree — a harder problem this project still doesn't solve),
+then every video that landed there is checked against the rest of the tree
+for an AV-confirmed duplicate (a video posted on its own earlier, later
+folded into this same collection) — whichever copy fits MAX_RESOLUTION
+better survives in the collection folder (consolidate_packs.py's own
+replace-in-place policy, just with the collection folder as the fixed
+target), the other folder's own funscripts the collection doesn't already
+have are migrated in, and that folder is marked '.manual'+'.consolidated'.
+A video that still doesn't meet MAX_RESOLUTION with nothing better found
+locally is queued via collection_redownload_queue.py for
+downloadContent.find_and_download() to offer fetching a replacement for
+next run — never fetched automatically here.
 
 Every archive gets trashed once everything it held is safely out and
 accounted for — funscripts always are once extraction succeeds, and a
@@ -104,6 +115,7 @@ path's own top-level folder name (e.g. ".../Patreon/Pize" -> "pize"), the
 same convention downloadContent.py uses for the Discord password lookup.
 """
 import datetime
+import json
 import os
 import re
 import shutil
@@ -114,6 +126,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import action_log
+import collection_redownload_queue
+import consolidate_packs
 import creator_db
 import generate_html
 from downloadContent import (
@@ -122,6 +136,7 @@ from downloadContent import (
     _is_av_similar,
     _is_video_filename,
     _video_quality,
+    _videos_are_similar,
 )
 
 _ARCHIVE_EXTS = ('.rar', '.zip', '.7z')
@@ -377,6 +392,203 @@ def _extract_video(tmp_video_path: str, folder: str, trash_root: str) -> bool:
     return True
 
 
+def _find_stem_video_elsewhere(base_path: str, folder: str, stem: str) -> str | None:
+    """A video file anywhere else under *base_path* (never inside *folder*
+    itself or '.trash') whose stem matches *stem* — a cheap name-only first
+    pass, same as consolidate_packs._name_matched_pairs; the caller still
+    confirms it with _videos_are_similar before treating it as the same
+    content. Returns the first match found, same "first candidate wins"
+    simplification consolidate_packs already makes."""
+    folder = os.path.normpath(folder)
+    for root, dirs, files in os.walk(base_path):
+        dirs.sort()
+        if action_log.TRASH_DIRNAME in dirs:
+            dirs.remove(action_log.TRASH_DIRNAME)
+        if os.path.normpath(root) == folder:
+            continue
+        for f in files:
+            if _is_video_filename(f) and Path(f).stem == stem:
+                return os.path.join(root, f)
+    return None
+
+
+def _migrate_extra_funscripts(other_folder: str, folder: str, stem: str) -> None:
+    """Move every axis of *stem*'s funscript from *other_folder* into
+    *folder* that *folder* doesn't already have one of — the "anything extra
+    in the non-collection folder should be moved to the collection" half of
+    absorbing a bulk collection archive. A collection copy for that axis, if
+    one already exists, always wins in place; this only fills in gaps."""
+    for axis in ('',) + _AXIS_SUFFIXES:
+        src = os.path.join(other_folder, f'{stem}{axis}.funscript')
+        if not os.path.isfile(src):
+            continue
+        dst = os.path.join(folder, f'{stem}{axis}.funscript')
+        if os.path.exists(dst):
+            continue
+        shutil.move(src, dst)
+        action_log.record('copy', dst=dst)
+        print(f'  [extract] migrated {os.path.basename(src)} into collection folder (axis not already present)')
+
+
+def _resolve_video_pair(base_path: str, folder: str, collection_video: str,
+                         other_video: str, other_folder: str) -> int:
+    """Keep whichever of *collection_video* / *other_video* fits
+    MAX_RESOLUTION better, ending up at *collection_video*'s own path either
+    way — same replace-in-place policy as consolidate_packs._apply, just
+    with the collection folder fixed as the survivor's location rather than
+    a 'pack' folder found by name-matching (the roles here are reversed: the
+    collection is always the side that keeps its filename). *other_folder*
+    is marked '.manual'+'.consolidated' the same way consolidate_packs marks
+    a folder it has emptied of its own video. Returns the final height (0 if
+    ffprobe couldn't determine it)."""
+    max_res = _get_max_resolution()
+    coll_h = (_video_quality(collection_video) or {}).get('height', 0)
+    other_h = (_video_quality(other_video) or {}).get('height', 0)
+
+    if _closer_to_target_resolution(other_h, coll_h, max_res):
+        trash_dest = action_log.soft_delete(base_path, collection_video)
+        action_log.record('soft_delete', orig_path=collection_video, trash_path=trash_dest)
+        shutil.move(other_video, collection_video)
+        action_log.record('copy', dst=collection_video)
+        print(f'  [extract] {os.path.basename(other_video)} ({other_h}p) fits MAX_RESOLUTION better than '
+              f'collection copy ({coll_h}p) — replacing')
+        final_h = other_h
+    else:
+        trash_dest = action_log.soft_delete(base_path, other_video)
+        action_log.record('soft_delete', orig_path=other_video, trash_path=trash_dest)
+        print(f'  [extract] {os.path.basename(other_video)} ({other_h}p) — redundant, collection copy '
+              f'already {coll_h}p')
+        final_h = coll_h
+
+    consolidate_packs._mark_consolidated(
+        base_path, other_folder, {'pack_folder': folder},
+        'video absorbed into bulk collection archive extraction')
+    return final_h
+
+
+def _video_url_for_stem(folder: str, stem: str) -> str:
+    """metadata.video_url from whichever of *stem*'s funscripts in *folder*
+    has one (main script first, then each axis) — the only lead available
+    for a possible redownload once nothing better already exists locally."""
+    for axis in ('',) + _AXIS_SUFFIXES:
+        path = os.path.join(folder, f'{stem}{axis}.funscript')
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        url = (data.get('metadata') or {}).get('video_url', '')
+        if isinstance(url, str) and url.strip():
+            return url.strip()
+    return ''
+
+
+def _handle_bulk_collection(tmp: str, folder: str, archive_path: str, base_path: str,
+                             creator_key: str, extracted_files: list[str],
+                             videos: list[str], base_names: set[str],
+                             password_used: str | None) -> bool:
+    """Absorb a bulk multi-video collection archive (more than one distinct
+    funscript base name inside — see module docstring) instead of refusing
+    it. Everything is moved loose into *folder*; every video that ends up
+    there is then checked against the rest of the tree for an AV-confirmed
+    duplicate, consolidating to whichever copy fits MAX_RESOLUTION better
+    (see _resolve_video_pair) and migrating in any of the other folder's
+    funscripts the collection doesn't already have (_migrate_extra_
+    funscripts). A video that still falls short of MAX_RESOLUTION afterward
+    is queued via collection_redownload_queue rather than fetched here.
+
+    Called from inside extract_one's TemporaryDirectory context, before
+    *tmp* is cleaned up — same reason _extract_video is always called from
+    there too. Returns True/False with the same meaning as extract_one
+    itself (False only when a bundled video couldn't be safely resolved and
+    the archive must be kept as its only remaining copy)."""
+    moved_funscripts = 0
+    for path in extracted_files:
+        f = os.path.basename(path)
+        if not f.lower().endswith('.funscript'):
+            continue
+        dest_path = os.path.join(folder, f)
+        if os.path.exists(dest_path):
+            continue  # already extracted (this run or a previous one)
+        shutil.move(path, dest_path)
+        action_log.record('copy', dst=dest_path)
+        moved_funscripts += 1
+
+    video_results = [_extract_video(path, folder, base_path) for path in videos]
+    videos_saved = all(video_results)
+
+    print(f'  [extract] "{os.path.basename(archive_path)}" is a bulk collection archive — '
+          f'absorbed {moved_funscripts} funscript(s) and {len(videos)} video(s) into '
+          f'{os.path.basename(folder)}')
+
+    # Every video now actually sitting in *folder* -- freshly placed, or an
+    # already-there copy _extract_video kept as-is -- keyed by its current
+    # on-disk stem (not necessarily the archive's own name for it, since
+    # _extract_video may have kept whichever side already existed). Also
+    # walk every funscript base name the archive held, even one with no
+    # bundled video at all -- a matching video might still exist elsewhere
+    # in the tree already (a fully-formed single post, its own funscripts
+    # included), and per the user's explicit request that copy is moved
+    # into the collection folder too rather than left where it is.
+    video_by_stem = {
+        Path(f).stem: os.path.join(folder, f)
+        for f in os.listdir(folder)
+        if _is_video_filename(f) and os.path.isfile(os.path.join(folder, f))
+    }
+    max_res = _get_max_resolution()
+
+    for stem in sorted(base_names | set(video_by_stem)):
+        collection_video = video_by_stem.get(stem)
+        other_video = _find_stem_video_elsewhere(base_path, folder, stem)
+        confirmed = other_video is not None and (
+            collection_video is None or _videos_are_similar(collection_video, other_video)
+        )
+        if confirmed:
+            other_folder = os.path.dirname(other_video)
+            _migrate_extra_funscripts(other_folder, folder, stem)
+            if collection_video is None:
+                # No local copy to compare against -- take the only one that
+                # exists rather than running a resolution comparison.
+                dest_path = os.path.join(folder, os.path.basename(other_video))
+                shutil.move(other_video, dest_path)
+                action_log.record('copy', dst=dest_path)
+                print(f'  [extract] {os.path.basename(other_video)} — no local copy of "{stem}" '
+                      f'in the collection, moved in from {os.path.basename(other_folder)}')
+                consolidate_packs._mark_consolidated(
+                    base_path, other_folder, {'pack_folder': folder},
+                    'video absorbed into bulk collection archive extraction')
+                final_height = (_video_quality(dest_path) or {}).get('height', 0)
+            else:
+                final_height = _resolve_video_pair(base_path, folder, collection_video, other_video, other_folder)
+        elif collection_video is not None:
+            final_height = (_video_quality(collection_video) or {}).get('height', 0)
+        else:
+            final_height = 0  # no video anywhere yet for this stem
+
+        if final_height <= 0 or final_height < max_res:
+            video_url = _video_url_for_stem(folder, stem)
+            if video_url:
+                collection_redownload_queue.add(
+                    base_path, folder, stem, video_url, final_height, max_res, creator_key)
+
+    if not videos_saved:
+        # Same reasoning as extract_one's own tail: a bundled video left
+        # unresolved (a same-name collision _extract_video couldn't confirm)
+        # means the archive is still the only remaining copy -- keep it.
+        print(f'  [extract] "{os.path.basename(archive_path)}" left in place — a bundled video '
+              'could not be safely resolved (see above); will retry next run.')
+        creator_db.record_extraction(archive_path, 'failed', password_used)
+        return False
+
+    trash_dest = action_log.soft_delete(base_path, archive_path)
+    action_log.record('soft_delete', orig_path=archive_path, trash_path=trash_dest)
+    print(f'  [extract] {os.path.basename(archive_path)} — bulk collection extracted, archive trashed')
+    creator_db.record_extraction(archive_path, 'extracted', password_used)
+    return True
+
+
 def extract_one(archive_path: str, creator_key: str, base_path: str) -> bool:
     """Extract *archive_path* in place, renaming its funscripts with the archive's
     variant tag folded in and routing any bundled video through _extract_video()
@@ -436,14 +648,12 @@ def extract_one(archive_path: str, creator_key: str, base_path: str) -> bool:
 
         if len(base_names) > 1:
             # A bulk multi-video collection, not one post's variant set (see
-            # module docstring) -- extracting it here would scatter unrelated
-            # videos into whatever single folder this archive happened to be
-            # sitting in. Left in place; not something this script handles.
+            # module docstring) -- absorbed in place rather than refused.
             print(f'  [extract] "{os.path.basename(archive_path)}" holds funscripts for '
-                  f'{len(base_names)} different videos — looks like a bulk collection archive, '
-                  'not a single post\'s variant set. Leaving it in place; extract by hand.')
-            creator_db.record_extraction(archive_path, 'failed', password_used)
-            return False
+                  f'{len(base_names)} different videos — looks like a bulk collection archive.')
+            return _handle_bulk_collection(
+                tmp, folder, archive_path, base_path, creator_key,
+                extracted_files, videos, base_names, password_used)
 
         base_name = next(iter(base_names), None)
         if base_name is not None:

@@ -27,6 +27,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
 import urllib3.exceptions
 import action_log
+import collection_redownload_queue
 import folder_log
 import funscript_utils
 
@@ -5284,10 +5285,38 @@ def find_and_download_from_funscript_metadata(
     )
 
 
+def _run_flagged_collection_redownloads(base_path: str, entries: list[dict],
+                                         *, resume: bool | None, auto_confirm: bool | None) -> None:
+    """Attempt every queued collection_redownload_queue entry as its own
+    download task, through the same prebuilt-task find_and_download() path
+    find_and_download_from_funscript_metadata() already uses (same domain
+    handlers, same AV-similarity + quality-replace logic that naturally
+    decides whether the freshly-fetched copy actually beats what's already
+    sitting in that folder — no new download or replace logic needed here).
+
+    Each entry becomes its own task (folder + single link, basename = the
+    stem it was flagged under) rather than grouping by folder, since several
+    stems from the same collection folder can be queued independently.
+
+    Every attempted entry is removed from the queue once this returns,
+    success or failure alike — a failure can still be re-flagged by a later
+    extraction run finding the video still under target; this function only
+    tracks "was it offered and attempted", not "did it succeed"."""
+    tasks = [{'folder': e['folder'], 'basename': e['stem'], 'links': [e['video_url']]} for e in entries]
+    print(f'\n[collection-queue] attempting {len(tasks)} flagged collection redownload(s)...')
+    find_and_download(
+        base_path, tasks=tasks, failures=[],
+        script_name='downloadFlaggedCollection', report_suffix='_flagged_collection',
+        resume=resume, auto_confirm=auto_confirm,
+    )
+    collection_redownload_queue.remove(base_path, {(e['folder'], e['stem']) for e in entries})
+
+
 def find_and_download(base_path: str, tasks: list | None = None, failures: list | None = None,
                        script_name: str = 'downloadContent', report_suffix: str = '',
                        *, require_funscript: bool | None = None, resume: bool | None = None,
-                       auto_confirm: bool | None = None, ignore_consolidated: bool | None = None):
+                       auto_confirm: bool | None = None, ignore_consolidated: bool | None = None,
+                       redownload_flagged: bool | None = None):
     """*tasks*/*failures*: pre-built task list (collect_tasks()'s return shape)
     to run instead of scanning description.json — used by
     find_and_download_from_funscript_metadata(). None (the default) collects
@@ -5296,14 +5325,19 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
     report filenames with, so a non-default caller's output doesn't overwrite
     or get confused with the regular download run's.
 
-    *require_funscript*/*resume*/*auto_confirm*/*ignore_consolidated*: bypass
-    this function's four prompts (require_funscript and ignore_consolidated
-    only apply when *tasks* isn't prebuilt) when given (True/False) instead
-    of asking interactively. Each left as None (the default) still prompts
-    exactly as before. Used by run_unattended.py to run this step with no
-    prompts at all.
+    *require_funscript*/*resume*/*auto_confirm*/*ignore_consolidated*/
+    *redownload_flagged*: bypass this function's prompts (require_funscript,
+    ignore_consolidated and redownload_flagged only apply when *tasks* isn't
+    prebuilt) when given (True/False) instead of asking interactively. Each
+    left as None (the default) still prompts exactly as before —
+    redownload_flagged only actually prompts when collection_redownload_queue
+    has something queued for *base_path* (see extract_variant_archives.py's
+    _handle_bulk_collection), defaulting to not asking (and not running)
+    when the queue is empty. Used by run_unattended.py to run this step with
+    no prompts at all.
     """
     prebuilt = tasks is not None
+    flagged_entries: list[dict] = []
     if not prebuilt:
         if require_funscript is None:
             ans = input("Download even without a funscript file? (y/n, default n): ").strip().lower()
@@ -5314,6 +5348,13 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                 "(y/n, default n): "
             ).strip().lower()
             ignore_consolidated = ans == 'y'
+        flagged_entries = collection_redownload_queue.load(base_path)
+        if flagged_entries and redownload_flagged is None:
+            ans = input(
+                f"Found {len(flagged_entries)} flagged collection video(s) below your "
+                "resolution target — try to download better copies now? (y/n, default n): "
+            ).strip().lower()
+            redownload_flagged = ans == 'y'
 
     # Load known failures so they can be skipped (SKIP_KNOWN_FAILURES=true).
     skip_known = os.getenv('SKIP_KNOWN_FAILURES', 'false').strip().lower() not in ('false', '0', 'no')
@@ -5339,6 +5380,8 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
     if not tasks:
         print("No valid download tasks found.")
         _write_failures_csv(base_path, failures, filename=f'failed_downloads{report_suffix}.csv')
+        if flagged_entries and redownload_flagged:
+            _run_flagged_collection_redownloads(base_path, flagged_entries, resume=resume, auto_confirm=auto_confirm)
         return
 
     tracker = ProgressTracker(base_path)
@@ -5370,6 +5413,8 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
         confirm = auto_confirm
     if not confirm:
         print("Aborted.")
+        if flagged_entries and redownload_flagged:
+            _run_flagged_collection_redownloads(base_path, flagged_entries, resume=resume, auto_confirm=auto_confirm)
         return
 
     # Becomes the undo target once anything actually gets saved below, via
@@ -5746,6 +5791,9 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
         _write_uncertain_csv(base_path, uncertain, filename=f'uncertain_downloads{report_suffix}.csv')
         _write_many_funscripts_csv(base_path, many_funscripts)
         _write_playlist(base_path, newly_downloaded)
+
+    if flagged_entries and redownload_flagged:
+        _run_flagged_collection_redownloads(base_path, flagged_entries, resume=resume, auto_confirm=auto_confirm)
 
 
 def _print_handlers():
