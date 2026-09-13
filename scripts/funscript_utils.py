@@ -8,8 +8,23 @@ different 'metadata' block -- is still recognized as the same script,
 instead of being treated as a distinct file just because its bytes changed.
 """
 import json
+from pathlib import Path
 
 FUNSCRIPT_EXT = '.funscript'
+
+# Multi-axis funscript suffixes (kept in sync with the equivalent tuples in
+# downloadContent.py, check_funscripts.py, consolidate_packs.py and
+# fix_garbled_names.py -- this copy is the one _dedup_existing uses to keep
+# axis files from being cross-matched against the wrong variant, see
+# axis_suffix() below).
+AXIS_SUFFIXES = ('.surge', '.pitch', '.roll', '.twist', '.sway')
+
+
+def axis_suffix(path: str) -> str | None:
+    """The axis suffix ('.roll', '.pitch', ...) on *path*'s stem, or None if
+    it's a main/root funscript."""
+    stem = Path(path).stem
+    return next((s for s in AXIS_SUFFIXES if stem.endswith(s)), None)
 
 
 def funscript_data(path: str):

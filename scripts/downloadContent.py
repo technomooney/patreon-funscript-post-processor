@@ -4309,7 +4309,32 @@ def _dedup_existing(base_path: str) -> int:
         if fpath.lower().endswith(funscript_utils.FUNSCRIPT_EXT):
             data = funscript_utils.funscript_data(fpath)
             if data is not None:
-                return fpath, ('funscript', data)
+                axis = funscript_utils.axis_suffix(fpath)
+                if axis is None:
+                    return fpath, ('funscript', data)
+                # Axis-suffixed sibling (.roll/.pitch/...): creators commonly
+                # reuse the exact same secondary-axis choreography across
+                # several main-script variants of one video (e.g. a
+                # "(soothing)"/"(medium)"/"(exciting)" set), so two axis
+                # files can be byte-for-byte identical while belonging to
+                # completely different variants. Matching on axis content
+                # alone (as before) merged them and trashed the axis sibling
+                # one variant still needed to play correctly -- confirmed
+                # live on the "PAC BABY" multi-axis set. Fold in the paired
+                # main (non-axis) script's own content too, so two axis
+                # files only count as duplicates when their main scripts
+                # also match: a genuine repost still matches on both; two
+                # different variants sharing one axis's choreography no
+                # longer collide. No parseable sibling main script means
+                # there's nothing to disambiguate with, so the file is never
+                # merged with anything -- an extra copy kept beats a needed
+                # axis file wrongly deleted.
+                stem = Path(fpath).stem
+                main_path = os.path.join(os.path.dirname(fpath), stem[:-len(axis)] + funscript_utils.FUNSCRIPT_EXT)
+                main_data = funscript_utils.funscript_data(main_path) if os.path.isfile(main_path) else None
+                if main_data is None:
+                    return fpath, ('funscript-axis-unpaired', fpath)
+                return fpath, ('funscript-axis', axis, main_data, data)
         return fpath, ('bytes', _file_hash(fpath, show_progress=False))
 
     _env_threads = os.getenv('DEDUP_THREADS', '').strip()
@@ -4352,7 +4377,7 @@ def _dedup_existing(base_path: str) -> int:
         for key, paths in hash_to_paths.items():
             if len(paths) < 2:
                 continue
-            if key[0] == 'funscript':
+            if key[0] in ('funscript', 'funscript-axis'):
                 # Same points/inverted/range (that's what grouped them here) --
                 # prefer whichever copy carries more descriptive metadata
                 # (video_url, title, tags, ...) over whichever is merely
