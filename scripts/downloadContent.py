@@ -4666,7 +4666,14 @@ def _claimed_links(folder: str) -> set[str]:
     its original video links once the archive content is in place). The
     normal download never fetches these again, even when forced to run for
     a creator that has a download_script (see creator_config.py) -- the
-    creator script's copy is the one that's been resolution-checked."""
+    creator script's copy is the one that's been resolution-checked.
+
+    Only honored while the folder still carries its '.consolidated' marker
+    (the creator script always sets it when claiming, and its undo removes
+    it) -- folder_log itself isn't undone, so an undone claim must not keep
+    blocking downloads."""
+    if not os.path.exists(os.path.join(folder, '.consolidated')):
+        return set()
     claimed: set[str] = set()
     for record in folder_log.read(folder):
         for url in record.get('claimed_links') or []:
