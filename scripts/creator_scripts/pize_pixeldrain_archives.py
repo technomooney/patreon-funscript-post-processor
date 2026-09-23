@@ -23,20 +23,25 @@ Per run:
      per-run scratch dir (_pixeldrain/.scratch, wiped every run).
   3. Open it (no password -> creator_db history -> one Discord fetch of the
      whole password history per run) and recurse into inner archives:
-     an inner archive holding only another copy of the parent's scripts is
-     a *variant* (folded in with its variant tag, e.g. "(medium)"); anything
-     else is its own *package*. An archive that holds only packages (a
-     monthly / 6-month wrapper) gets no folder of its own.
-  4. Merge each package into _pixeldrain/<name>/, never overwriting: a file
-     whose name, funscript points, or video (AV-similarity) is already there
-     is skipped -- a package re-wrapped into a later monthly/6-month archive
-     merges into the folder it already has.
-  4b. Fold duplicated videos toward the bigger package: a video also found
-     in a bigger collection (a package with 2+ videos) moves there, single
-     posts and smaller collections alike -- the bigger one wins: the copy
-     closest to MAX_RESOLUTION survives under its filename, scripts it
-     doesn't already have move in renamed to pair with it, and an emptied
-     folder is removed (redirected in the manifest).
+     an inner archive holding only scripts for a video beside it (named
+     '<video>(Moderate)' etc.) is a *variant*, folded in with its tag;
+     anything else is its own *package*. An archive that holds only
+     packages (a monthly / 6-month wrapper) gets no folder of its own.
+  4. Collections (packages with 2+ videos) are the golden copy. A
+     single-video package whose video a collection already has goes
+     straight from scratch into it: the video only if closer to
+     MAX_RESOLUTION (under the collection's filename), its scripts as
+     variant sets. Otherwise it merges into _pixeldrain/<name>/, never
+     overwriting -- a package re-wrapped into a later archive merges into
+     the folder it already has. Scripts are placed a whole variant set at
+     a time (place_scripts): a new variant is added, an untagged main set
+     identical to an incoming variant is renamed to that variant, and a
+     variant identical to another tagged one keeps the first tag (noted).
+  4b. Fold duplicated videos toward the bigger package (for singles seen
+     before their collection): a video also found in a bigger collection
+     moves there, single posts and smaller collections alike -- the
+     bigger one wins, same resolution and variant-set rules as step 4,
+     and an emptied folder is removed (redirected in the manifest).
   5. Empty each fully-processed post folder: a funscript already in its
      package is trashed; a video AV-matching the package's keeps whichever
      copy fits MAX_RESOLUTION better (always in the package folder); a
@@ -565,9 +570,123 @@ def _overlaps(pkg: Package, folder: str) -> bool:
     return False
 
 
-def merge(pkg: Package, lib: str, file_id: str) -> tuple[str, int, int]:
+# ---------------------------------------------------------------------------
+# Script sets: a video's scripts grouped by variant tag, placed as a whole
+# ---------------------------------------------------------------------------
+#
+# A *set* is one variant's scripts -- tag -> {axis: path}, axis '' being the
+# main script ('X(Moderate).funscript', 'X(Moderate).roll.funscript', ...).
+# Sets are compared by their main script's points, never axis file by axis
+# file: two variants often share an identical axis (same .roll in Moderate
+# and Soothing), and per-file dedup would strip it out of one of them.
+
+ScriptSets = dict[str, dict[str, str]]
+
+
+def _script_sets(paths: list[str], video_stem: str, strict: bool = False) -> ScriptSets:
+    """Group funscript *paths* belonging to *video_stem* into variant sets.
+    *strict*: skip scripts not named after the video (unrelated strays in
+    the same folder) instead of counting them as its untagged set."""
+    sets: ScriptSets = {}
+    for p in paths:
+        base = _funscript_base(os.path.basename(p))
+        if strict and not base.startswith(video_stem):
+            continue
+        tag, axis = _script_rest(os.path.basename(p), video_stem)
+        sets.setdefault(tag, {}).setdefault(axis, p)
+    return sets
+
+
+def _folder_sets(folder: str, video_stem: str) -> ScriptSets:
+    stems = [Path(f).stem for f in os.listdir(folder) if dc._is_video_filename(f)]
+    return _script_sets(_scripts_for_video(folder, video_stem, stems), video_stem, strict=True)
+
+
+def _same_set(a: dict[str, str], b: dict[str, str]) -> bool:
+    """Same variant: identical main script -- or, when neither has one,
+    every axis they share is identical."""
+    fd = funscript_utils.funscript_data
+    if '' in a or '' in b:
+        return '' in a and '' in b and fd(a['']) is not None and fd(a['']) == fd(b[''])
+    common = set(a) & set(b)
+    return bool(common) and all(fd(a[x]) is not None and fd(a[x]) == fd(b[x]) for x in common)
+
+
+def _free_tag(folder: str, stem: str, tag: str, existing: ScriptSets, axes) -> str:
+    """*tag*, or an '(... alt)' form of it no existing set/file uses."""
+    n = 1
+    t = tag
+    while t in existing or any(os.path.exists(os.path.join(folder, f'{stem}{t}{x}.funscript')) for x in axes):
+        n += 1
+        alt = 'alt' if n == 2 else f'alt{n}'
+        t = f'({tag[1:-1]} {alt})' if tag.startswith('(') and tag.endswith(')') else f'{tag}({alt})'
+    return t
+
+
+def _put(base_path: str, src: str, dst: str, from_scratch: bool) -> None:
+    """Move a script/video into the library. From scratch it's a new file
+    (undo deletes it); from another library folder it's a journaled move."""
+    if from_scratch:
+        shutil.move(src, dst)
+        action_log.record('copy', dst=dst)
+    else:
+        _move(src, dst)
+
+
+def place_scripts(base_path: str, folder: str, stem: str, incoming: ScriptSets,
+                  from_scratch: bool, notes: list[str]) -> tuple[int, int]:
+    """Add *incoming* variant sets to video *stem*'s scripts in *folder*.
+    Returns (files added, files skipped as already there).
+
+    - A set nobody has yet goes in as '<stem><tag><axis>' (an '(alt)' tag
+      if that tag is taken by different content).
+    - A set identical to an *untagged* one already there is that main
+      script's real name: the existing set is renamed to the variant
+      (user's rule -- their players handle tagged variants fine).
+    - A set identical to an already *tagged* one is a duplicate; if the
+      tags differ (Pize shipping the same files as Moderate and Soothing)
+      the first tag is kept and it's noted.
+    Axis files a matched set is missing are filled in under its tag.
+    Duplicates from another library folder go to trash; from scratch they
+    just stay behind."""
+    added = skipped = 0
+    # untagged first, so a later variant can relabel it
+    for tag in sorted(incoming, key=lambda t: (t != '', t)):
+        s = incoming[tag]
+        existing = _folder_sets(folder, stem)
+        match = next((t for t, e in existing.items() if _same_set(e, s)), None)
+        if match is None:
+            t = _free_tag(folder, stem, tag, existing, s)
+            for axis, p in s.items():
+                _put(base_path, p, os.path.join(folder, f'{stem}{t}{axis}.funscript'), from_scratch)
+                added += 1
+            continue
+        e = existing[match]
+        if match == '' and tag and tag not in existing:
+            for axis, p in e.items():
+                _move(p, os.path.join(folder, f'{stem}{tag}{axis}.funscript'))
+            notes.append(f'{stem}: main scripts are the {tag} variant — renamed')
+            match, e = tag, _folder_sets(folder, stem)[tag]
+        elif tag and match and tag != match:
+            notes.append(f'{stem}{tag} is identical to {stem}{match} — kept {match}')
+        for axis, p in s.items():
+            dst = os.path.join(folder, f'{stem}{match}{axis}.funscript')
+            if axis in e or os.path.exists(dst):
+                skipped += 1
+                if not from_scratch:
+                    _soft_delete(base_path, p)
+            else:
+                _put(base_path, p, dst, from_scratch)
+                added += 1
+    return added, skipped
+
+
+def merge(pkg: Package, lib: str, file_id: str, base_path: str,
+          notes: list[str]) -> tuple[str, int, int]:
     """Move *pkg*'s new files into its library folder. Returns
-    (folder key actually used, files added, files skipped as present)."""
+    (folder key actually used, files added, files skipped as present).
+    Scripts named after one of the package's videos go in as variant sets
+    (place_scripts); anything else file by file, never overwriting."""
     key = pkg.key
     folder = os.path.join(lib, key)
     if os.path.isdir(folder) and not _overlaps(pkg, folder):
@@ -576,32 +695,123 @@ def merge(pkg: Package, lib: str, file_id: str) -> tuple[str, int, int]:
     os.makedirs(folder, exist_ok=True)
     fds, _videos, names = _folder_media(folder)
     added = skipped = 0
+    # package video stem -> the stem it pairs with in the folder (itself,
+    # or an AV-identical video already there under another name)
+    pairs: dict[str, str] = {}
+    scripts: list[tuple[str, str]] = []
     for src, name in pkg.files:
         name = _clean_name(name)
         if not os.path.isfile(src):
             continue
+        if name.lower().endswith('.funscript'):
+            scripts.append((src, name))
+            continue
         dst = os.path.join(folder, name)
+        if dc._is_video_filename(name):
+            same = dc._is_av_similar(src, folder)
+            if same:
+                pairs[Path(name).stem] = Path(same).stem
+                skipped += 1
+                continue
+            pairs[Path(name).stem] = Path(name).stem
         if name in names or os.path.exists(dst):
             skipped += 1
             continue
-        if name.lower().endswith('.funscript'):
-            fd = funscript_utils.funscript_data(src)
-            if fd is not None and fd in fds:
-                skipped += 1
-                continue
-        elif dc._is_video_filename(name):
-            if dc._is_av_similar(src, folder):
-                skipped += 1
-                continue
         shutil.move(src, dst)
         action_log.record('copy', dst=dst)
         names.add(name)
-        if name.lower().endswith('.funscript'):
-            fd = funscript_utils.funscript_data(dst)
-            if fd is not None:
-                fds.add(fd)
+        added += 1
+
+    # tags come from each script's *final* name (variants were renamed at
+    # unpack time), not the name it was extracted under
+    by_video: dict[str, ScriptSets] = {}
+    loose: list[tuple[str, str]] = []
+    for src, name in scripts:
+        owners = [v for v in pairs if _funscript_base(name).startswith(v)]
+        if owners:
+            v = max(owners, key=len)
+            tag, axis = _script_rest(name, v)
+            by_video.setdefault(v, {}).setdefault(tag, {}).setdefault(axis, src)
+        else:
+            loose.append((src, name))
+    for v, sets in by_video.items():
+        a, s = place_scripts(base_path, folder, pairs[v], sets, True, notes)
+        added += a
+        skipped += s
+    fds = _folder_media(folder)[0]
+    for src, name in loose:
+        dst = os.path.join(folder, name)
+        fd = funscript_utils.funscript_data(src)
+        if name in names or os.path.exists(dst) or (fd is not None and fd in fds):
+            skipped += 1
+            continue
+        shutil.move(src, dst)
+        action_log.record('copy', dst=dst)
+        names.add(name)
+        if fd is not None:
+            fds.add(fd)
         added += 1
     return key, added, skipped
+
+
+def absorb(pkg: Package, lib: str, base_path: str, notes: list[str]) -> tuple[str, int, int] | None:
+    """A single-video package whose video a collection already has goes
+    straight from scratch into that collection -- the golden copy: the
+    video only if it's closer to MAX_RESOLUTION (it takes the collection's
+    filename), its scripts as variant sets (place_scripts), other files if
+    their name is free. Returns merge()'s tuple, or None when no collection
+    has the video (then it gets its own folder as usual)."""
+    vids = [(p, n) for p, n in pkg.files if dc._is_video_filename(n) and os.path.isfile(p)]
+    if len(vids) != 1:
+        return None
+    counts = {}
+    for d in _package_dirs(lib):
+        full = os.path.join(lib, d)
+        counts[d] = sum(1 for f in os.listdir(full) if dc._is_video_filename(f)) if os.path.isdir(full) else 0
+    colls = sorted((d for d, c in counts.items() if c >= COLLECTION_MIN_VIDEOS and d != pkg.key),
+                   key=lambda d: (-counts[d], d))
+    src, name = vids[0]
+    match = _find_in(src, lib, colls)
+    if match is None:
+        return None
+    target, cv = match
+    folder = os.path.join(lib, target)
+    stem = Path(cv).stem
+    added = skipped = 0
+    new_h = (dc._video_quality(src) or {}).get('height', 0)
+    old_h = (dc._video_quality(cv) or {}).get('height', 0)
+    if dc._closer_to_target_resolution(new_h, old_h, dc._get_max_resolution()):
+        _soft_delete(base_path, cv)
+        dst = os.path.splitext(cv)[0] + os.path.splitext(name)[1]
+        shutil.move(src, dst)
+        action_log.record('copy', dst=dst)
+        print(f'    replaced {target}/{Path(cv).name} ({old_h}p) with this copy ({new_h}p)')
+        added += 1
+    else:
+        skipped += 1
+    v = Path(name).stem
+    sets: ScriptSets = {}
+    names = set(os.listdir(folder))
+    fds = _folder_media(folder)[0]
+    for p, n in pkg.files:
+        if not os.path.isfile(p) or dc._is_video_filename(n):
+            continue
+        if n.lower().endswith('.funscript') and _funscript_base(n).startswith(v):
+            tag, axis = _script_rest(n, v)
+            sets.setdefault(tag, {}).setdefault(axis, p)
+            continue
+        n = _clean_name(n)
+        fd = funscript_utils.funscript_data(p) if n.lower().endswith('.funscript') else None
+        if n in names or (fd is not None and fd in fds):
+            skipped += 1
+            continue
+        dst = os.path.join(folder, n)
+        shutil.move(p, dst)
+        action_log.record('copy', dst=dst)
+        names.add(n)
+        added += 1
+    a, s = place_scripts(base_path, folder, stem, sets, True, notes)
+    return target, added + a, skipped + s
 
 
 # ---------------------------------------------------------------------------
@@ -670,21 +880,41 @@ def _free_script_name(folder: str, stem: str, tag: str, axis: str) -> str:
 
 
 def _fold_scripts(base_path: str, scripts: list[str], video_stem: str, target: str,
-                  target_stem: str, moved: list[str]) -> None:
-    """Move each script into *target* renamed to pair with *target_stem*
-    (variant/axis kept), unless *target* already has the same points."""
-    target_fds = _folder_media(target)[0]
-    for sp in scripts:
-        fd = funscript_utils.funscript_data(sp)
-        if fd is not None and fd in target_fds:
-            _soft_delete(base_path, sp)
+                  target_stem: str, moved: list[str], notes: list[str]) -> None:
+    """Move a video's scripts into *target* as variant sets paired with
+    *target_stem* (see place_scripts)."""
+    before = set(os.listdir(target))
+    place_scripts(base_path, target, target_stem, _script_sets(scripts, video_stem), False, notes)
+    moved.extend(sorted(set(os.listdir(target)) - before))
+
+
+_DUR_CACHE: dict[tuple, float | None] = {}
+
+
+def _duration(path: str) -> float | None:
+    st = os.stat(path)
+    k = (path, st.st_size, st.st_mtime)
+    if k not in _DUR_CACHE:
+        _DUR_CACHE[k] = dc._video_duration(path)
+    return _DUR_CACHE[k]
+
+
+def _find_in(video: str, lib: str, folders: list[str]) -> tuple[str, str] | None:
+    """(folder, path) of the first video in *folders* AV-identical to
+    *video* -- durations first as a cheap filter."""
+    vd = _duration(video)
+    for t in folders:
+        d = os.path.join(lib, t)
+        if not os.path.isdir(d):
             continue
-        tag, axis = _script_rest(os.path.basename(sp), video_stem)
-        dst = os.path.join(target, _free_script_name(target, target_stem, tag, axis))
-        _move(sp, dst)
-        moved.append(os.path.basename(dst))
-        if fd is not None:
-            target_fds.add(fd)
+        for tv in sorted(f for f in os.listdir(d) if dc._is_video_filename(f)):
+            cv = os.path.join(d, tv)
+            cd = _duration(cv)
+            if vd is not None and cd is not None and abs(cd - vd) > _DURATION_GATE_S:
+                continue
+            if dc._videos_are_similar(video, cv):
+                return t, cv
+    return None
 
 
 def _scripts_for_video(folder: str, video_stem: str, all_video_stems: list[str]) -> list[str]:
@@ -704,7 +934,7 @@ def _scripts_for_video(folder: str, video_stem: str, all_video_stems: list[str])
     return sorted(out)
 
 
-def fold_into_collections(base_path: str, lib: str, manifest: Manifest) -> int:
+def fold_into_collections(base_path: str, lib: str, manifest: Manifest, notes: list[str]) -> int:
     """Fold duplicated videos toward the bigger package, video by video.
 
     Package folders are ranked by video count (most first; ties broken by
@@ -733,13 +963,6 @@ def fold_into_collections(base_path: str, lib: str, manifest: Manifest) -> int:
     ranked = sorted(dirs, key=lambda d: (-initial[d], d))
     rank = {d: i for i, d in enumerate(ranked)}
 
-    dur_cache: dict[str, float | None] = {}
-
-    def dur(path):
-        if path not in dur_cache:
-            dur_cache[path] = dc._video_duration(path)
-        return dur_cache[path]
-
     folded = 0
     for s_key in reversed(ranked):  # smallest first
         s_dir = os.path.join(lib, s_key)
@@ -754,18 +977,7 @@ def fold_into_collections(base_path: str, lib: str, manifest: Manifest) -> int:
 
         for vname in s_videos:
             v = os.path.join(s_dir, vname)
-            vd = dur(v)
-            match = None
-            for t in winners:
-                for tv in videos(t):
-                    cv = os.path.join(lib, t, tv)
-                    if vd is not None and dur(cv) is not None and abs(dur(cv) - vd) > _DURATION_GATE_S:
-                        continue
-                    if dc._videos_are_similar(v, cv):
-                        match = (t, cv)
-                        break
-                if match:
-                    break
+            match = _find_in(v, lib, winners)
             if match is None:
                 continue
             target, cv = match
@@ -781,9 +993,8 @@ def fold_into_collections(base_path: str, lib: str, manifest: Manifest) -> int:
                 print(f'    kept the {s_key} copy ({s_h}p over {c_h}p)')
             else:
                 _soft_delete(base_path, v)
-            dur_cache.pop(v, None)
             moved: list[str] = []
-            _fold_scripts(base_path, scripts, Path(vname).stem, target_dir, target_stem, moved)
+            _fold_scripts(base_path, scripts, Path(vname).stem, target_dir, target_stem, moved, notes)
             folder_log.append_run(target_dir, SCRIPT_ID, folded_in=f'{s_key}/{vname}',
                                   scripts_added=moved)
             collection_redownload_queue.remove(base_path, {(s_dir, Path(vname).stem)})
@@ -1035,20 +1246,21 @@ def write_unusable_report(base_path: str, manifest: Manifest) -> dict[str, int]:
 # Main flow
 # ---------------------------------------------------------------------------
 
-def _process_link(url: str, base_path: str, lib: str, manifest: Manifest, creator_key: str) -> None:
+def _process_link(url: str, base_path: str, lib: str, manifest: Manifest, creator_key: str,
+                  notes: list[str]) -> None:
     """One link, start to finish. Its scratch folder (the download plus
     anything extracted but not moved into the library, e.g. duplicates) is
     deleted as soon as the link is done -- not left to pile up until the
     end of a many-hundred-link run."""
     work = os.path.join(lib, _SCRATCH, _file_id(url))
     try:
-        _process_link_inner(url, base_path, lib, manifest, creator_key, work)
+        _process_link_inner(url, base_path, lib, manifest, creator_key, work, notes)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
 
 def _process_link_inner(url: str, base_path: str, lib: str, manifest: Manifest, creator_key: str,
-                        work: str) -> None:
+                        work: str, notes: list[str]) -> None:
     entry = manifest.links.setdefault(url, {})
     fid = _file_id(url)
     entry.setdefault('file_id', fid)
@@ -1153,7 +1365,8 @@ def _process_link_inner(url: str, base_path: str, lib: str, manifest: Manifest, 
 
     keys = []
     for pkg in root.all_packages():
-        key, added, skipped = merge(pkg, lib, fid)
+        # already in a collection -> straight into it; else its own folder
+        key, added, skipped = absorb(pkg, lib, base_path, notes) or merge(pkg, lib, fid, base_path, notes)
         keys.append(key)
         rec = manifest.packages.setdefault(key, {'posts': [], 'archives': [], 'links': []})
         # content (re)landed in this folder -- a previous fold no longer
@@ -1238,15 +1451,20 @@ def run(base_path: str, options: dict | None = None) -> None:
             return
 
     action_log.start(SCRIPT_ID, base_path, journal=SCRIPT_ID)
+    notes: list[str] = []
     try:
         for i, url in enumerate(todo, 1):
             print(f'\n[{i}/{len(todo)}] {url}')
-            _process_link(url, base_path, lib, manifest, creator_key)
+            _process_link(url, base_path, lib, manifest, creator_key, notes)
 
         # 4b. Single-video packages that are part of a collection fold into it.
         print('\nFolding duplicate videos into the bigger collections...')
-        folded = fold_into_collections(base_path, lib, manifest)
+        folded = fold_into_collections(base_path, lib, manifest, notes)
         print(f'{folded} duplicate video(s)/package(s) folded into a bigger collection.')
+        if notes:
+            print(f'\nVariant scripts ({len(notes)}):')
+            for n in notes:
+                print(f'  {n}')
 
         # 5-6. Empty every post whose pixeldrain links are all done.
         print('\nMoving videos/scripts out of post folders...')
