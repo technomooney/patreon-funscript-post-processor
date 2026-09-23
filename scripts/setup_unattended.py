@@ -53,6 +53,33 @@ _STEP_CATALOG = [
 ]
 _STEP_BY_ID = {step_id: (label, desc) for step_id, label, desc in _STEP_CATALOG}
 
+CREATOR_SCRIPT_PREFIX = 'creator_script:'
+
+
+def _catalog() -> list[tuple[str, str, str]]:
+    """_STEP_CATALOG plus one 'creator_script:<id>' step per creator script
+    in scripts/creator_scripts/ -- any of them can run as an unattended step
+    (a download-replacement one normally runs via the 'download' step
+    instead, see creator_config.py's download_script)."""
+    import creator_scripts_menu
+    extra = []
+    for label, module in creator_scripts_menu.discover(quiet=True):
+        desc = (getattr(module, 'MENU_DESCRIPTION', '') or '').strip().splitlines()
+        extra.append((CREATOR_SCRIPT_PREFIX + creator_scripts_menu.script_id(module),
+                      f'Creator script: {label}', desc[0] if desc else 'creator-specific script'))
+    return _STEP_CATALOG + extra
+
+
+def _plugin_options(sid: str, saved: dict) -> dict:
+    """Ask creator script *sid*'s own unattended questions (its optional
+    setup_unattended(current) hook), defaulting to *saved*."""
+    import creator_scripts_menu
+    module = creator_scripts_menu.load(sid)
+    hook = getattr(module, 'setup_unattended', None) if module else None
+    if not callable(hook):
+        return dict(saved)
+    return hook(dict(saved)) or {}
+
 
 def _ask(label: str, current: str) -> str:
     """Prompt with the current value in brackets; Enter keeps it. Same
@@ -82,10 +109,12 @@ def _ask_scope(current: str) -> str:
     return current
 
 
-def _ask_step_fields(step_id: str, saved: dict) -> dict:
+def _ask_step_fields(step_id: str, saved: dict, destination: str = '') -> dict:
     """Ask the specific questions for *step_id*, using *saved* (that step's
     previously-saved fields, {} if new) as defaults. Returns the new fields
     dict (never includes 'id' -- the caller adds that)."""
+    if step_id.startswith(CREATOR_SCRIPT_PREFIX):
+        return {'options': _plugin_options(step_id[len(CREATOR_SCRIPT_PREFIX):], saved.get('options', {}))}
     if step_id == 'sync_new_folders':
         return {
             'auto_confirm_copy': _ask_bool('Auto-copy new folders without asking each time?',
@@ -102,6 +131,12 @@ def _ask_step_fields(step_id: str, saved: dict) -> dict:
                                         saved.get('ignore_manual', False)),
         }
     if step_id == 'download':
+        import creator_config
+        sid = creator_config.download_script(destination) if destination else None
+        if sid:
+            print(f'  This creator\'s creator_config.json replaces the normal download with "{sid}" —')
+            print('  this step runs that script instead. Its options:')
+            return {'script_options': _plugin_options(sid, saved.get('script_options', {}))}
         return {
             'require_funscript': _ask_bool('Require a funscript to already exist before downloading?',
                                             saved.get('require_funscript', True)),
@@ -136,16 +171,16 @@ def _ask_step_fields(step_id: str, saved: dict) -> dict:
     return {}
 
 
-def _pick_steps(existing_steps: list[dict]) -> list[str]:
+def _pick_steps(existing_steps: list[dict], catalog: list[tuple[str, str, str]]) -> list[str]:
     print()
     print('Available steps:')
-    for i, (step_id, label, desc) in enumerate(_STEP_CATALOG, 1):
+    for i, (step_id, label, desc) in enumerate(catalog, 1):
         print(f'  {i:2d}) {label:32s} — {desc}')
     print()
     if existing_steps:
         current_order = ','.join(
-            str(next(i for i, (sid, _, _) in enumerate(_STEP_CATALOG, 1) if sid == s['id']))
-            for s in existing_steps if s['id'] in _STEP_BY_ID
+            str(next(i for i, (sid, _, _) in enumerate(catalog, 1) if sid == s['id']))
+            for s in existing_steps if any(sid == s['id'] for sid, _, _ in catalog)
         )
         print(f'  Current order: {current_order}')
     print('Enter the step numbers you want, in the order to run them (e.g. 1,3,2,6,7,8,9,10).')
@@ -168,10 +203,10 @@ def _pick_steps(existing_steps: list[dict]) -> list[str]:
         if len(set(indices)) != len(indices):
             print('  Each step can only appear once.')
             continue
-        if any(i < 1 or i > len(_STEP_CATALOG) for i in indices):
-            print(f'  Numbers must be between 1 and {len(_STEP_CATALOG)}.')
+        if any(i < 1 or i > len(catalog) for i in indices):
+            print(f'  Numbers must be between 1 and {len(catalog)}.')
             continue
-        return [_STEP_CATALOG[i - 1][0] for i in indices]
+        return [catalog[i - 1][0] for i in indices]
 
 
 def main() -> None:
@@ -208,16 +243,23 @@ def main() -> None:
         return
     source = os.path.abspath(source)
 
-    step_ids = _pick_steps(existing_steps)
+    print()
+    if input('Configure creator flags (creator_config.json: download-replacement script, '
+             'sync exclusions, protected folders) now? (y/n, default n): ').strip().lower() == 'y':
+        import creator_scripts_menu
+        creator_scripts_menu.configure_flags(destination)
+
+    catalog = _catalog()
+    labels = {sid: label for sid, label, _ in catalog}
+    step_ids = _pick_steps(existing_steps, catalog)
     existing_by_id = {s['id']: s for s in existing_steps}
 
     print()
     print('Answer each selected step\'s questions (Enter keeps the current value):')
     steps = []
     for step_id in step_ids:
-        label, _desc = _STEP_BY_ID[step_id]
-        print(f'\n--- {label} ---')
-        fields = _ask_step_fields(step_id, existing_by_id.get(step_id, {}))
+        print(f'\n--- {labels[step_id]} ---')
+        fields = _ask_step_fields(step_id, existing_by_id.get(step_id, {}), destination)
         steps.append({'id': step_id, **fields})
 
     config = {'source': source, 'destination': destination, 'steps': steps}

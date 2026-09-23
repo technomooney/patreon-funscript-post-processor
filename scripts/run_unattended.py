@@ -94,6 +94,9 @@ def _run_download(cfg: dict, fields: dict) -> None:
         # watching is a bigger commitment than this runner otherwise makes;
         # opt in per-creator via setup_unattended.py's config if ever wanted.
         redownload_flagged=fields.get('redownload_flagged', False),
+        # A creator whose creator_config.json names a download_script runs
+        # that instead (forced normal only via force_normal_download there).
+        script_options=fields.get('script_options') or {},
     )
 
 
@@ -132,6 +135,16 @@ def _run_generate_audit_report(cfg: dict, fields: dict) -> None:
     import generate_audit_report
     generate_audit_report.generate(cfg['destination'])
 
+
+def _run_creator_script(cfg: dict, fields: dict, sid: str) -> None:
+    import creator_scripts_menu
+    module = creator_scripts_menu.load(sid)
+    if module is None:
+        raise RuntimeError(f'creator script "{sid}" not found in scripts/creator_scripts/')
+    creator_scripts_menu.run_plugin(module, cfg['destination'], fields.get('options') or {})
+
+
+_CREATOR_SCRIPT_PREFIX = 'creator_script:'  # keep in sync with setup_unattended.CREATOR_SCRIPT_PREFIX
 
 _STEP_LABELS = {
     'sync_new_folders': 'Sync new folders',
@@ -195,6 +208,9 @@ def run_unattended(creator_folder: str) -> None:
             label = _STEP_LABELS.get(step_id, step_id)
             print(f"\n[{i}/{len(steps)}] === {label} ===")
             handler = _STEP_HANDLERS.get(step_id)
+            if handler is None and step_id.startswith(_CREATOR_SCRIPT_PREFIX):
+                sid = step_id[len(_CREATOR_SCRIPT_PREFIX):]
+                handler = lambda c, f, _sid=sid: _run_creator_script(c, f, _sid)
             if handler is None:
                 print(f"  SKIP — unknown step id: {step_id}")
                 failed.append(f'{label} (unknown step id)')
