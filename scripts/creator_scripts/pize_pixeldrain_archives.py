@@ -264,7 +264,11 @@ def download(url: str, dest_dir: str) -> str | None:
     os.makedirs(dest_dir, exist_ok=True)
     before = set(os.listdir(dest_dir))
     dc._last_fetch_original_name = None
-    if not dc.download_pixeldrain(None, url, dest_dir):
+    try:
+        ok = dc.download_pixeldrain(None, url, dest_dir)
+    finally:
+        dc._clear_status()  # end the progress line before anything else prints
+    if not ok:
         return None
     new = [f for f in os.listdir(dest_dir) if f not in before and not f.endswith('.part')]
     if not new:
@@ -661,12 +665,24 @@ def write_locked_report(base_path: str, manifest: Manifest) -> int:
 # ---------------------------------------------------------------------------
 
 def _process_link(url: str, base_path: str, lib: str, manifest: Manifest, creator_key: str) -> None:
+    """One link, start to finish. Its scratch folder (the download plus
+    anything extracted but not moved into the library, e.g. duplicates) is
+    deleted as soon as the link is done -- not left to pile up until the
+    end of a many-hundred-link run."""
+    work = os.path.join(lib, _SCRATCH, _file_id(url))
+    try:
+        _process_link_inner(url, base_path, lib, manifest, creator_key, work)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _process_link_inner(url: str, base_path: str, lib: str, manifest: Manifest, creator_key: str,
+                        work: str) -> None:
     entry = manifest.links.setdefault(url, {})
     fid = _file_id(url)
     entry.setdefault('file_id', fid)
     entry.setdefault('first_attempt', _now())
     entry['last_attempt'] = _now()
-    work = os.path.join(lib, _SCRATCH, fid)
     shutil.rmtree(work, ignore_errors=True)
 
     pending = entry.get('pending_path')
