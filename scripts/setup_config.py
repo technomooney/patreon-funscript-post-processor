@@ -717,6 +717,17 @@ def _configure_credentials() -> None:
     else:
         print('  Skipping spankbang.com.')
 
+    print()
+    print('rule34video.com  (only needed for videos hidden behind a login; leave blank to skip)')
+    r34v_email = _ask('Email', current=_keyring_get('RULE34VIDEO_EMAIL'))
+    if r34v_email:
+        _keyring_set('RULE34VIDEO_EMAIL', r34v_email)
+        r34v_password = _ask_secret('Password', current=_keyring_get('RULE34VIDEO_PASSWORD'))
+        if r34v_password:
+            _keyring_set('RULE34VIDEO_PASSWORD', r34v_password)
+    else:
+        print('  Skipping rule34video.com.')
+
 
 if __name__ == '__main__':
     try:

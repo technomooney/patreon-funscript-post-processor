@@ -1846,8 +1846,82 @@ def download_rule34xxx(driver, url: str, download_dir: str) -> bool:
     return False
 
 
+_rule34video_browser_logged_in: bool = False
+
+
+def _rule34video_browser_login(driver) -> bool:
+    """Log into rule34video.com via the header login popup. Returns True if successful.
+
+    Best-effort: only some videos are gated behind a login, so a missing/failed
+    login here doesn't block the download — download_rule34video still tries
+    anonymously and surfaces a clearer error if that turns out to need an account.
+    """
+    global _rule34video_browser_logged_in
+    if _rule34video_browser_logged_in:
+        return True
+
+    email = _get_secret('RULE34VIDEO_EMAIL').strip()
+    password = _get_secret('RULE34VIDEO_PASSWORD').strip()
+    if not email or not password:
+        return False
+
+    driver.get('https://rule34video.com/')
+    time.sleep(2)
+
+    try:
+        wait = WebDriverWait(driver, 10)
+
+        login_btn = wait.until(EC.element_to_be_clickable((By.ID, 'login')))
+        driver.execute_script('arguments[0].click()', login_btn)
+        time.sleep(1)
+
+        user_field = wait.until(EC.visibility_of_element_located((By.ID, 'login_username')))
+        user_field.click()
+        time.sleep(0.3)
+        user_field.clear()
+        for char in email:
+            user_field.send_keys(char)
+            time.sleep(0.05)
+
+        pw_field = driver.find_element(By.ID, 'login_pass')
+        pw_field.click()
+        time.sleep(0.3)
+        for char in password:
+            pw_field.send_keys(char)
+            time.sleep(0.05)
+
+        time.sleep(0.3)
+        login_form = pw_field.find_element(By.XPATH, './ancestor::form')
+        submit = login_form.find_element(By.XPATH, './/input[@type="submit"]')
+        driver.execute_script('arguments[0].click()', submit)
+
+        # Form submits via AJAX and updates the header in place — wait for the
+        # anonymous "Login" button to disappear rather than a page navigation.
+        try:
+            WebDriverWait(driver, 10).until(lambda d: not d.find_elements(By.ID, 'login'))
+        except WebDriverException:
+            pass
+
+        if driver.find_elements(By.ID, 'login'):
+            print('  [rule34video.com] login failed — check RULE34VIDEO_EMAIL/RULE34VIDEO_PASSWORD')
+            return False
+
+        print('  [rule34video.com] browser login successful')
+        _rule34video_browser_logged_in = True
+        return True
+    except Exception as e:
+        print(f'  [rule34video.com] browser login failed: {e}')
+        return False
+
+
 def download_rule34video(driver, url: str, download_dir: str) -> bool:
-    """Navigate to a rule34video.com video page and download the highest quality."""
+    """Navigate to a rule34video.com video page and download the highest quality.
+
+    Some videos are hidden behind a login. If RULE34VIDEO_EMAIL/RULE34VIDEO_PASSWORD
+    are configured, log in first so those are reachable too; otherwise a video
+    that turns out to be gated is reported as such instead of a bare failure.
+    """
+    _rule34video_browser_login(driver)
     driver.get(url)
 
     try:
@@ -1867,7 +1941,12 @@ def download_rule34video(driver, url: str, download_dir: str) -> bool:
 
         mp4_links = driver.find_elements(By.XPATH, '//a[contains(@href,".mp4")]')
         if not mp4_links:
-            print('  [rule34video.com] no mp4 links found')
+            if driver.find_elements(By.ID, 'login'):
+                print('  [rule34video.com] no mp4 links found — this video may be hidden behind a '
+                      'login; set RULE34VIDEO_EMAIL and RULE34VIDEO_PASSWORD via '
+                      '`scripts/setup_config.py --credentials`')
+            else:
+                print('  [rule34video.com] no mp4 links found')
             return False
 
         best, resolution = _pick_best(
