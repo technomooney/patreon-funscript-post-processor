@@ -63,6 +63,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import action_log
+import creator_config
 import folder_log
 from downloadContent import (
     _closer_to_target_resolution,
@@ -119,10 +120,12 @@ def _scan(base_path: str):
     folder_videos: dict[str, list[tuple[str, str]]] = {}
     folder_fs_stems: dict[str, set[str]] = {}
 
+    _protected = creator_config.protected_paths(base_path)
     for root, dirs, files in os.walk(base_path):
         dirs.sort()
         if action_log.TRASH_DIRNAME in dirs:
             dirs.remove(action_log.TRASH_DIRNAME)
+        creator_config.prune(_protected, root, dirs)
         if _MANUAL_MARKER in files:
             dirs[:] = []
             continue

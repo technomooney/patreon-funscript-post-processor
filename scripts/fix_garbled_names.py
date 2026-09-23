@@ -37,6 +37,7 @@ import re
 import sys
 from urllib.parse import unquote
 import action_log
+import creator_config
 import folder_log
 
 # Suffixes that indicate a filename was truncated at a URL / filesystem limit.
@@ -196,9 +197,11 @@ def _resolve_new_name(filename: str, folder_name: str) -> tuple[str, str] | None
 def process(root_dir: str, dry_run: bool, skip_folders: set[str] | None = None) -> list[dict]:
     """Return report rows: old_path, new_path, strategy, status."""
     report: list[dict] = []
+    _protected = creator_config.protected_paths(root_dir)
     for dirpath, dirnames, filenames in os.walk(root_dir):
         if action_log.TRASH_DIRNAME in dirnames:
             dirnames.remove(action_log.TRASH_DIRNAME)
+        creator_config.prune(_protected, dirpath, dirnames)
         if '.manual' in filenames:
             print(f'  SKIP (manual)  {dirpath}')
             continue
@@ -458,9 +461,11 @@ def find_media_misnames(root_dir: str, dry_run: bool, skip_folders: set[str] | N
     Returns report rows: old_path, new_path, status.
     """
     report = []
+    _protected = creator_config.protected_paths(root_dir)
     for dirpath, dirnames, filenames in os.walk(root_dir):
         if action_log.TRASH_DIRNAME in dirnames:
             dirnames.remove(action_log.TRASH_DIRNAME)
+        creator_config.prune(_protected, dirpath, dirnames)
         if '.manual' in filenames:
             continue
         if skip_folders and dirpath in skip_folders:
@@ -532,9 +537,11 @@ def find_funscript_misnames(root_dir: str, dry_run: bool, skip_folders: set[str]
     Returns report rows: old_path, new_path, status.
     """
     report = []
+    _protected = creator_config.protected_paths(root_dir)
     for dirpath, dirnames, filenames in os.walk(root_dir):
         if action_log.TRASH_DIRNAME in dirnames:
             dirnames.remove(action_log.TRASH_DIRNAME)
+        creator_config.prune(_protected, dirpath, dirnames)
         if '.manual' in filenames:
             continue
         if skip_folders and dirpath in skip_folders:
@@ -601,9 +608,11 @@ def find_funscript_video_mismatches(
     Funscripts below threshold but above min_report are written to the report only.
     """
     report: list[dict] = []
+    _protected = creator_config.protected_paths(root_dir)
     for dirpath, dirnames, filenames in os.walk(root_dir):
         if action_log.TRASH_DIRNAME in dirnames:
             dirnames.remove(action_log.TRASH_DIRNAME)
+        creator_config.prune(_protected, dirpath, dirnames)
         if '.manual' in filenames:
             continue
         if skip_folders and dirpath in skip_folders:
@@ -717,10 +726,12 @@ def run(root: str, dry_run: bool) -> None:
 
     # Collect folders that already have a completed fix_garbled_names run.
     skip_set: set[str] = set()
+    _protected = creator_config.protected_paths(root)
     for _dp, _dirs, _fnames in os.walk(root):
         _dirs.sort()
         if action_log.TRASH_DIRNAME in _dirs:
             _dirs.remove(action_log.TRASH_DIRNAME)
+        creator_config.prune(_protected, _dp, _dirs)
         if '.manual' in _fnames:
             _dirs[:] = []
             continue
@@ -805,10 +816,12 @@ def run(root: str, dry_run: bool) -> None:
             return ''
 
         # Walk root to find all folders that were visited (not skipped).
+        _protected = creator_config.protected_paths(root)
         for _dp, _dirs, _fnames in os.walk(root):
             _dirs.sort()
             if action_log.TRASH_DIRNAME in _dirs:
                 _dirs.remove(action_log.TRASH_DIRNAME)
+            creator_config.prune(_protected, _dp, _dirs)
             if '.manual' in _fnames or _dp in skip_set:
                 _dirs[:] = []
                 continue

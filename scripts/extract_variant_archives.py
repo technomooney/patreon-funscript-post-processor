@@ -126,6 +126,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import action_log
+import creator_config
 import collection_redownload_queue
 import consolidate_packs
 import creator_db
@@ -400,10 +401,12 @@ def _find_stem_video_elsewhere(base_path: str, folder: str, stem: str) -> str | 
     content. Returns the first match found, same "first candidate wins"
     simplification consolidate_packs already makes."""
     folder = os.path.normpath(folder)
+    _protected = creator_config.protected_paths(base_path)
     for root, dirs, files in os.walk(base_path):
         dirs.sort()
         if action_log.TRASH_DIRNAME in dirs:
             dirs.remove(action_log.TRASH_DIRNAME)
+        creator_config.prune(_protected, root, dirs)
         if os.path.normpath(root) == folder:
             continue
         for f in files:
@@ -729,9 +732,11 @@ def scan_and_extract(base_path: str, creator_key: str | None = None, ignore_manu
     action_log.start('extract_variant_archives', base_path)
 
     found = extracted = skipped = failed = manual_skipped = 0
+    _protected = creator_config.protected_paths(base_path)
     for root, dirs, files in os.walk(base_path):
         if action_log.TRASH_DIRNAME in dirs:
             dirs.remove(action_log.TRASH_DIRNAME)
+        creator_config.prune(_protected, root, dirs)
         if '.manual' in files and not ignore_manual:
             has_archive = any(f.lower().endswith(_ARCHIVE_EXTS) for f in files)
             if has_archive:

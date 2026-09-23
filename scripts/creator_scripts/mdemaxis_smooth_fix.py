@@ -10,6 +10,7 @@ example of the creator_scripts contract; see README.md in this folder.
 import os
 
 import action_log
+import creator_config
 
 SCRIPT_ID = 'mdemaxis_smooth_fix'
 MENU_LABEL = 'MDemaxis rename fix'
@@ -40,9 +41,11 @@ def process(root_dir: str, extensions: list[str]) -> int:
     lowercase dot-prefixed extensions, e.g. ['.funscript']. Returns the
     number of files renamed."""
     renamed = 0
+    _protected = creator_config.protected_paths(root_dir)
     for dirpath, dirnames, filenames in os.walk(root_dir):
         if action_log.TRASH_DIRNAME in dirnames:
             dirnames.remove(action_log.TRASH_DIRNAME)
+        creator_config.prune(_protected, dirpath, dirnames)
         if '.manual' in filenames:
             print(f'  SKIP (manual)  {dirpath}')
             continue

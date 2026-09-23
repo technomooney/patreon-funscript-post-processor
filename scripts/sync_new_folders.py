@@ -5,6 +5,7 @@ import shutil
 from collections import defaultdict
 
 import action_log
+import creator_config
 import funscript_utils
 
 _JUNK_NAMES = {'thumbs.db', 'desktop.ini'}
@@ -78,6 +79,22 @@ def _scoped_files(root, funscripts_only):
                 continue
             full = os.path.join(dirpath, fn)
             yield os.path.relpath(full, root)
+
+
+def _exclusion_ignore(excluded_exts, skipped):
+    """A shutil.copytree ignore= callback that leaves out every file the
+    destination creator's creator_config.json sync_exclude names (see
+    creator_config.py) -- e.g. a creator whose videos/scripts are owned by
+    a creator script elsewhere in the tree, so post folders must never get
+    media copied back into them. Appends each skipped file to *skipped*."""
+    def _ignore(dirpath, names):
+        out = []
+        for n in names:
+            if creator_config.is_sync_excluded(n, excluded_exts) and os.path.isfile(os.path.join(dirpath, n)):
+                out.append(n)
+                skipped.append(os.path.join(dirpath, n))
+        return out
+    return _ignore
 
 
 def _folder_key(name):
@@ -271,12 +288,15 @@ def sync_new_folders(source, destination, *, auto_confirm=None):
             print()
             copied = 0
             errors = 0
+            excluded_exts = creator_config.sync_excluded_exts(destination)
+            excluded: list[str] = []
+            ignore = _exclusion_ignore(excluded_exts, excluded) if excluded_exts else None
             for i, folder in enumerate(new_folders, 1):
                 src_path = os.path.join(source, folder)
                 dst_path = os.path.join(destination, folder)
                 print(f"  [{i}/{len(new_folders)}] {folder}")
                 try:
-                    shutil.copytree(src_path, dst_path)
+                    shutil.copytree(src_path, dst_path, ignore=ignore)
                     action_log.record('copytree', dst=dst_path)
                     copied += 1
                 except OSError as e:
@@ -284,6 +304,9 @@ def sync_new_folders(source, destination, *, auto_confirm=None):
                     errors += 1
             print()
             print(f"Done — copied: {copied}, errors: {errors}")
+            if excluded:
+                print(f"  ({len(excluded)} file(s) not copied — excluded by "
+                      f"{creator_config.FILENAME} sync_exclude)")
 
     return common_folders
 
@@ -342,6 +365,15 @@ def sync_existing_folders(source, destination, common_folders, *,
         for src_full, rel in find_missing_files(src_root, dest_index, funscripts_only):
             all_missing.append((dest_folder, src_full, rel))
     print()
+
+    excluded_exts = creator_config.sync_excluded_exts(destination)
+    if excluded_exts:
+        before = len(all_missing)
+        all_missing = [m for m in all_missing
+                       if not creator_config.is_sync_excluded(os.path.basename(m[2]), excluded_exts)]
+        if before != len(all_missing):
+            print(f"{before - len(all_missing)} missing file(s) ignored — excluded by "
+                  f"{creator_config.FILENAME} sync_exclude.")
 
     if not all_missing:
         print("\nNo missing files found — destination is in sync.")

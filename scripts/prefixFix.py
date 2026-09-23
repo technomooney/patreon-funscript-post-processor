@@ -2,6 +2,7 @@ import os
 import re
 from urllib.parse import unquote
 import action_log
+import creator_config
 import folder_log
 
 # Matches the Patreon prefix: one or more non-underscore chars (type), underscore,
@@ -157,10 +158,12 @@ def getUserInput():
 def getFileList(filePath: str, extList: list):
     fileList = []
     fileRoots = []
+    _protected = creator_config.protected_paths(filePath)
     for root, dirs, files in os.walk(filePath):
         dirs.sort()
         if action_log.TRASH_DIRNAME in dirs:
             dirs.remove(action_log.TRASH_DIRNAME)
+        creator_config.prune(_protected, root, dirs)
         if '.manual' in files:
             print(f"  SKIP (manual): {root}")
             continue

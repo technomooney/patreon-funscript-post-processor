@@ -27,6 +27,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
 import urllib3.exceptions
 import action_log
+import creator_config
 import collection_redownload_queue
 import folder_log
 import funscript_utils
@@ -4037,9 +4038,11 @@ def _cleanup_temp_files(folder: str, base_path: str, protected: set[str] = froze
 def _cleanup_temp_files_recursive(base_path: str):
     """Recursively remove leftover temp files under *base_path* (.trash excluded --
     a soft-deleted file's own cleanup is purge_old_trash's job, not this sweep's)."""
+    _protected = creator_config.protected_paths(base_path)
     for dirpath, dirs, _ in os.walk(base_path):
         if action_log.TRASH_DIRNAME in dirs:
             dirs.remove(action_log.TRASH_DIRNAME)
+        creator_config.prune(_protected, dirpath, dirs)
         _cleanup_temp_files(dirpath, base_path)
 
 
@@ -4381,10 +4384,12 @@ def _dedup_existing(base_path: str) -> int:
 
     # Collect all candidate files first so we can show a total count.
     candidates: list[str] = []
+    _protected = creator_config.protected_paths(base_path)
     for root, dirs, files in os.walk(base_path):
         dirs.sort()
         if action_log.TRASH_DIRNAME in dirs:
             dirs.remove(action_log.TRASH_DIRNAME)  # don't re-dedup our own trash
+        creator_config.prune(_protected, root, dirs)
         for f in sorted(files):
             if _is_temp_file(f) or f in _DEDUP_EXCLUDED_FILES:
                 continue
@@ -4695,10 +4700,12 @@ def collect_tasks(base_path: str, require_funscript: bool = True,
 
     axis_suffixes = ('.surge', '.pitch', '.roll', '.twist', '.sway')
 
+    _protected = creator_config.protected_paths(base_path)
     for root, dirs, files in os.walk(base_path):
         dirs.sort()  # visit subdirectories in alphabetical order
         if action_log.TRASH_DIRNAME in dirs:
             dirs.remove(action_log.TRASH_DIRNAME)
+        creator_config.prune(_protected, root, dirs)
         if skip_keywords:
             hit = _matches_skip_keyword(os.path.basename(root), skip_keywords)
             if hit:
@@ -5285,10 +5292,12 @@ def collect_tasks_from_funscript_metadata(base_path: str) -> tuple[list, list]:
     tasks = []
     failures = []
 
+    _protected = creator_config.protected_paths(base_path)
     for root, dirs, files in os.walk(base_path):
         dirs.sort()
         if action_log.TRASH_DIRNAME in dirs:
             dirs.remove(action_log.TRASH_DIRNAME)
+        creator_config.prune(_protected, root, dirs)
         if '.manual' in files:
             continue
         if folder_log.has_run(root, 'downloadFromFunscriptMetadata'):
