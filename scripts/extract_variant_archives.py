@@ -720,13 +720,25 @@ def extract_one(archive_path: str, creator_key: str, base_path: str) -> bool:
     return True
 
 
-def scan_and_extract(base_path: str, creator_key: str | None = None, ignore_manual: bool = False) -> None:
+def scan_and_extract(base_path: str, creator_key: str | None = None, ignore_manual: bool = False,
+                     force_normal: bool | None = None, interactive: bool = False) -> None:
     """*ignore_manual*: process archives in '.manual'-marked folders too. Those
     folders are skipped by default, same as every other automated script in
     this project (fix_garbled_names, prefixFix, ...) -- .manual means a human
     already looked at and handled this folder themselves, so automation
     leaves it alone. This is meant as a one-off override for a specific run,
-    not a persisted setting."""
+    not a persisted setting.
+
+    A creator whose creator_config.json names a download_script (e.g.
+    Pize's pixeldrain archive script, which owns all of that creator's
+    archives) is skipped unless forced -- see downloadContent.
+    normal_process_forced for *force_normal*/*interactive*."""
+    from downloadContent import normal_process_forced
+    forced, sid = normal_process_forced(base_path, force_normal, interactive, what='archive extraction')
+    if not forced:
+        print(f'[skip] archive extraction is handled by the custom download script "{sid}" '
+              'for this creator (creator_config.json) — not extracting.')
+        return
     base_path = os.path.normpath(base_path)
     creator_key = (creator_key or os.path.basename(base_path)).strip().lower()
     action_log.start('extract_variant_archives', base_path)
@@ -774,7 +786,7 @@ def _main() -> None:
         'Also process folders marked .manual? (y/n, default n): '
     ).strip().lower() == 'y'
     try:
-        scan_and_extract(path, creator_key, ignore_manual=ignore_manual)
+        scan_and_extract(path, creator_key, ignore_manual=ignore_manual, interactive=True)
     finally:
         try:
             import discord_passwords

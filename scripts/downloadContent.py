@@ -4659,6 +4659,22 @@ def _previously_seen_links(folder: str) -> set[str]:
     }
 
 
+def _claimed_links(folder: str) -> set[str]:
+    """Every link a creator script has taken ownership of for *folder* --
+    any folder_log record carrying a 'claimed_links' list (e.g. Pize's
+    pixeldrain archive script claims both the post's pixeldrain links and
+    its original video links once the archive content is in place). The
+    normal download never fetches these again, even when forced to run for
+    a creator that has a download_script (see creator_config.py) -- the
+    creator script's copy is the one that's been resolution-checked."""
+    claimed: set[str] = set()
+    for record in folder_log.read(folder):
+        for url in record.get('claimed_links') or []:
+            if isinstance(url, str):
+                claimed.add(url)
+    return claimed
+
+
 def collect_tasks(base_path: str, require_funscript: bool = True,
                    ignore_consolidated: bool = False) -> tuple[list, list, list, list, list]:
     """
@@ -4802,6 +4818,16 @@ def collect_tasks(base_path: str, require_funscript: bool = True,
 
         if not validated_links:
             continue
+
+        claimed = _claimed_links(root)
+        if claimed:
+            before = len(validated_links)
+            validated_links = [l for l in validated_links if l not in claimed]
+            if len(validated_links) != before:
+                print(f'  [claimed] {before - len(validated_links)} link(s) owned by a creator script — '
+                      f'skipping in: {_safe(os.path.basename(root))}')
+            if not validated_links:
+                continue
 
         # This folder already completed a downloadContent run, but the post
         # has since gained links that weren't there before (e.g. Pize's
@@ -5400,11 +5426,60 @@ def _run_flagged_collection_redownloads(base_path: str, entries: list[dict],
     collection_redownload_queue.remove(base_path, {(e['folder'], e['stem']) for e in entries})
 
 
+def normal_process_forced(base_path: str, force_normal: bool | None, interactive: bool,
+                          what: str = 'download') -> tuple[bool, str | None]:
+    """(forced, script_id) for a creator whose creator_config.json names a
+    download_script. script_id None means no download_script is configured
+    -- the normal process just runs, as always. Otherwise the normal
+    process only runs when forced: explicitly via *force_normal*, by typing
+    'force' at the prompt (interactive), or via the config's
+    force_normal_download (unattended). Shared by find_and_download and
+    extract_variant_archives.scan_and_extract."""
+    sid = creator_config.download_script(base_path)
+    if not sid:
+        return True, None
+    if force_normal is not None:
+        return force_normal, sid
+    if interactive:
+        print(f'\nThis creator uses the custom download script "{sid}" (creator_config.json) — '
+              f'the normal {what} is disabled for it so it can\'t undo that script\'s work.')
+        ans = input("Press Enter to run the custom script instead, or type 'force' to run the "
+                    f"normal {what} anyway: ").strip().lower()
+        return ans == 'force', sid
+    return bool(creator_config.get(base_path, 'force_normal_download', False)), sid
+
+
+def _run_download_script(base_path: str, force_normal: bool | None, auto_confirm: bool | None,
+                         script_options: dict | None) -> bool:
+    """Run the creator's download_script instead of the normal download, if
+    one is configured and the normal download isn't forced. Returns True if
+    the normal download must not run (the script ran, or couldn't be found
+    -- a misconfigured creator never silently falls back to the normal
+    process it was configured to avoid)."""
+    interactive = auto_confirm is None
+    forced, sid = normal_process_forced(base_path, force_normal, interactive)
+    if sid is None:
+        return False
+    if forced:
+        print(f'[download-script] normal download forced despite "{sid}".')
+        return False
+    import creator_scripts_menu
+    module = creator_scripts_menu.load(sid)
+    if module is None:
+        print(f'[download-script] "{sid}" (from creator_config.json) not found in scripts/creator_scripts/ '
+              '— not running the normal download either. Fix the config or force the normal download.')
+        return True
+    print(f'[download-script] running "{sid}" instead of the normal download...\n')
+    creator_scripts_menu.run_plugin(module, base_path, None if interactive else (script_options or {}))
+    return True
+
+
 def find_and_download(base_path: str, tasks: list | None = None, failures: list | None = None,
                        script_name: str = 'downloadContent', report_suffix: str = '',
                        *, require_funscript: bool | None = None, resume: bool | None = None,
                        auto_confirm: bool | None = None, ignore_consolidated: bool | None = None,
-                       redownload_flagged: bool | None = None):
+                       redownload_flagged: bool | None = None, force_normal: bool | None = None,
+                       script_options: dict | None = None):
     """*tasks*/*failures*: pre-built task list (collect_tasks()'s return shape)
     to run instead of scanning description.json — used by
     find_and_download_from_funscript_metadata(). None (the default) collects
@@ -5423,8 +5498,18 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
     _handle_bulk_collection), defaulting to not asking (and not running)
     when the queue is empty. Used by run_unattended.py to run this step with
     no prompts at all.
+
+    *force_normal*/*script_options*: when the creator's creator_config.json
+    names a download_script (see creator_config.py), the normal download
+    doesn't run at all -- that creator script runs instead (see
+    _run_download_script). *force_normal* True runs the normal download
+    anyway; None asks interactively, or (unattended, i.e. *auto_confirm*
+    given) follows the config's force_normal_download. *script_options* is
+    handed to the creator script for an unattended run.
     """
     prebuilt = tasks is not None
+    if not prebuilt and _run_download_script(base_path, force_normal, auto_confirm, script_options):
+        return
     flagged_entries: list[dict] = []
     if not prebuilt:
         if require_funscript is None:
