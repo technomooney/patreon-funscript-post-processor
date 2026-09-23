@@ -19,6 +19,30 @@ def run(base_path: str) -> None:
     ...
 ```
 
+Optional extras:
+
+```python
+SCRIPT_ID = "my_script"          # default: the file name; used as the undo
+                                 # journal name and folder_log script name
+
+def run(base_path: str, options: dict | None = None) -> None:
+    ...                          # options is None when run from the menu
+                                 # (prompt as usual); a dict when run
+                                 # unattended (never prompt then)
+
+def setup_unattended(current: dict) -> dict:
+    ...                          # ask your own questions for 'sa' (Enter
+                                 # keeps current), return the options dict
+
+REPLACES_DOWNLOAD = True         # only for scripts that can stand in for
+                                 # the normal download step (see below)
+RECOMMENDED_CONFIG = {...}       # creator_config.json values to *offer*
+                                 # when a user picks this as a download script
+```
+
+A plugin with `setup_unattended` (or none -- it's then run with `{}`)
+shows up as a step in the unattended setup (`sa`) automatically.
+
 `run()` is called with the directory the user entered when they picked
 your script from the submenu. What you do inside it is entirely up to
 you — rename files, fix funscripts, whatever the quirk needs. Prompt for
@@ -27,26 +51,49 @@ itself, same as any of this project's other scripts.
 
 ## Recommended: use action_log for anything reversible
 
-If your script renames, copies, or soft-deletes files, wire it into the
-shared undo journal so it participates in the main menu's "Undo last
-action" (option `z`) the same way the built-in scripts do:
+If your script renames, copies, or soft-deletes files, wire it into its
+**own** undo journal (`journal=SCRIPT_ID`). It's then undone from this
+submenu's `u) Undo a creator script's last run`, separately from the main
+menu's "Undo last action" (option `z`) for the core tools:
 
 ```python
 import action_log
 
-action_log.start('my_script_name', base_path)
-...
-action_log.record('rename', old_path=old, new_path=new)  # or 'copy' / 'copytree' / 'soft_delete'
-...
-action_log.finish()
+action_log.start(SCRIPT_ID, base_path, journal=SCRIPT_ID)
+try:
+    ...
+    action_log.record('rename', old_path=old, new_path=new)  # or 'copy' / 'copytree' / 'soft_delete'
+    ...
+finally:
+    action_log.finish()
 ```
+
+Anything core your script calls that journals its own changes (e.g.
+`downloadContent.find_and_download`) nests into your journal while it's
+active, so undoing your script undoes that too.
+
+## Download-replacement scripts and creator_config.json
+
+A creator folder can hold a hand-editable `creator_config.json` (see
+`scripts/creator_config.py`). Every flag in it is explicit opt-in: it's
+only set by hand, via `sa`, or via this submenu's `c) Configure creator
+flags`. No script writes it on its own, and having a plugin for a creator
+never implies any flag. The flags:
+
+- `download_script`: a plugin with `REPLACES_DOWNLOAD = True` that runs
+  *instead of* the normal download (and archive extraction) for that
+  creator. The normal process then only runs when forced.
+- `sync_exclude`: kinds/extensions sync_new_folders must not copy.
+- `protected_dirs`: subfolders every core tree-walking script skips.
 
 See `mdemaxis_smooth_fix.py` in this folder for a real, working example.
 
 ## Skip `.trash` when walking base_path
 
 If your script does its own `os.walk(base_path)`, prune out
-`action_log.TRASH_DIRNAME` the same way `mdemaxis_smooth_fix.py` does —
+`action_log.TRASH_DIRNAME` the same way `mdemaxis_smooth_fix.py` does (and
+the creator's `protected_dirs`, via `creator_config.prune`, unless your
+script is the one that owns them) —
 soft-deleted files live there and shouldn't be renamed, re-hashed, or
 otherwise touched by anything except `action_log`'s own trash/undo
 machinery:

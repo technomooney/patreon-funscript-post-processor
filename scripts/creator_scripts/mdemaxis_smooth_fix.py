@@ -11,6 +11,7 @@ import os
 
 import action_log
 
+SCRIPT_ID = 'mdemaxis_smooth_fix'
 MENU_LABEL = 'MDemaxis rename fix'
 MENU_DESCRIPTION = (
     'MDemaxis patreon only: rename SMOOTH-prefixed and _maxinterval-suffixed\n'
@@ -75,17 +76,31 @@ def process(root_dir: str, extensions: list[str]) -> int:
     return renamed
 
 
-def run(base_path: str) -> None:
-    raw = input('File extensions to process, separated by semicolons (default: funscript): ').strip()
+def _parse_extensions(raw: str) -> list[str]:
     if raw:
-        extensions = ['.' + e.lstrip('.').lower() for e in raw.split(';') if e.strip()]
+        return ['.' + e.lstrip('.').lower() for e in raw.split(';') if e.strip()]
+    return ['.funscript']
+
+
+def setup_unattended(current: dict) -> dict:
+    shown = current.get('extensions', 'funscript')
+    raw = input(f'  File extensions to process, separated by semicolons [{shown}]: ').strip()
+    return {'extensions': raw or shown}
+
+
+def run(base_path: str, options: dict | None = None) -> None:
+    if options is None:
+        raw = input('File extensions to process, separated by semicolons (default: funscript): ').strip()
     else:
-        extensions = ['.funscript']
+        raw = str(options.get('extensions', ''))
+    extensions = _parse_extensions(raw)
 
     print(f'\nProcessing: {base_path}')
     print(f'Extensions: {", ".join(extensions)}\n')
 
-    action_log.start('mdemaxis_smooth_fix', base_path)
-    count = process(base_path, extensions)
-    action_log.finish()
+    action_log.start(SCRIPT_ID, base_path, journal=SCRIPT_ID)
+    try:
+        count = process(base_path, extensions)
+    finally:
+        action_log.finish()
     print(f'\nDone. {count} file(s) renamed.')
