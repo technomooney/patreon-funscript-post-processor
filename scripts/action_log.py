@@ -93,6 +93,20 @@ def record(op: str, **fields) -> None:
     _entries.append(entry)
 
 
+def has_entries() -> bool:
+    """True if the active run has recorded any change so far."""
+    return bool(_entries)
+
+
+def prepend(op: str, **fields) -> None:
+    """Like record(), but as the run's *first* entry -- undone last. For
+    bookkeeping a script only wants journaled when the run changed
+    something else (e.g. restoring a state file the run overwrote)."""
+    entry = {'op': op}
+    entry.update(fields)
+    _entries.insert(0, entry)
+
+
 def _journal_path(root_dir: str, journal: str | None = None) -> str:
     name = JOURNAL_FILENAME if journal is None else f'.last_action.{journal}.json'
     return os.path.join(os.path.normpath(root_dir), name)
