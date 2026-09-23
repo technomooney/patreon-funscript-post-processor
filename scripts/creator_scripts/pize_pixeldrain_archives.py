@@ -31,11 +31,12 @@ Per run:
      whose name, funscript points, or video (AV-similarity) is already there
      is skipped -- a package re-wrapped into a later monthly/6-month archive
      merges into the folder it already has.
-  4b. Fold single-video packages into the collection (a package with 2+
-     videos) that contains the same video -- the collection wins: the copy
-     closest to MAX_RESOLUTION survives under the collection's filename,
-     scripts it doesn't already have move in renamed to pair with it, and
-     the single package's folder is removed (redirected in the manifest).
+  4b. Fold duplicated videos toward the bigger package: a video also found
+     in a bigger collection (a package with 2+ videos) moves there, single
+     posts and smaller collections alike -- the bigger one wins: the copy
+     closest to MAX_RESOLUTION survives under its filename, scripts it
+     doesn't already have move in renamed to pair with it, and an emptied
+     folder is removed (redirected in the manifest).
   5. Empty each fully-processed post folder: a funscript already in its
      package is trashed; a video AV-matching the package's keeps whichever
      copy fits MAX_RESOLUTION better (always in the package folder); a
@@ -508,12 +509,31 @@ _DURATION_GATE_S = 1.0
 
 def resolve_key(manifest: Manifest, key: str) -> str:
     """The package folder *key*'s content lives in now -- itself, or the
-    collection it was folded into (following any chain)."""
+    collection it was fully folded into (following any chain)."""
     seen = set()
     while key in manifest.packages and manifest.packages[key].get('folded_into') and key not in seen:
         seen.add(key)
         key = manifest.packages[key]['folded_into']
     return key
+
+
+def resolve_keys(manifest: Manifest, key: str) -> set[str]:
+    """Every folder holding content that came from package *key*: the
+    folder it now lives in plus every collection it was (partly) folded
+    into -- a partly-folded collection's posts need to see both."""
+    out: set[str] = set()
+    todo = [key]
+    while todo:
+        k = todo.pop()
+        if k in out:
+            continue
+        rec = manifest.packages.get(k, {})
+        if rec.get('folded_into'):
+            todo.append(rec['folded_into'])
+        else:
+            out.add(k)
+        todo.extend(rec.get('folded_parts', []))
+    return out
 
 
 def _package_dirs(lib: str) -> list[str]:
@@ -557,22 +577,51 @@ def _fold_scripts(base_path: str, scripts: list[str], video_stem: str, target: s
             target_fds.add(fd)
 
 
+def _scripts_for_video(folder: str, video_stem: str, all_video_stems: list[str]) -> list[str]:
+    """The funscripts in *folder* that belong to *video_stem*: in a
+    one-video folder every script; otherwise those whose name starts with
+    it -- and with no longer video stem that also matches ('ホシノ' vs
+    'ホシノ＋')."""
+    names = [f for f in os.listdir(folder) if f.lower().endswith('.funscript')]
+    if len(all_video_stems) <= 1:
+        return sorted(os.path.join(folder, f) for f in names)
+    out = []
+    for f in names:
+        stem = Path(f).stem
+        owners = [v for v in all_video_stems if stem.startswith(v)]
+        if owners and max(owners, key=len) == video_stem:
+            out.append(os.path.join(folder, f))
+    return sorted(out)
+
+
 def fold_into_collections(base_path: str, lib: str, manifest: Manifest) -> int:
-    """Fold every single-video / script-only package whose content is in a
-    collection package (>= COLLECTION_MIN_VIDEOS videos) into that
-    collection. Videos: AV-confirmed match, the copy closest to
-    MAX_RESOLUTION survives under the collection's filename. Scripts the
-    collection doesn't already have (by points) move in, renamed to pair
-    with the collection's video. The emptied single package folder is
-    removed and redirected to the collection in the manifest. Returns the
-    number of packages folded."""
+    """Fold duplicated videos toward the bigger package, video by video.
+
+    Package folders are ranked by video count (most first; ties broken by
+    name, so the result is deterministic). Each video in a folder is
+    compared against the videos of every higher-ranked *collection*
+    (>= COLLECTION_MIN_VIDEOS videos) -- durations first as a cheap
+    filter, then the AV check. On a match the bigger folder wins: the copy
+    closest to MAX_RESOLUTION survives under the bigger folder's filename,
+    the video's scripts the winner doesn't already have (by points) move
+    in renamed to pair with it, duplicates go to trash. Videos only ever
+    move toward a higher rank, so nothing can bounce back.
+
+    A folder left with no videos and no scripts is removed and redirected
+    ('folded_into'); one only partly folded keeps its remaining videos and
+    records where the rest went ('folded_parts'), so its posts look there
+    too. A script-only package folds only when every script is already in
+    one collection. Returns the number of videos/packages folded."""
     max_res = dc._get_max_resolution()
     dirs = _package_dirs(lib)
-    videos_of = {d: sorted(f for f in os.listdir(os.path.join(lib, d)) if dc._is_video_filename(f)) for d in dirs}
-    collections = [d for d in dirs if len(videos_of[d]) >= COLLECTION_MIN_VIDEOS]
-    singles = [d for d in dirs if len(videos_of[d]) < COLLECTION_MIN_VIDEOS]
-    if not collections or not singles:
-        return 0
+
+    def videos(d):
+        p = os.path.join(lib, d)
+        return sorted(f for f in os.listdir(p) if dc._is_video_filename(f)) if os.path.isdir(p) else []
+
+    initial = {d: len(videos(d)) for d in dirs}
+    ranked = sorted(dirs, key=lambda d: (-initial[d], d))
+    rank = {d: i for i, d in enumerate(ranked)}
 
     dur_cache: dict[str, float | None] = {}
 
@@ -581,79 +630,104 @@ def fold_into_collections(base_path: str, lib: str, manifest: Manifest) -> int:
             dur_cache[path] = dc._video_duration(path)
         return dur_cache[path]
 
-    coll_videos = [(c, os.path.join(lib, c, v)) for c in collections for v in videos_of[c]]
     folded = 0
-    for s_key in singles:
+    for s_key in reversed(ranked):  # smallest first
         s_dir = os.path.join(lib, s_key)
-        scripts = sorted(os.path.join(s_dir, f) for f in os.listdir(s_dir) if f.lower().endswith('.funscript'))
-        target = target_stem = None
-        moved: list[str] = []
-        if videos_of[s_key]:
-            v = os.path.join(s_dir, videos_of[s_key][0])
+        if not os.path.isdir(s_dir):
+            continue
+        winners = [t for t in ranked if rank[t] < rank[s_key] and initial[t] >= COLLECTION_MIN_VIDEOS]
+        if not winners:
+            continue
+        received: list[str] = []
+        s_videos = videos(s_key)
+        s_stems = [Path(v).stem for v in s_videos]
+
+        for vname in s_videos:
+            v = os.path.join(s_dir, vname)
             vd = dur(v)
-            cands = [(c, cv) for c, cv in coll_videos
-                     if vd is None or dur(cv) is None or abs(dur(cv) - vd) <= _DURATION_GATE_S]
-            match = next(((c, cv) for c, cv in cands if dc._videos_are_similar(v, cv)), None)
+            match = None
+            for t in winners:
+                for tv in videos(t):
+                    cv = os.path.join(lib, t, tv)
+                    if vd is not None and dur(cv) is not None and abs(dur(cv) - vd) > _DURATION_GATE_S:
+                        continue
+                    if dc._videos_are_similar(v, cv):
+                        match = (t, cv)
+                        break
+                if match:
+                    break
             if match is None:
                 continue
             target, cv = match
+            target_dir = os.path.join(lib, target)
             target_stem = Path(cv).stem
+            scripts = _scripts_for_video(s_dir, Path(vname).stem, s_stems)
             s_h = (dc._video_quality(v) or {}).get('height', 0)
             c_h = (dc._video_quality(cv) or {}).get('height', 0)
-            print(f'  [fold] {s_key} -> {target} ({Path(cv).name})')
+            print(f'  [fold] {s_key}/{vname} -> {target}/{Path(cv).name}')
             if dc._closer_to_target_resolution(s_h, c_h, max_res):
                 _soft_delete(base_path, cv)
-                new_cv = os.path.splitext(cv)[0] + os.path.splitext(v)[1]
-                _move(v, new_cv)
-                print(f'    kept the single post\'s copy ({s_h}p over {c_h}p)')
+                _move(v, os.path.splitext(cv)[0] + os.path.splitext(v)[1])
+                print(f'    kept the {s_key} copy ({s_h}p over {c_h}p)')
             else:
                 _soft_delete(base_path, v)
-            _fold_scripts(base_path, scripts, Path(v).stem, os.path.join(lib, target), target_stem, moved)
-        elif scripts:
+            dur_cache.pop(v, None)
+            moved: list[str] = []
+            _fold_scripts(base_path, scripts, Path(vname).stem, target_dir, target_stem, moved)
+            folder_log.append_run(target_dir, SCRIPT_ID, folded_in=f'{s_key}/{vname}',
+                                  scripts_added=moved)
+            collection_redownload_queue.remove(base_path, {(s_dir, Path(vname).stem)})
+            if target not in received:
+                received.append(target)
+            folded += 1
+
+        if not s_videos:
             # script-only package: fold only if every script is already in
             # one collection (by points) -- nothing to AV-check against
+            scripts = sorted(os.path.join(s_dir, f) for f in os.listdir(s_dir) if f.lower().endswith('.funscript'))
             fds = [funscript_utils.funscript_data(sp) for sp in scripts]
-            if any(fd is None for fd in fds):
-                continue
-            target = next((c for c in collections
-                           if all(fd in _folder_media(os.path.join(lib, c))[0] for fd in fds)), None)
-            if target is None:
-                continue
-            print(f'  [fold] {s_key} -> {target} (scripts already there)')
-            for sp in scripts:
-                _soft_delete(base_path, sp)
-        else:
+            if scripts and all(fd is not None for fd in fds):
+                target = next((t for t in winners
+                               if all(fd in _folder_media(os.path.join(lib, t))[0] for fd in fds)), None)
+                if target:
+                    print(f'  [fold] {s_key} -> {target} (scripts already there)')
+                    for sp in scripts:
+                        _soft_delete(base_path, sp)
+                    received.append(target)
+                    folded += 1
+
+        if not received:
             continue
-
-        # anything else left (readme, images) goes along; then the folder goes
-        for f in sorted(os.listdir(s_dir)):
-            full = os.path.join(s_dir, f)
-            if f.startswith('.') or not os.path.isfile(full):
-                continue
-            _move(full, os.path.join(lib, target, f))
-        for f in os.listdir(s_dir):
-            if f.startswith('.'):
-                try:
-                    os.remove(os.path.join(s_dir, f))
-                except OSError:
-                    pass
-        try:
-            os.rmdir(s_dir)
-        except OSError:
-            pass
-
         rec = manifest.packages.setdefault(s_key, {'posts': [], 'archives': [], 'links': []})
-        rec['folded_into'] = target
-        trec = manifest.packages.setdefault(target, {'posts': [], 'archives': [], 'links': []})
-        for field in ('posts', 'archives', 'links', 'originals'):
-            for item in rec.get(field, []):
-                trec.setdefault(field, [])
-                if item not in trec[field]:
-                    trec[field].append(item)
-        collection_redownload_queue.remove(base_path, {(s_dir, st) for st in [Path(v).stem for v in videos_of[s_key]] or [s_key]})
-        folder_log.append_run(os.path.join(lib, target), SCRIPT_ID, folded_in=s_key,
-                              from_archives=rec.get('archives', []), scripts_added=moved)
-        folded += 1
+        emptied = not any(dc._is_video_filename(f) or f.lower().endswith('.funscript')
+                          for f in os.listdir(s_dir))
+        if emptied:
+            # anything else left (readme, images) goes along; then the folder goes
+            for f in sorted(os.listdir(s_dir)):
+                full = os.path.join(s_dir, f)
+                if not f.startswith('.') and os.path.isfile(full):
+                    _move(full, os.path.join(lib, received[0], f))
+            for f in os.listdir(s_dir):
+                if f.startswith('.'):
+                    try:
+                        os.remove(os.path.join(s_dir, f))
+                    except OSError:
+                        pass
+            try:
+                os.rmdir(s_dir)
+            except OSError:
+                pass
+            rec['folded_into'] = received[0]
+        parts = rec.setdefault('folded_parts', [])
+        for t in received:
+            if t not in parts:
+                parts.append(t)
+            trec = manifest.packages.setdefault(t, {'posts': [], 'archives': [], 'links': []})
+            for field in ('posts', 'originals'):
+                for item in rec.get(field, []):
+                    trec.setdefault(field, [])
+                    if item not in trec[field]:
+                        trec[field].append(item)
         manifest.save()
     return folded
 
@@ -910,6 +984,7 @@ def _process_link_inner(url: str, base_path: str, lib: str, manifest: Manifest, 
         # content (re)landed in this folder -- a previous fold no longer
         # applies until the fold step confirms it again
         rec.pop('folded_into', None)
+        rec.pop('folded_parts', None)
         for p in posts:
             if p not in rec['posts']:
                 rec['posts'].append(p)
@@ -982,9 +1057,9 @@ def run(base_path: str, options: dict | None = None) -> None:
             _process_link(url, base_path, lib, manifest, creator_key)
 
         # 4b. Single-video packages that are part of a collection fold into it.
-        print('\nFolding single-post packages into collections...')
+        print('\nFolding duplicate videos into the bigger collections...')
         folded = fold_into_collections(base_path, lib, manifest)
-        print(f'{folded} package(s) folded into a collection.')
+        print(f'{folded} duplicate video(s)/package(s) folded into a bigger collection.')
 
         # 5-6. Empty every post whose pixeldrain links are all done.
         print('\nMoving videos/scripts out of post folders...')
@@ -1000,7 +1075,7 @@ def run(base_path: str, options: dict | None = None) -> None:
                             if os.path.isfile(os.path.join(post, f)))
             if not has_media and manifest.posts.get(rel, {}).get('status') == 'emptied':
                 continue
-            keys = sorted({resolve_key(manifest, k) for e in entries for k in e.get('packages', [])})
+            keys = sorted({r for e in entries for k in e.get('packages', []) for r in resolve_keys(manifest, k)})
             summary = empty_post(base_path, lib, rel, keys,
                                  {e['sha256'] for e in entries if e.get('sha256')},
                                  {e['archive_name'] for e in entries if e.get('archive_name')})
