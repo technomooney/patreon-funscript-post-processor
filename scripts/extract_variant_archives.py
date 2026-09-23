@@ -364,9 +364,11 @@ def _extract_nested_archives(tmp: str, creator_key: str, post_date, is_collectio
             os.makedirs(dest, exist_ok=True)
             opened = _extract(archive, dest, None)
             if not opened:
+                # Every known password, including ones already tried on the
+                # outer archive: *tried* holds the outer's working password
+                # too, and that's nearly always the inner one's as well --
+                # skipping it made same-password nested archives unopenable.
                 for pw in creator_db.get_password_history(creator_key, post_date, is_collection):
-                    if pw in tried:
-                        continue
                     tried.add(pw)
                     if _extract(archive, dest, pw):
                         opened = True
