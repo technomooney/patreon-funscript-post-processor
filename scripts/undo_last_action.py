@@ -28,6 +28,8 @@ def _undo_rename(entry: dict) -> str:
         return f'SKIP — renamed file no longer exists: {new_path}'
     if os.path.exists(old_path):
         return f'SKIP — original path is occupied again: {old_path}'
+    # the original folder may have been removed after it was emptied
+    os.makedirs(os.path.dirname(old_path), exist_ok=True)
     os.rename(new_path, old_path)
     return f'restored: {os.path.basename(new_path)} -> {os.path.basename(old_path)}'
 
