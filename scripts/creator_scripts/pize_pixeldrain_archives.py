@@ -48,11 +48,18 @@ Per run:
   7. Queue under-resolution package videos' original links for a
      redownload (offered at the end, default no).
 
-Archives no known password opens -- including every password in the
-Discord channel history -- stay in _pixeldrain/.pending, are listed with
-their pixeldrain link in _reports/pixeldrain_locked_archives.csv, and are
-retried automatically on later runs only when an untried password exists.
-Nothing is downloaded, and nothing is moved out of their posts, for them.
+Every link is first looked up with pixeldrain's info API (no download):
+a deleted file is marked 'gone' and only rechecked every GONE_RECHECK_DAYS
+days, and each download is verified against pixeldrain's own sha256
+(retried once on a mismatch). Archives no known password opens --
+including every password in the Discord channel history -- stay in
+_pixeldrain/.pending and are retried automatically on later runs only
+when an untried password exists (and only while the kept copy still
+matches pixeldrain's hash). An archive that matches pixeldrain's hash but
+that 7z reports as structurally damaged is 'broken' on pixeldrain itself
+and isn't retried. All of these are listed with their pixeldrain link in
+_reports/pixeldrain_unusable_links.csv; nothing is downloaded, and nothing
+is moved out of their posts, for them.
 
 This is a download-replacement script (REPLACES_DOWNLOAD): once the user
 sets download_script in Pize's creator_config.json, the normal download
@@ -106,11 +113,32 @@ _7Z_TIMEOUT = 4 * 3600
 
 class Locked(Exception):
     """An archive (or an archive nested inside it) no known password opens.
-    *tried* is every password that failed on that archive."""
-    def __init__(self, archive_name: str, tried: set[str]):
+    *tried* is every password that failed on that archive. *broken* is True
+    when 7z says the archive itself is structurally damaged (truncated, not
+    an archive at all) rather than asking for a different password -- see
+    _is_structurally_broken."""
+    def __init__(self, archive_name: str, tried: set[str], broken: bool = False):
         super().__init__(archive_name)
         self.archive_name = archive_name
         self.tried = tried
+        self.broken = broken
+
+
+# 7z messages that mean the file itself is damaged, whatever the password
+# (confirmed by testing truncated/garbage zip and 7z files). A corrupted
+# byte in the *middle* of an encrypted file is indistinguishable from a
+# wrong password ("CRC Failed in encrypted file. Wrong password?"), so
+# that case stays 'locked' -- only unambiguous structural damage counts.
+_BROKEN_MARKERS = ('unexpected end of archive', 'is not archive', 'cannot open the file as')
+
+
+def _is_structurally_broken(archive: str) -> bool:
+    try:
+        result = eva._run_7z(['7z', 't', '-p', archive], _7Z_TIMEOUT)
+    except (OSError, eva.subprocess.TimeoutExpired):
+        return False
+    out = (result.stdout + result.stderr).lower()
+    return any(m in out for m in _BROKEN_MARKERS)
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +292,38 @@ def collect(base_path: str) -> tuple[dict[str, set[str]], dict[str, dict]]:
 # 2. Download
 # ---------------------------------------------------------------------------
 
+GONE_RECHECK_DAYS = 7
+
+
+def remote_info(url: str) -> dict | str | None:
+    """pixeldrain's own info for a single-file link (/u/<id>), fetched
+    without downloading anything: {'sha256', 'size', 'name'}. 'gone' when
+    pixeldrain answers 404 (deleted/never existed). None when it can't be
+    determined (not a /u/ link, network trouble, no access configured) --
+    callers then fall back to downloading as before.
+
+    A /u/ file's content can never change under the same ID (re-uploading
+    creates a new ID; files added to a list get their own IDs, picked up
+    because lists are re-expanded every run), so its sha256 is a reliable
+    fingerprint of exactly what we should end up with."""
+    if '/u/' not in url:
+        return None
+    headers = dc._pixeldrain_initial_headers(f'info {_file_id(url)}')
+    if headers is None:
+        return None
+    req = dc.urllib.request.Request(f'https://pixeldrain.com/api/file/{_file_id(url)}/info', headers=headers)
+    try:
+        with dc.urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+    except dc.urllib.error.HTTPError as e:
+        return 'gone' if e.code == 404 else None
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not data.get('hash_sha256'):
+        return None
+    return {'sha256': data['hash_sha256'], 'size': data.get('size'), 'name': data.get('name')}
+
+
 def download(url: str, dest_dir: str) -> str | None:
     """Fetch *url* into the empty *dest_dir* via the existing pixeldrain
     handler; returns the saved path under its real filename, or None."""
@@ -332,7 +392,7 @@ class Unpacker:
         opened, _pw = eva.open_archive(archive, dest, self.creator_key, self.post_date,
                                        self.is_collection, tried, timeout=_7Z_TIMEOUT)
         if not opened:
-            raise Locked(name, tried)
+            raise Locked(name, tried, broken=_is_structurally_broken(archive))
 
     def unpack(self, archive_path: str, work_dir: str) -> Package:
         name = os.path.basename(archive_path)
@@ -894,14 +954,31 @@ def _write_csv(base_path: str, name: str, header: list[str], rows: list[list]) -
     return path
 
 
-def write_locked_report(base_path: str, manifest: Manifest) -> int:
-    rows = [[url, e.get('archive_name', ''), e.get('locked_part', ''), '; '.join(e.get('posts', [])),
-             len(e.get('tried', [])), e.get('first_attempt', ''), e.get('last_attempt', '')]
-            for url, e in sorted(manifest.links.items()) if e.get('status') == 'locked']
-    _write_csv(base_path, 'pixeldrain_locked_archives.csv',
-               ['pixeldrain_url', 'archive', 'locked_part', 'posts', 'passwords_tried',
+UNUSABLE_STATUSES = ('locked', 'broken', 'gone', 'failed')
+
+
+def write_unusable_report(base_path: str, manifest: Manifest) -> dict[str, int]:
+    """_reports/pixeldrain_unusable_links.csv: every link that isn't done,
+    with why -- locked (no password opens it yet, retried when a new one
+    shows up), broken (damaged on pixeldrain itself, not retried), gone
+    (deleted from pixeldrain, rechecked every GONE_RECHECK_DAYS days),
+    failed (download error, retried next run). Returns counts per status."""
+    rows = []
+    counts = {s: 0 for s in UNUSABLE_STATUSES}
+    for url, e in sorted(manifest.links.items()):
+        st = e.get('status')
+        if st not in counts:
+            continue
+        counts[st] += 1
+        rows.append([st, url, e.get('archive_name', ''), e.get('locked_part', ''), '; '.join(e.get('posts', [])),
+                     len(e.get('tried', [])), e.get('first_attempt', ''), e.get('last_attempt', '')])
+    _write_csv(base_path, 'pixeldrain_unusable_links.csv',
+               ['status', 'pixeldrain_url', 'archive', 'failing_part', 'posts', 'passwords_tried',
                 'first_attempt', 'last_attempt'], rows)
-    return len(rows)
+    old = os.path.join(base_path, '_reports', 'pixeldrain_locked_archives.csv')
+    if os.path.isfile(old):
+        os.remove(old)  # superseded by the unified report
+    return counts
 
 
 # ---------------------------------------------------------------------------
@@ -929,18 +1006,50 @@ def _process_link_inner(url: str, base_path: str, lib: str, manifest: Manifest, 
     entry['last_attempt'] = _now()
     shutil.rmtree(work, ignore_errors=True)
 
+    info = remote_info(url)
+    entry['info_checked'] = _now()
+    if isinstance(info, dict):
+        entry['remote_sha256'] = info['sha256']
+    remote_sha = entry.get('remote_sha256')
+
     pending = entry.get('pending_path')
+    archive = None
     if pending and os.path.isfile(os.path.join(lib, pending)):
         archive = os.path.join(lib, pending)
-        print(f'  retrying locked archive: {os.path.basename(archive)}')
-    else:
-        archive = download(url, os.path.join(work, 'dl'))
+        if remote_sha and _sha256(archive) != remote_sha:
+            # our kept copy got damaged -- don't keep trying passwords on it
+            print(f'  kept copy of {os.path.basename(archive)} no longer matches pixeldrain — re-downloading')
+            _soft_delete(base_path, archive)
+            entry.pop('pending_path', None)
+            pending = archive = None
+        else:
+            print(f'  retrying locked archive: {os.path.basename(archive)}')
+    if archive is None:
+        if info == 'gone':
+            entry['status'] = 'gone'
+            entry.setdefault('gone_since', _now())
+            print(f'  GONE: pixeldrain says this file no longer exists — reported, rechecked in '
+                  f'{GONE_RECHECK_DAYS} days')
+            manifest.save()
+            return
+        for attempt in (1, 2):
+            archive = download(url, os.path.join(work, f'dl{attempt}'))
+            if archive is None or not remote_sha:
+                break
+            got = _sha256(archive)
+            if got == remote_sha:
+                break
+            print(f'  download {attempt} does not match pixeldrain\'s sha256'
+                  f'{" — retrying" if attempt == 1 else ""}')
+            archive = None
         if archive is None:
             entry['status'] = 'failed'
             print(f'  download failed: {url}')
+            manifest.save()
             return
         entry['archive_name'] = os.path.basename(archive)
         entry['sha256'] = _sha256(archive)
+    entry.pop('gone_since', None)
 
     posts = sorted(entry.get('posts', []))
     context = os.path.join(base_path, posts[0]) if posts else None
@@ -955,8 +1064,24 @@ def _process_link_inner(url: str, base_path: str, lib: str, manifest: Manifest, 
     except Locked as e:
         prior = set(entry.get('tried', [])) if entry.get('locked_part') == e.archive_name else set()
         entry['tried'] = sorted(prior | {_pw_hash(pw) for pw in e.tried})
-        entry['status'] = 'locked'
         entry['locked_part'] = e.archive_name
+        verified = bool(remote_sha) and entry.get('sha256') == remote_sha
+        if e.broken and verified:
+            # Our copy is byte-identical to what's on pixeldrain, and 7z
+            # says the archive itself is damaged: the upload is broken. No
+            # password will fix that -- stop retrying, report it.
+            entry['status'] = 'broken'
+            entry.pop('pending_path', None)
+            if pending:
+                _soft_delete(base_path, archive)
+            print(f'  BROKEN: {entry.get("archive_name")} ({e.archive_name}) is damaged on pixeldrain '
+                  'itself (matches their sha256, 7z reports a truncated/invalid archive) — reported, not retried')
+            for post in posts:
+                folder_log.append_run(os.path.join(base_path, post), 'pixeldrain_broken',
+                                      pixeldrain_url=url, archive=entry.get('archive_name'),
+                                      broken_part=e.archive_name)
+            return
+        entry['status'] = 'locked'
         if not pending:
             # kept under its real name (in a per-link subfolder) -- the name
             # carries the variant tag and is what the locked report shows
@@ -1036,11 +1161,23 @@ def run(base_path: str, options: dict | None = None) -> None:
         manifest.posts.setdefault(rel, {}).update(info)
     manifest.save()
 
-    todo = [u for u in links if manifest.links[u].get('status') != 'done']
+    def _due(u):
+        e = manifest.links[u]
+        st = e.get('status')
+        if st in ('done', 'broken'):
+            return False  # broken = damaged on pixeldrain itself; a new upload gets a new link
+        if st == 'gone':
+            try:
+                checked = time.mktime(time.strptime(e.get('info_checked', ''), '%Y-%m-%dT%H:%M:%S'))
+            except ValueError:
+                return True
+            return time.time() - checked >= GONE_RECHECK_DAYS * 86400
+        return True
+    todo = [u for u in links if _due(u)]
     todo.sort(key=lambda u: manifest.links[u].get('status') != 'locked')  # retry locked first
     no_pd = sorted(rel for rel, info in posts.items() if not info['pixeldrain'])
     print(f'{len(links)} unique pixeldrain link(s) across {len(posts)} post(s); '
-          f'{len(links) - len(todo)} already done, {len(todo)} to process.')
+          f'{len(links) - len(todo)} done or not retryable yet (broken / recently gone), {len(todo)} to process.')
     if no_pd:
         print(f'{len(no_pd)} post(s) have no pixeldrain link — left untouched.')
     if interactive and todo:
@@ -1114,10 +1251,10 @@ def run(base_path: str, options: dict | None = None) -> None:
                 continue
             queued += queue_under_res(base_path, lib, key, rec.get('originals', []), creator_key,
                                       set(rec.get('redownload_attempted', [])))
-        locked = write_locked_report(base_path, manifest)
-        failed = sum(1 for e in manifest.links.values() if e.get('status') == 'failed')
-        print(f'\nLocked archives: {locked} (see _reports/pixeldrain_locked_archives.csv)'
-              f'{f"; failed downloads: {failed} (retried next run)" if failed else ""}')
+        counts = write_unusable_report(base_path, manifest)
+        print(f'\nUnusable links: {counts["locked"]} locked (retried when a new password appears), '
+              f'{counts["broken"]} broken on pixeldrain, {counts["gone"]} gone, '
+              f'{counts["failed"]} failed downloads (retried next run) — see _reports/pixeldrain_unusable_links.csv')
 
         # Redownload offer -- only entries for this library's own folders.
         lib_prefix = os.path.normpath(lib) + os.sep
