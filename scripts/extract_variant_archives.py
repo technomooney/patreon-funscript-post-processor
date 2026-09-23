@@ -158,7 +158,7 @@ def _fetch_discord_history_cached(creator_key: str) -> list[str]:
     return _discord_history_cache[creator_key]
 
 
-def _post_context(archive_path: str) -> tuple[datetime.date | None, bool | None]:
+def _post_context(archive_path: str, context_folder: str | None = None) -> tuple[datetime.date | None, bool | None]:
     """Best-effort (post_date, is_collection) for the post folder *archive_path*
     lives directly in, parsed from this project's '[id] YYYY-MM-DD title'
     folder-naming convention (generate_html._parse_folder_name) — used only to
@@ -170,8 +170,12 @@ def _post_context(archive_path: str) -> tuple[datetime.date | None, bool | None]
     project_archival_collection_links). Returns (None, None) if the folder
     name doesn't match — callers treat that as "no hint", same as any other
     unmatched/unparseable label.
+
+    *context_folder*: the post folder to parse instead of the archive's own
+    parent -- for an archive being handled outside its post folder (e.g. a
+    creator script's scratch dir).
     """
-    folder_name = os.path.basename(os.path.dirname(archive_path))
+    folder_name = os.path.basename(context_folder or os.path.dirname(archive_path))
     _post_id, date_str, title = generate_html._parse_folder_name(folder_name)
     if not date_str:
         return None, None
@@ -210,13 +214,13 @@ def _variant_tag(archive_stem: str, base_name: str) -> str:
     return _normalize_variant_tag(wrapper)
 
 
-def _run_7z(cmd: list[str]) -> subprocess.CompletedProcess:
+def _run_7z(cmd: list[str], timeout: float | None = 120) -> subprocess.CompletedProcess:
     # stdin=DEVNULL is load-bearing: a wrong/missing password on an encrypted
     # archive would otherwise make 7z sit waiting on an interactive retry prompt.
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
 
 
-def _extract(archive_path: str, dest: str, password: str | None) -> bool:
+def _extract(archive_path: str, dest: str, password: str | None, timeout: float | None = 120) -> bool:
     """Extract *archive_path* into *dest* with the given password (None = no
     password). On failure, removes anything 7z wrote to *dest* before hitting
     the error -- confirmed live this session: a wrong password against a zip
@@ -229,7 +233,7 @@ def _extract(archive_path: str, dest: str, password: str | None) -> bool:
     before = set(os.listdir(dest))
     cmd = ['7z', 'x', '-y', f'-o{dest}', f'-p{password}' if password else '-p', archive_path]
     try:
-        result = _run_7z(cmd)
+        result = _run_7z(cmd, timeout)
         ok = result.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         ok = False
@@ -241,6 +245,51 @@ def _extract(archive_path: str, dest: str, password: str | None) -> bool:
             except OSError:
                 pass
     return ok
+
+
+def open_archive(archive_path: str, dest: str, creator_key: str, post_date=None,
+                 is_collection: bool | None = None, tried: set[str] | None = None,
+                 timeout: float | None = 120, skip_untried_check=None) -> tuple[bool, str | None]:
+    """Extract *archive_path* into *dest*, trying: no password, then
+    creator_db's password history (label-matched first), then -- only if
+    all of those fail -- one Discord fetch of the creator's full password
+    history per run (see _fetch_discord_history_cached), trying whatever it
+    added. Returns (opened, password_used); password_used is None when the
+    archive needed none. A working password is marked confirmed in
+    creator_db. *tried* collects every password attempted (shared with
+    nested-archive attempts so none is retried pointlessly).
+
+    *skip_untried_check*: optional callable(list_of_candidate_passwords) ->
+    bool; returning False skips the Discord fetch + retry (e.g. a caller
+    that already knows none of the candidates is new for this archive)."""
+    if tried is None:
+        tried = set()
+    if _extract(archive_path, dest, None, timeout):
+        return True, None
+    for pw in creator_db.get_password_history(creator_key, post_date, is_collection):
+        if pw in tried:
+            continue
+        tried.add(pw)
+        if _extract(archive_path, dest, pw, timeout):
+            creator_db.mark_confirmed(creator_key, pw)
+            return True, pw
+    if creator_key not in _discord_history_cache:
+        print(f'  [extract] no known password worked for "{os.path.basename(archive_path)}" '
+              f'— fetching current passwords from Discord for "{creator_key}" (once per run)...')
+    else:
+        print(f'  [extract] no known password worked for "{os.path.basename(archive_path)}" '
+              f'— already checked Discord for "{creator_key}" this run, not checking again.')
+    _fetch_discord_history_cached(creator_key)  # persists any new finds (+ labels) to creator_db
+    candidates = [pw for pw in creator_db.get_password_history(creator_key, post_date, is_collection)
+                  if pw not in tried]
+    if skip_untried_check is not None and not skip_untried_check(candidates):
+        return False, None
+    for pw in candidates:
+        tried.add(pw)
+        if _extract(archive_path, dest, pw, timeout):
+            creator_db.mark_confirmed(creator_key, pw)
+            return True, pw
+    return False, None
 
 
 def _walk_files(root_dir: str) -> list[str]:
@@ -605,35 +654,13 @@ def extract_one(archive_path: str, creator_key: str, base_path: str) -> bool:
     post_date, is_collection = _post_context(archive_path)
 
     with tempfile.TemporaryDirectory() as tmp:
-        password_used: str | None = None
         tried: set[str] = set()
-        if not _extract(archive_path, tmp, None):
-            for pw in creator_db.get_password_history(creator_key, post_date, is_collection):
-                tried.add(pw)
-                if _extract(archive_path, tmp, pw):
-                    password_used = pw
-                    break
-            if password_used is None:
-                if creator_key not in _discord_history_cache:
-                    print(f'  [extract] no known password worked for "{os.path.basename(archive_path)}" '
-                          f'— fetching current passwords from Discord for "{creator_key}" (once per run)...')
-                else:
-                    print(f'  [extract] no known password worked for "{os.path.basename(archive_path)}" '
-                          f'— already checked Discord for "{creator_key}" this run, not checking again.')
-                _fetch_discord_history_cached(creator_key)  # persists any new finds (+ labels) to creator_db
-                for pw in creator_db.get_password_history(creator_key, post_date, is_collection):
-                    if pw in tried:
-                        continue  # already tried above, from the local history this fetch just re-confirmed
-                    tried.add(pw)
-                    if _extract(archive_path, tmp, pw):
-                        password_used = pw
-                        break
-            if password_used is None:
-                print(f'  [extract] could not extract "{os.path.basename(archive_path)}" — '
-                      'no known or freshly-fetched Discord password worked.')
-                creator_db.record_extraction(archive_path, 'failed', None)
-                return False
-            creator_db.mark_confirmed(creator_key, password_used)
+        opened, password_used = open_archive(archive_path, tmp, creator_key, post_date, is_collection, tried)
+        if not opened:
+            print(f'  [extract] could not extract "{os.path.basename(archive_path)}" — '
+                  'no known or freshly-fetched Discord password worked.')
+            creator_db.record_extraction(archive_path, 'failed', None)
+            return False
 
         # Some variants ship their funscript as its own inner archive rather
         # than a bare .funscript (see module docstring) -- open those before
