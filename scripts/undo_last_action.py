@@ -76,14 +76,20 @@ _HANDLERS = {
 }
 
 
-def main(root_dir: str | None = None):
+def main(root_dir: str | None = None, journal: str | None = None):
+    """*journal*: undo a creator script's own journal in *root_dir* (see
+    action_log's module docstring) instead of the core tools' one."""
     print()
     print("========================================")
     print("  Undo Last Action")
     print("========================================")
     print()
 
-    journal = action_log.read_last(root_dir)
+    if journal is not None and root_dir is None:
+        print("A creator script's undo needs the folder it ran against.")
+        return
+    journal_name = journal
+    journal = action_log.read_last(root_dir, journal=journal_name)
     if not journal:
         if root_dir:
             print(f"Nothing to undo in {root_dir} — no undoable run recorded there "
@@ -129,7 +135,7 @@ def main(root_dir: str | None = None):
     print()
     print(f"Done — undone: {ok}, skipped: {skipped}")
     if skipped == 0:
-        action_log.clear_last(root_dir)
+        action_log.clear_last(root_dir, journal=journal_name)
     else:
         print("Some changes couldn't be undone (see above) — journal kept in case you want to retry.")
 

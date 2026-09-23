@@ -20,6 +20,23 @@ just wrote to. Nothing is ever destroyed by the pointer moving on: an
 older run's journal is still sitting in its own folder, just no longer the
 no-argument default — pass its root_dir explicitly to reach it.
 
+Creator scripts (scripts/creator_scripts/) get their own journal per folder
+instead of sharing the core tools' one: start(..., journal='<script id>')
+writes root_dir/.last_action.<script id>.json and never moves the pointer,
+so the main menu's "Undo last action" keeps meaning the core tools, and
+each creator script has its own undo target reachable via
+read_last(root_dir, journal=...). While such a named-journal run is active,
+a nested start()/finish() pair (e.g. the plugin calling into
+downloadContent.find_and_download for redownloads) doesn't reset or write
+anything -- its records land in the outer run's journal, so undoing the
+creator script undoes everything it caused. Nesting is deliberately only
+honored inside a named-journal run: the core scripts don't all wrap their
+start/finish in try/finally, and a leaked "still active" state must never
+make an unrelated later core run silently append to a stale journal.
+
+_POINTER_PATH can be overridden with the ACTION_LOG_POINTER_PATH env var,
+so a test run against a throwaway folder can't clobber the real pointer.
+
 Soft-deletes (used by dedupe, where a file has to disappear but should stay
 recoverable) are moved into a '.trash' folder next to the files being
 scanned rather than actually deleted. Trash is age-based, not "one run
@@ -38,22 +55,33 @@ import shutil
 import time
 
 JOURNAL_FILENAME = '.last_action.json'
-_POINTER_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                              '.last_action_pointer.json')
+_POINTER_PATH = os.getenv('ACTION_LOG_POINTER_PATH') or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.last_action_pointer.json')
 TRASH_DIRNAME = '.trash'
 DEFAULT_TRASH_RETENTION_DAYS = 14
 
 _entries: list[dict] = []
 _script_name: str | None = None
 _root_dir: str | None = None
+_journal: str | None = None   # named creator-script journal, None = the core one
+_depth = 0                    # nested start() calls inside a named-journal run
 
 
-def start(script: str, root_dir: str) -> None:
-    """Begin journaling a new run. Call once before making any changes."""
-    global _entries, _script_name, _root_dir
+def start(script: str, root_dir: str, journal: str | None = None) -> None:
+    """Begin journaling a new run. Call once before making any changes.
+
+    *journal*: a creator script's own journal name (see module docstring).
+    A start() while a named-journal run is already active nests into it
+    instead of starting over."""
+    global _entries, _script_name, _root_dir, _journal, _depth
+    if _journal is not None and _depth > 0:
+        _depth += 1
+        return
     _entries = []
     _script_name = script
     _root_dir = root_dir
+    _journal = journal
+    _depth = 1 if journal is not None else 0
 
 
 def record(op: str, **fields) -> None:
@@ -65,8 +93,9 @@ def record(op: str, **fields) -> None:
     _entries.append(entry)
 
 
-def _journal_path(root_dir: str) -> str:
-    return os.path.join(os.path.normpath(root_dir), JOURNAL_FILENAME)
+def _journal_path(root_dir: str, journal: str | None = None) -> str:
+    name = JOURNAL_FILENAME if journal is None else f'.last_action.{journal}.json'
+    return os.path.join(os.path.normpath(root_dir), name)
 
 
 def _write_json(path: str, payload: dict) -> None:
@@ -99,7 +128,18 @@ def finish() -> None:
 
     No-op if nothing was recorded this run — an empty run shouldn't erase a
     previous run's undo target, in that folder or as the default.
+
+    Inside a named-journal run only the outermost finish() writes (see
+    start()); a named journal never moves the pointer.
     """
+    global _journal, _depth
+    if _journal is not None:
+        _depth -= 1
+        if _depth > 0:
+            return
+        journal, _journal, _depth = _journal, None, 0
+    else:
+        journal = None
     if not _entries:
         return
     payload = {
@@ -108,18 +148,23 @@ def finish() -> None:
         'root_dir': _root_dir,
         'entries': _entries,
     }
-    _write_json(_journal_path(_root_dir), payload)
-    _write_json(_POINTER_PATH, {'root_dir': _root_dir})
+    if journal is not None:
+        payload['journal'] = journal
+    _write_json(_journal_path(_root_dir, journal), payload)
+    if journal is None:
+        _write_json(_POINTER_PATH, {'root_dir': _root_dir})
 
 
-def read_last(root_dir: str | None = None) -> dict | None:
+def read_last(root_dir: str | None = None, journal: str | None = None) -> dict | None:
     """Return the persisted journal for *root_dir*, or (if omitted) for
     whichever folder was acted on most recently. None if there's nothing to
-    undo."""
-    resolved = _resolve_root_dir(root_dir)
+    undo. *journal* selects a creator script's own journal instead of the
+    core one -- it needs an explicit *root_dir* (named journals never move
+    the pointer)."""
+    resolved = root_dir if journal is not None else _resolve_root_dir(root_dir)
     if resolved is None:
         return None
-    path = _journal_path(resolved)
+    path = _journal_path(resolved, journal)
     if not os.path.exists(path):
         return None
     try:
@@ -132,12 +177,19 @@ def read_last(root_dir: str | None = None) -> dict | None:
     return None
 
 
-def clear_last(root_dir: str | None = None) -> None:
+def clear_last(root_dir: str | None = None, journal: str | None = None) -> None:
     """Delete the journal for *root_dir* (or, if omitted, whichever folder
     was acted on most recently) — call after a successful undo so it can't
     be re-applied. Also clears the pointer if it was pointing at the
     journal just cleared, so a later no-argument call doesn't chase a
     now-missing file."""
+    if journal is not None:
+        if root_dir is not None:
+            try:
+                os.remove(_journal_path(root_dir, journal))
+            except OSError:
+                pass
+        return
     resolved = _resolve_root_dir(root_dir)
     if resolved is None:
         return

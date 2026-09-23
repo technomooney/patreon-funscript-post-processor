@@ -20,7 +20,10 @@ import os
 import re
 import sqlite3
 
-_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.creator_data.db')
+# CREATOR_DB_PATH overrides the location -- lets a test run against a
+# throwaway folder use its own DB instead of the real password history.
+_DB_PATH = os.getenv('CREATOR_DB_PATH') or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.creator_data.db')
 
 
 def _now() -> str:
