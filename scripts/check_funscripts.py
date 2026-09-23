@@ -6,7 +6,13 @@ For each video file found, checks whether a .funscript with the same stem
 exists in the same folder. When no exact match is found, fuzzy-matches
 against all funscripts in the folder and reports the closest candidate.
 
-Also reports funscripts that have no corresponding video (orphaned scripts).
+Also reports funscripts that have no corresponding video (orphaned scripts),
+and name-matched scripts -- every variant ('(medium)', '(soothing)', ...)
+checked separately -- whose length doesn't fit their video's, i.e. a
+script that's probably paired with the wrong video.
+
+A check-only scan (no renaming) also looks inside a creator's
+protected_dirs (creator_config.py) -- it changes nothing there.
 
 Usage
 -----
@@ -187,10 +193,15 @@ class FolderResult:
         self.total_videos: int = 0
         self.unmatched_videos: list[dict] = []   # {'video', 'suggestion', 'score', ...}
         self.renamed: list[dict] = []            # {'video', 'renamed_to', 'video_s', 'script_s'}
+        # funscript base names (variants/axes folded together) with no video
+        self.orphan_scripts: list[dict] = []     # {'base', 'scripts'}
+        # a script name-matched to a video (any variant) whose length doesn't
+        # fit that video's -- likely paired with the wrong video
+        self.duration_mismatches: list[dict] = []  # {'video', 'script', 'video_s', 'script_s'}
 
     @property
     def ok(self) -> bool:
-        return not self.unmatched_videos
+        return not (self.unmatched_videos or self.orphan_scripts or self.duration_mismatches)
 
 
 def _check_folder(folder: str, do_rename: bool = False) -> FolderResult | None:
@@ -211,7 +222,7 @@ def _check_folder(folder: str, do_rename: bool = False) -> FolderResult | None:
     scripts = [f for f in entries if f.lower().endswith(_SCRIPT_EXT)
                and os.path.isfile(os.path.join(folder, f))]
 
-    if not videos:
+    if not videos and not scripts:
         return None
 
     result = FolderResult(folder)
@@ -231,6 +242,31 @@ def _check_folder(folder: str, do_rename: bool = False) -> FolderResult | None:
     for v in videos:
         base = _video_base(v)
         video_base_map.setdefault(base, []).append(v)
+
+    # --- Scripts without a video (every variant/axis of a base together) ---
+    for fbase, ffiles in sorted(script_bases.items()):
+        if fbase not in video_base_map:
+            result.orphan_scripts.append({'base': fbase, 'scripts': sorted(ffiles)})
+
+    # --- Name-matched scripts whose length doesn't fit the video ---
+    # Every variant is checked on its own (main script only; an axis file
+    # shares its main script's timeline) -- a variant can be the one
+    # that's really for a different video.
+    for vbase, vfiles in sorted(video_base_map.items()):
+        matched = [f for f in script_bases.get(vbase, [])
+                   if not any(Path(f).stem.endswith(sfx) for sfx in _AXIS_SUFFIXES)]
+        if not matched:
+            continue
+        for vfile in vfiles:
+            video_s = _video_duration(os.path.join(folder, vfile))
+            if not video_s:
+                continue
+            for sfile in sorted(matched):
+                script_s = _funscript_duration(os.path.join(folder, sfile))
+                if script_s and not _duration_matches(video_s, script_s):
+                    result.duration_mismatches.append({
+                        'video': vfile, 'script': sfile, 'video_s': video_s, 'script_s': script_s,
+                    })
 
     # --- Videos without a funscript ---
     for vbase, vfiles in sorted(video_base_map.items()):
@@ -528,7 +564,10 @@ def scan(root_dir: str, do_rename: bool = False) -> list[FolderResult]:
     root_dir = os.path.abspath(root_dir)
     results = []
 
-    _protected = creator_config.protected_paths(root_dir)
+    # Protected dirs (a creator script's library, see creator_config.py) are
+    # only skipped when renaming -- a check-only scan changes nothing there
+    # and is exactly how that library gets verified.
+    _protected = creator_config.protected_paths(root_dir) if do_rename else set()
     for dirpath, dirnames, filenames in os.walk(root_dir):
         dirnames.sort()
         if action_log.TRASH_DIRNAME in dirnames:
@@ -542,6 +581,8 @@ def scan(root_dir: str, do_rename: bool = False) -> list[FolderResult]:
             total_videos=result.total_videos,
             missing=[item['video'] for item in result.unmatched_videos],
             renamed=[item['renamed_to'] for item in result.renamed],
+            scripts_without_video=[item['base'] for item in result.orphan_scripts],
+            duration_mismatches=[f"{item['script']} vs {item['video']}" for item in result.duration_mismatches],
         )
         if not result.ok or result.renamed:
             results.append(result)
@@ -560,7 +601,7 @@ def _duration_note(item: dict) -> str:
 
 def _print_results(results: list[FolderResult]):
     if not results:
-        print('  All videos have matching funscripts.')
+        print('  All videos have matching funscripts (and every script has a fitting video).')
         return
 
     total_unmatched = sum(len(r.unmatched_videos) for r in results)
@@ -583,6 +624,19 @@ def _print_results(results: list[FolderResult]):
             else:
                 print('        (no funscripts in folder)')
 
+        for item in r.duration_mismatches:
+            print(f'    ≠ {item["script"]}  vs  {item["video"]}  [length MISMATCH: script '
+                  f'{item["script_s"]:.0f}s vs video {item["video_s"]:.0f}s — probably for a different video]')
+
+        for item in r.orphan_scripts:
+            print(f'    ? no video for: {item["base"]}  ({len(item["scripts"])} script file(s))')
+
+    total_mismatch = sum(len(r.duration_mismatches) for r in results)
+    total_orphans = sum(len(r.orphan_scripts) for r in results)
+    if total_mismatch:
+        print(f'\n  {total_mismatch} script(s) whose length doesn\'t fit their name-matched video.')
+    if total_orphans:
+        print(f'\n  {total_orphans} script set(s) with no video.')
     if total_renamed:
         print(f'\n  {total_renamed} video(s) renamed to match by duration.')
     unmatched_folders = sum(1 for r in results if r.unmatched_videos)
@@ -598,22 +652,33 @@ def _reports_dir(root: str) -> str:
 
 def _write_csv(root_dir: str, results: list[FolderResult]):
     csv_path = os.path.join(_reports_dir(root_dir), 'funscript_check.csv')
-    fieldnames = ['folder', 'file', 'suggestion', 'score', 'duration_match', 'renamed_to']
+    fieldnames = ['folder', 'issue', 'file', 'suggestion', 'score', 'duration_match', 'renamed_to']
     rows = []
     for r in results:
         for item in r.renamed:
             rows.append({
-                'folder': r.folder, 'file': item['video'], 'suggestion': '',
+                'folder': r.folder, 'issue': 'renamed', 'file': item['video'], 'suggestion': '',
                 'score': '', 'duration_match': True, 'renamed_to': item['renamed_to'],
             })
         for item in r.unmatched_videos:
             rows.append({
                 'folder':         r.folder,
+                'issue':          'video_without_funscript',
                 'file':           item['video'],
                 'suggestion':     item['suggestion'],
                 'score':          item['score'],
                 'duration_match': item['duration_match'],
                 'renamed_to':     '',
+            })
+        for item in r.duration_mismatches:
+            rows.append({
+                'folder': r.folder, 'issue': 'length_mismatch', 'file': item['script'],
+                'suggestion': item['video'], 'score': '', 'duration_match': False, 'renamed_to': '',
+            })
+        for item in r.orphan_scripts:
+            rows.append({
+                'folder': r.folder, 'issue': 'funscript_without_video', 'file': '; '.join(item['scripts']),
+                'suggestion': '', 'score': '', 'duration_match': '', 'renamed_to': '',
             })
     if not rows:
         return
