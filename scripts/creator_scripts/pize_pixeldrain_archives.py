@@ -71,6 +71,7 @@ import json
 import os
 import shutil
 import time
+import unicodedata
 from pathlib import Path
 
 import action_log
@@ -159,6 +160,30 @@ def _split_axis(stem: str) -> tuple[str, str]:
 
 def _funscript_base(name: str) -> str:
     return _split_axis(Path(name).stem)[0]
+
+
+def _norm_name(name: str) -> str:
+    """Name for loose comparison: full-width folded to ASCII, zero-width
+    characters dropped, case and runs of whitespace ignored."""
+    name = unicodedata.normalize('NFKC', name)
+    name = ''.join(c for c in name if unicodedata.category(c) != 'Cf')
+    return ' '.join(name.casefold().split())
+
+
+def _names_related(a: str, b: str) -> bool:
+    a, b = _norm_name(a), _norm_name(b)
+    return bool(a and b) and (a in b or b in a)
+
+
+def _variant_owner(archive_stem: str, script_bases: set[str], video_stems: list[str]) -> str | None:
+    """The parent's video a script-only inner archive is a variant of: the
+    (longest) video stem the archive's own name is built on, with a variant
+    tag left over, whose name at least one of the scripts shares."""
+    for v in sorted(video_stems, key=len, reverse=True):
+        if (v in archive_stem and eva._variant_tag(archive_stem, v)
+                and any(_names_related(b, v) for b in script_bases)):
+            return v
+    return None
 
 
 def _pw_hash(pw: str) -> str:
@@ -434,8 +459,10 @@ class Unpacker:
                          and all(len(b) == 1 for b in script_only_bases)
                          and len(set().union(*script_only_bases)) == 1)
 
+        video_stems = [Path(p).stem for p in loose if dc._is_video_filename(p)]
         for a, out, files in opened:
             bases = {_funscript_base(os.path.basename(f)) for f in files if f.lower().endswith('.funscript')}
+            owner = _variant_owner(Path(a).stem, bases, video_stems) if _script_only(files) else None
             is_variant = _script_only(files) and (bases <= parent_bases if parent_bases else shared_single)
             if is_variant:
                 for f in files:
@@ -444,6 +471,20 @@ class Unpacker:
                         base, axis = _split_axis(Path(fname).stem)
                         tag = eva._variant_tag(Path(a).stem, base)
                         pkg.files.append((f, f'{base}{tag}{axis}.funscript'))
+                    else:
+                        pkg.files.append((f, fname))
+            elif owner:
+                # Pize doesn't name a variant's scripts consistently with the
+                # video it sits next to ('X [MP4]', 'FAST X', or the video's
+                # '（dlaldn）' prefix dropped) -- the archive name is what
+                # ties them: '<video stem>(Moderate)'. Scripts renamed to
+                # pair with that video; unrelated strays keep their name.
+                tag = eva._variant_tag(Path(a).stem, owner)
+                for f in files:
+                    fname = os.path.basename(f)
+                    base, axis = _split_axis(Path(fname).stem)
+                    if fname.lower().endswith('.funscript') and _names_related(base, owner):
+                        pkg.files.append((f, f'{owner}{tag}{axis}.funscript'))
                     else:
                         pkg.files.append((f, fname))
             else:
@@ -505,8 +546,17 @@ def _overlaps(pkg: Package, folder: str) -> bool:
     fds, videos, names = _folder_media(folder)
     if not names:
         return True
+    # A post can link its video and its script as two separate pixeldrain
+    # files: a script named for a video already there (or the reverse) is
+    # the other half of the same package, not a name clash.
+    video_stems = {Path(n).stem for n in names if dc._is_video_filename(n)}
+    script_bases = {_funscript_base(n) for n in names if n.lower().endswith('.funscript')}
     for p, n in pkg.media():
         if n in names:
+            return True
+        if n.lower().endswith('.funscript') and _funscript_base(n) in video_stems:
+            return True
+        if dc._is_video_filename(n) and Path(n).stem in script_bases:
             return True
         if n.lower().endswith('.funscript') and funscript_utils.funscript_data(p) in fds:
             return True
