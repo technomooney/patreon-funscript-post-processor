@@ -19,6 +19,7 @@ import sys
 import time
 from pathlib import Path
 
+import creator_config
 import folder_log as _flog
 
 
@@ -61,7 +62,10 @@ def _reports_dir(base: str) -> str:
     return path
 
 def _collect(base: str) -> list[dict]:
-    """Return one entry per direct subfolder of *base*, sorted by name."""
+    """Return one entry per direct subfolder of *base*, sorted by name
+    (kind 'post'), then one per folder inside each of the creator's
+    protected_dirs (kind 'library' -- e.g. Pize's _pixeldrain/<package>,
+    where a download-replacement script keeps the videos and scripts)."""
     entries = []
     try:
         names = sorted(os.listdir(base))
@@ -73,8 +77,47 @@ def _collect(base: str) -> list[dict]:
         folder = os.path.join(base, name)
         if not os.path.isdir(folder):
             continue
-        entries.append({'name': name, 'folder': folder, 'log': _flog.read(folder)})
+        entries.append({'name': name, 'folder': folder, 'log': _flog.read(folder), 'kind': 'post'})
+    for lib in sorted(creator_config.protected_paths(base)):
+        if not os.path.isdir(lib) or os.path.dirname(lib) != os.path.normpath(base):
+            continue
+        for name in sorted(os.listdir(lib)):
+            folder = os.path.join(lib, name)
+            if name.startswith(('_', '.')) or not os.path.isdir(folder):
+                continue
+            entries.append({'name': f'{os.path.basename(lib)}/{name}', 'folder': folder,
+                            'log': _flog.read(folder), 'kind': 'library'})
     return entries
+
+
+def _step_rules(base: str):
+    """(done, applicable) functions for a folder entry.
+
+    done: the _SCRIPTS steps its log shows -- a run of the creator's own
+    download_script (creator_config) counts as the Download step.
+    applicable: the steps that can apply to it. A library folder only gets
+    Download and FS Check (the other steps never touch protected_dirs, and
+    it has no description.json for HTML); when the creator keeps videos and
+    scripts out of post folders (sync_exclude + protected_dirs), FS Check
+    has nothing to check in a post folder."""
+    dl_script = creator_config.download_script(base)
+    excluded = {str(k).strip().lower() for k in (creator_config.get(base, 'sync_exclude', []) or [])}
+    media_in_lib = bool(creator_config.protected_paths(base)) and {'video', 'funscript'} <= excluded
+
+    def done(log: list[dict]) -> set[str]:
+        seen = {run.get('script') for run in log}
+        if dl_script and dl_script in seen:
+            seen.add('downloadContent')
+        return seen
+
+    def applicable(entry: dict) -> set[str]:
+        if entry['kind'] == 'library':
+            return {'downloadContent', 'check_funscripts'}
+        if media_in_lib:
+            return set(_SCRIPTS) - {'check_funscripts'}
+        return set(_SCRIPTS)
+
+    return done, applicable, dl_script
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +276,7 @@ def _render_rename_row(frm: str, to: str, note: str = '') -> str:
             f'{note_html}'
             f'</div>')
 
-def _render_runs(log: list[dict]) -> str:
+def _render_runs(log: list[dict], dl_script: str | None = None) -> str:
     """Render all runs, collapsing consecutive same-script groups to latest + hidden earlier."""
     if not log:
         return '<div class="no-log">No history recorded yet.</div>'
@@ -250,11 +293,11 @@ def _render_runs(log: list[dict]) -> str:
     parts: list[str] = []
     for script, runs in groups:
         if len(runs) == 1:
-            parts.append(_render_run(runs[0]))
+            parts.append(_render_run(runs[0], dl_script))
         else:
-            label   = _LABELS.get(script, script)
+            label   = _run_label(script, dl_script)
             n       = len(runs) - 1
-            earlier = ''.join(_render_run(r) for r in runs[:-1])
+            earlier = ''.join(_render_run(r, dl_script) for r in runs[:-1])
             noun    = 'run' if n == 1 else 'runs'
             parts.append(
                 f'<details class="older-runs">'
@@ -262,16 +305,22 @@ def _render_runs(log: list[dict]) -> str:
                 f'<div class="older-runs-body">{earlier}</div>'
                 f'</details>'
             )
-            parts.append(_render_run(runs[-1]))
+            parts.append(_render_run(runs[-1], dl_script))
 
     return ''.join(parts)
 
 
-def _render_run(run: dict) -> str:
+def _run_label(script: str, dl_script: str | None) -> str:
+    if script == dl_script:
+        return f'Download ({script})'
+    return _LABELS.get(script, script)
+
+
+def _render_run(run: dict, dl_script: str | None = None) -> str:
     script  = run.get('script', '?')
     ts      = run.get('timestamp', '')
     forced  = run.get('force_rerun', False)
-    label   = _LABELS.get(script, script)
+    label   = _run_label(script, dl_script)
     parts: list[str] = []
 
     if script == 'downloadContent':
@@ -336,11 +385,22 @@ def _render_run(run: dict) -> str:
     elif script == 'generate_html':
         parts.append('<span class="empty-note">description.html written.</span>')
 
+    else:
+        # a creator script / other logger: show whatever it recorded
+        for k, v in run.items():
+            if k in ('script', 'timestamp', 'force_rerun') or v in (None, '', [], {}):
+                continue
+            items = v if isinstance(v, list) else [v]
+            spans = ' '.join(f'<span class="fname">{_e(i)}</span>' for i in items)
+            parts.append(f'<div class="run-files"><span class="sec-label">{_e(k.replace("_", " "))}:</span> {spans}</div>')
+        if not parts:
+            parts.append('<span class="empty-note">Nothing recorded.</span>')
+
     forced_badge = ' <span class="badge-forced">FORCED</span>' if forced else ''
 
     return (f'<div class="run-entry">'
             f'<div class="run-hdr">'
-            f'<span class="run-script s-{script}">{_e(label)}</span>'
+            f'<span class="run-script s-{"downloadContent" if script == dl_script else script}">{_e(label)}</span>'
             f'{forced_badge}'
             f'<span class="run-ts">{_e(ts)}</span>'
             f'</div>'
@@ -358,7 +418,9 @@ def generate(base: str) -> str:
     total   = len(entries)
 
     # --- aggregate stats ---
+    done_steps, applicable_steps, dl_script = _step_rules(base)
     script_done: dict[str, int] = {s: 0 for s in _SCRIPTS}
+    script_total: dict[str, int] = {s: 0 for s in _SCRIPTS}
     n_downloaded       = 0
     n_files_saved      = 0
     n_renames          = 0
@@ -390,9 +452,11 @@ def generate(base: str) -> str:
                 n_renames += len(run.get('renamed', []))
         if last_fs_check is not None:
             n_missing_scripts += len(last_fs_check.get('missing', []))
-        for s in scripts_seen:
-            if s in script_done:
-                script_done[s] += 1
+        applicable = applicable_steps(e)
+        for s in applicable:
+            script_total[s] += 1
+        for s in done_steps(log) & applicable:
+            script_done[s] += 1
 
     n_unlogged = total - n_with_log
     now = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -422,13 +486,14 @@ def generate(base: str) -> str:
     bars: list[str] = []
     for s in _SCRIPTS:
         count = script_done[s]
-        pct   = int(count / total * 100) if total else 0
+        of    = script_total[s]
+        pct   = int(count / of * 100) if of else 0
         lbl   = _LABELS[s]
         bars.append(
             f'<div class="prog-row">'
             f'<span class="prog-lbl">{_e(lbl)}</span>'
             f'<div class="prog-wrap"><div class="prog-bar" style="width:{pct}%"></div></div>'
-            f'<span class="prog-count">{count} / {total}</span>'
+            f'<span class="prog-count">{count} / {of}</span>'
             f'</div>'
         )
     bars_html = '\n'.join(bars)
@@ -439,14 +504,15 @@ def generate(base: str) -> str:
         name        = e['name']
         log         = e['log']
         folder_path = e['folder']
-        scripts_done_set = {run.get('script') for run in log}
+        scripts_done_set = done_steps(log)
+        applicable = applicable_steps(e)
 
         # Status tags (space-separated) used by the JS filter
         status_tags: list[str] = []
         if not log:
             status_tags.append('no-log')
         else:
-            if all(s in scripts_done_set for s in _SCRIPTS):
+            if applicable <= scripts_done_set:
                 status_tags.append('complete')
             else:
                 status_tags.append('partial')
@@ -457,13 +523,16 @@ def generate(base: str) -> str:
 
         file_uri = Path(folder_path).as_uri()
 
-        badges = ''.join(
-            f'<span class="fbadge {"fb-done" if s in scripts_done_set else "fb-pend"}" title="{_ea(s)}">'
-            f'{_e(_LABELS[s])}</span>'
-            for s in _SCRIPTS
-        )
+        def _badge(s):
+            if s not in applicable:
+                return (f'<span class="fbadge fb-na" title="{_ea(s)}: does not apply to this folder">'
+                        f'{_e(_LABELS[s])}</span>')
+            title = dl_script if s == 'downloadContent' and dl_script in {r.get('script') for r in log} else s
+            return (f'<span class="fbadge {"fb-done" if s in scripts_done_set else "fb-pend"}" '
+                    f'title="{_ea(title)}">{_e(_LABELS[s])}</span>')
+        badges = ''.join(_badge(s) for s in _SCRIPTS)
 
-        runs_html = _render_runs(log)
+        runs_html = _render_runs(log, dl_script)
 
         folder_items.append(
             f'<details class="fi" data-name="{_ea(name.lower())}" data-status="{_ea(status_str)}" data-path="{_ea(folder_path)}">'
@@ -652,6 +721,7 @@ body {
 }
 .fb-done { background: #1e3a1e; color: #70c070; border: 1px solid #2a5a2a; }
 .fb-pend { background: #2a2a2a; color: #505060; border: 1px solid #363636; }
+.fb-na   { background: transparent; color: #3a3a48; border: 1px dashed #333340; text-decoration: line-through; }
 
 .fi-body { padding: .75rem .8rem 1rem; border-top: 1px solid #2e2e40; }
 
