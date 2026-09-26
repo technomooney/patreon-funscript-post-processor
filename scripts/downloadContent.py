@@ -2258,19 +2258,26 @@ def _joimoe_browser_login(driver) -> bool:
     try:
         wait = WebDriverWait(driver, 10)
 
-        # Open the login modal via the header login button/link.
+        # Open the login modal via the header login/sign-in button.
         login_btn = wait.until(EC.element_to_be_clickable((By.XPATH,
-            '//a[contains(translate(normalize-space(.),"LOGIN","login"),"login")] | '
-            '//button[contains(translate(normalize-space(.),"LOGIN","login"),"login")] | '
+            '//a[contains(translate(normalize-space(.),"LOGIN","login"),"login") or '
+            'contains(translate(normalize-space(.),"SIGN IN","sign in"),"sign in")] | '
+            '//button[contains(translate(normalize-space(.),"LOGIN","login"),"login") or '
+            'contains(translate(normalize-space(.),"SIGN IN","sign in"),"sign in")] | '
             '//*[@href="#login"]'
         )))
         driver.execute_script('arguments[0].click()', login_btn)
         time.sleep(1)
 
-        pw_field = wait.until(EC.visibility_of_element_located((By.XPATH, '//input[@type="password"]')))
-        user_field = driver.find_element(By.XPATH,
-            '//input[@type="text" or @type="email" or contains(@name,"user") or contains(@name,"email")]'
-        )
+        # The modal is a Radix dialog (class "auth-modal") with plain
+        # name="email"/name="password" fields -- scope to it so this can't
+        # accidentally hit some other email/password input on the page.
+        modal = wait.until(EC.visibility_of_element_located(
+            (By.XPATH, '//div[@role="dialog" and contains(@class,"auth-modal")]')
+        ))
+        user_field = modal.find_element(By.XPATH, './/input[@name="email"]')
+        pw_field = modal.find_element(By.XPATH, './/input[@name="password"]')
+
         user_field.click()
         time.sleep(0.3)
         user_field.clear()
@@ -2285,18 +2292,15 @@ def _joimoe_browser_login(driver) -> bool:
             time.sleep(0.05)
 
         time.sleep(0.3)
-        try:
-            login_form = pw_field.find_element(By.XPATH, './ancestor::form')
-            submit = login_form.find_element(By.XPATH, './/button[@type="submit"] | .//input[@type="submit"]')
-        except WebDriverException:
-            submit = driver.find_element(By.XPATH,
-                '//button[contains(translate(normalize-space(.),"LOGIN","login"),"login")]')
+        submit = modal.find_element(By.XPATH, './/button[@type="submit"]')
         driver.execute_script('arguments[0].click()', submit)
 
-        # Success: the modal's password field disappears from the DOM, or a
-        # profile/account/logout element shows up in the header.
+        # Success: the modal closes (Radix sets data-state="closed" then
+        # removes it), or a profile/account/logout element shows up in the
+        # header.
         def _logged_in(d):
-            if not d.find_elements(By.XPATH, '//input[@type="password"]'):
+            if not d.find_elements(By.XPATH,
+                    '//div[@role="dialog" and contains(@class,"auth-modal")][@data-state="open"]'):
                 return True
             return bool(d.find_elements(By.XPATH,
                 '//*[contains(@class,"profile") or contains(@class,"account") or '
