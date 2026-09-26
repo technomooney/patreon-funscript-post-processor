@@ -183,6 +183,130 @@ def _duration_matches(video_s: float, script_s: float) -> bool:
     return script_s <= video_s + 2.0 and (video_s - script_s) <= tolerance
 
 
+def _longest_common_prefix(strings: list[str]) -> str:
+    """The longest string every entry in *strings* starts with, or '' if none do."""
+    if not strings:
+        return ''
+    prefix = strings[0]
+    for s in strings[1:]:
+        while prefix and not s.startswith(prefix):
+            prefix = prefix[:-1]
+        if not prefix:
+            break
+    return prefix
+
+
+def _trim_prefix_to_boundary(prefix: str) -> str:
+    """Trim a raw longest-common-prefix back to its last natural word
+    boundary (space, hyphen, underscore, or opening paren) so stripping it
+    from each name can never cut a shared word in half. Returns '' if the
+    prefix has no such boundary at all (nothing safe to strip)."""
+    for i in range(len(prefix) - 1, -1, -1):
+        if prefix[i] in ' -_(':
+            return prefix[: i + 1]
+    return ''
+
+
+# Absolute-seconds tolerance for matching an orphan script to a specific
+# video among several in the same folder (see _reverse_match_orphan_scripts)
+# -- tighter than _duration_matches' generous percentage-based allowance,
+# which is fine for a single lone-video sanity check but not for telling two
+# similarly-long videos apart.
+_REVERSE_MATCH_TOLERANCE = 5.0
+
+
+def _reverse_match_orphan_scripts(folder: str, videos: list[str],
+                                   orphan_bases: dict[str, list[str]],
+                                   do_rename: bool) -> tuple[list[dict], dict[str, list[str]]]:
+    """Match funscripts with no name-matching video (a multi-video folder's
+    *orphan_bases*: base stem -> its funscript filenames) to whichever video
+    their duration actually fits, then rename them to "<video stem>
+    (<descriptor>).funscript".
+
+    This is the reverse of the lone-video case in _check_folder (which
+    renames the video to match a script) -- here there's more than one
+    video, so instead the scripts get renamed to match, since a video's real
+    title is worth keeping over an arbitrary source-site funscript filename
+    (e.g. one carrying a leading "(Character version)" tag baked in by the
+    site, not this project).
+
+    The descriptor for each script is whatever's left after stripping the
+    longest prefix shared by every script matched to the *same* video
+    (trimmed to a word boundary, see _trim_prefix_to_boundary) -- e.g. given
+    "(Ally Kirser version) 13 Full - Regular" and "(Ally Kirser version) 13
+    Full - Half Time" both matching one video, the shared "(Ally Kirser
+    version) 13 Full - " is stripped, leaving "Regular" / "Half Time" as
+    clean variant tags. A video matched by only one script gets no
+    descriptor at all (nothing to disambiguate against) -- just
+    "<video stem>.funscript". This needs no awareness of what the leading
+    tag actually says (a character name here, could be anything for another
+    creator) since duration is what identifies the video, not the name.
+
+    Only acts when a script's duration matches exactly one video
+    unambiguously -- a script matching none, or matching more than one
+    within tolerance, is left in the returned leftover-orphans dict instead
+    of being guessed at. Uses a tighter absolute tolerance than
+    _duration_matches for the "which video" decision (see
+    _REVERSE_MATCH_TOLERANCE): _duration_matches alone allows a script to be
+    well short of its video's length (a lone video's own real script can
+    legitimately skip an unscripted intro/outro), which is exactly what lets
+    a shorter video's script also look like a plausible-but-wrong fit for a
+    longer video sitting right next to it in the same folder -- confirmed
+    live, a 666s video's script "fit" a 684s video in the same post under
+    that looser tolerance alone.
+
+    Returns (renamed, leftover_orphan_bases) -- renamed is a list of
+    {'video', 'from', 'to'} for every script actually (or, if do_rename is
+    False, would be) renamed; leftover_orphan_bases is orphan_bases minus
+    whatever got matched, for the caller to report as before.
+    """
+    video_durations: dict[str, float] = {}
+    for v in videos:
+        d = _video_duration(os.path.join(folder, v))
+        if d:
+            video_durations[v] = d
+
+    matches: dict[str, list[str]] = {}   # video filename -> matched base stems
+    leftover = dict(orphan_bases)
+
+    for base, files in orphan_bases.items():
+        rep = _pick_representative(files)
+        dur = _funscript_duration(os.path.join(folder, rep))
+        if not dur:
+            continue
+        fitting = [v for v, vd in video_durations.items()
+                   if _duration_matches(vd, dur) and abs(vd - dur) <= _REVERSE_MATCH_TOLERANCE]
+        if len(fitting) == 1:
+            matches.setdefault(fitting[0], []).append(base)
+            del leftover[base]
+
+    renamed: list[dict] = []
+    for video, bases in matches.items():
+        video_stem = Path(video).stem
+        # A lone match has nothing to strip a shared prefix against -- using
+        # the whole base as the "prefix" collapses it to an empty descriptor.
+        prefix = bases[0] if len(bases) == 1 else _trim_prefix_to_boundary(_longest_common_prefix(bases))
+        for base in bases:
+            descriptor = base[len(prefix):].strip(' -_')
+            new_stem = f'{video_stem} ({descriptor})' if descriptor else video_stem
+            for f in orphan_bases[base]:
+                stem = Path(f).stem
+                axis = next((sfx for sfx in _AXIS_SUFFIXES if stem.endswith(sfx)), '')
+                new_name = f'{new_stem}{axis}{Path(f).suffix}'
+                if new_name == f:
+                    continue
+                old_path = os.path.join(folder, f)
+                new_path = os.path.join(folder, new_name)
+                if os.path.exists(new_path):
+                    continue  # something's already there -- don't overwrite it
+                if do_rename:
+                    os.rename(old_path, new_path)
+                    action_log.record('rename', old_path=old_path, new_path=new_path)
+                renamed.append({'video': video, 'from': f, 'to': new_name})
+
+    return renamed, leftover
+
+
 # ---------------------------------------------------------------------------
 # Per-folder analysis
 # ---------------------------------------------------------------------------
@@ -193,6 +317,9 @@ class FolderResult:
         self.total_videos: int = 0
         self.unmatched_videos: list[dict] = []   # {'video', 'suggestion', 'score', ...}
         self.renamed: list[dict] = []            # {'video', 'renamed_to', 'video_s', 'script_s'}
+        # orphan scripts matched to a multi-video folder's video by duration
+        # and renamed to match it instead (see _reverse_match_orphan_scripts)
+        self.reverse_renamed: list[dict] = []    # {'video', 'from', 'to'}
         # funscript base names (variants/axes folded together) with no video
         self.orphan_scripts: list[dict] = []     # {'base', 'scripts'}
         # a script name-matched to a video (any variant) whose length doesn't
@@ -216,6 +343,13 @@ def _check_folder(folder: str, do_rename: bool = False) -> FolderResult | None:
         entries = os.listdir(folder)
     except OSError:
         return None
+
+    # macOS resource-fork sidecar files (e.g. "._13 Full - Regular.funscript",
+    # left behind by a zip built/extracted on a Mac) are never real content --
+    # confirmed live: SpiritJOI's joi.moe archives ship them alongside every
+    # real .funscript, and without this they were counted as their own
+    # (bogus) orphan scripts.
+    entries = [f for f in entries if not f.startswith('._')]
 
     videos = [f for f in entries if Path(f).suffix.lower() in _VIDEO_EXTS
               and os.path.isfile(os.path.join(folder, f))]
@@ -244,9 +378,20 @@ def _check_folder(folder: str, do_rename: bool = False) -> FolderResult | None:
         video_base_map.setdefault(base, []).append(v)
 
     # --- Scripts without a video (every variant/axis of a base together) ---
-    for fbase, ffiles in sorted(script_bases.items()):
-        if fbase not in video_base_map:
-            result.orphan_scripts.append({'base': fbase, 'scripts': sorted(ffiles)})
+    orphan_bases = {fbase: ffiles for fbase, ffiles in script_bases.items()
+                     if fbase not in video_base_map}
+
+    # A multi-video folder's orphan scripts might still fit one of those
+    # videos by duration even though their name doesn't match anything --
+    # try that before giving up on them (a lone-video folder's orphans are
+    # already covered by the duration fallback further down, matched to the
+    # video instead of the other way around).
+    if orphan_bases and len(videos) > 1:
+        result.reverse_renamed, orphan_bases = _reverse_match_orphan_scripts(
+            folder, videos, orphan_bases, do_rename)
+
+    for fbase, ffiles in sorted(orphan_bases.items()):
+        result.orphan_scripts.append({'base': fbase, 'scripts': sorted(ffiles)})
 
     # --- Name-matched scripts whose length doesn't fit the video ---
     # Every variant is checked on its own (main script only; an axis file
@@ -480,6 +625,7 @@ def _resolve_alt_tagged_in_folder(folder: str) -> list[dict]:
         entries = os.listdir(folder)
     except OSError:
         return []
+    entries = [f for f in entries if not f.startswith('._')]  # macOS resource-fork sidecars
     scripts = [f for f in entries if f.lower().endswith(_SCRIPT_EXT)
                and os.path.isfile(os.path.join(folder, f))]
     videos = [f for f in entries if Path(f).suffix.lower() in _VIDEO_EXTS
@@ -581,10 +727,11 @@ def scan(root_dir: str, do_rename: bool = False) -> list[FolderResult]:
             total_videos=result.total_videos,
             missing=[item['video'] for item in result.unmatched_videos],
             renamed=[item['renamed_to'] for item in result.renamed],
+            reverse_renamed=[f"{item['from']} -> {item['to']}" for item in result.reverse_renamed],
             scripts_without_video=[item['base'] for item in result.orphan_scripts],
             duration_mismatches=[f"{item['script']} vs {item['video']}" for item in result.duration_mismatches],
         )
-        if not result.ok or result.renamed:
+        if not result.ok or result.renamed or result.reverse_renamed:
             results.append(result)
 
     return results
@@ -615,6 +762,9 @@ def _print_results(results: list[FolderResult]):
             print(f'    ✓ {item["video"]}  ->  {item["renamed_to"]}'
                   f'  [duration match: {item["video_s"]:.0f}s vs {item["script_s"]:.0f}s]')
 
+        for item in r.reverse_renamed:
+            print(f'    ✓ {item["from"]}  ->  {item["to"]}  [duration-matched to {item["video"]}]')
+
         for item in r.unmatched_videos:
             print(f'    ✗ {item["video"]}')
             if item['suggestion']:
@@ -633,12 +783,15 @@ def _print_results(results: list[FolderResult]):
 
     total_mismatch = sum(len(r.duration_mismatches) for r in results)
     total_orphans = sum(len(r.orphan_scripts) for r in results)
+    total_reverse_renamed = sum(len(r.reverse_renamed) for r in results)
     if total_mismatch:
         print(f'\n  {total_mismatch} script(s) whose length doesn\'t fit their name-matched video.')
     if total_orphans:
         print(f'\n  {total_orphans} script set(s) with no video.')
     if total_renamed:
         print(f'\n  {total_renamed} video(s) renamed to match by duration.')
+    if total_reverse_renamed:
+        print(f'\n  {total_reverse_renamed} script(s) renamed to match a video by duration.')
     unmatched_folders = sum(1 for r in results if r.unmatched_videos)
     if total_unmatched:
         print(f'\n  {total_unmatched} video(s) missing funscripts across {unmatched_folders} folder(s).')
@@ -659,6 +812,12 @@ def _write_csv(root_dir: str, results: list[FolderResult]):
             rows.append({
                 'folder': r.folder, 'issue': 'renamed', 'file': item['video'], 'suggestion': '',
                 'score': '', 'duration_match': True, 'renamed_to': item['renamed_to'],
+            })
+        for item in r.reverse_renamed:
+            rows.append({
+                'folder': r.folder, 'issue': 'reverse_renamed', 'file': item['from'],
+                'suggestion': item['video'], 'score': '', 'duration_match': True,
+                'renamed_to': item['to'],
             })
         for item in r.unmatched_videos:
             rows.append({
