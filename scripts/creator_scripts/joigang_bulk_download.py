@@ -187,21 +187,82 @@ def _resolve_entry(driver, funscript_url: str) -> tuple[str, str] | None:
     return download_url, video_url
 
 
-def _video_iframe_src(driver, video_url: str) -> str | None:
-    """Visit a video page and return its Bunny.net (mediadelivery.net) iframe src."""
+# A playlist heading reads like "📃 ZZZ NNN — 14 parts" -- strip the emoji
+# and the trailing "— N parts" to get just the series name.
+_PLAYLIST_SUFFIX_RE = re.compile(r'\s*[—-]\s*\d+\s*parts?\s*$', re.IGNORECASE)
+
+
+def _video_page_info(driver, video_url: str) -> tuple[str | None, dict | None]:
+    """Visit a video page and return (iframe_src, playlist_info).
+
+    iframe_src is the Bunny.net (mediadelivery.net) embed URL, or None if not
+    found. playlist_info is {'series': name, 'items': [{'num','title','href',
+    'duration'}, ...]} when this video is part of a multi-part series (see
+    the .jgvp-playlist sidebar), or None otherwise -- most entries aren't.
+    """
     driver.get(video_url)
     _dismiss_age_gate(driver)
     time.sleep(1.5)
+
+    iframe_src = None
     try:
         iframe = driver.find_element(By.XPATH, '//iframe[contains(@src,"mediadelivery.net")]')
+        iframe_src = iframe.get_attribute('src')
     except WebDriverException:
-        return None
-    return iframe.get_attribute('src')
+        pass
+
+    playlist_info = None
+    try:
+        section = driver.find_element(By.XPATH, '//section[contains(@class,"jgvp-playlist")]')
+        heading = section.find_element(By.TAG_NAME, 'h3').text.strip()
+        series = _PLAYLIST_SUFFIX_RE.sub('', heading).strip(' 📃').strip()
+        items = []
+        for item in section.find_elements(By.XPATH, './/a[contains(@class,"jgvp-playlist-item")]'):
+            try:
+                num = item.find_element(By.XPATH, './/span[contains(@class,"jgvp-playlist-num")]').text.strip()
+                title = item.find_element(By.XPATH, './/span[contains(@class,"jgvp-playlist-title")]').text.strip()
+                duration = item.find_element(By.XPATH, './/span[contains(@class,"jgvp-playlist-dur")]').text.strip()
+            except WebDriverException:
+                continue
+            items.append({'num': num, 'title': title, 'href': item.get_attribute('href'), 'duration': duration})
+        if series and items:
+            playlist_info = {'series': series, 'items': items}
+    except WebDriverException:
+        pass
+
+    return iframe_src, playlist_info
 
 
-def _download_funscript(driver, folder: str, download_url: str) -> str | None:
-    """Click the funscript page's download link and wait for the file to
-    land in *folder*. Returns the saved path, or None on failure."""
+def _write_playlist_file(base_path: str, series: str, items: list[dict]) -> None:
+    """Write a plain-text manifest at the root of a series' nested folder,
+    listing every part in order -- so someone browsing the downloaded
+    library later can tell these folders are related without having to
+    revisit the site."""
+    safe_series = dc._sanitize_filename_stem(series) or 'series'
+    series_dir = os.path.join(base_path, safe_series)
+    os.makedirs(series_dir, exist_ok=True)
+    path = os.path.join(series_dir, 'playlist.txt')
+    lines = [series, '']
+    for it in items:
+        lines.append(f"{it['num']}. {it['title']}  ({it['duration']})")
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines) + '\n')
+    except OSError as e:
+        print(f'  [joigang] could not write playlist file for "{series}": {e}')
+
+
+def _download_funscript(driver, folder: str, funscript_page_url: str) -> str | None:
+    """(re-)navigate to the funscript page, click its download link, and
+    wait for the file to land in *folder*. Returns the saved path, or None
+    on failure. Re-navigates explicitly rather than assuming the driver is
+    already there -- the caller visits the video page (for the playlist
+    sidebar) in between resolving this page and downloading from it.
+    """
+    driver.get(funscript_page_url)
+    _dismiss_age_gate(driver)
+    time.sleep(0.5)
+
     dc.set_download_dir(driver, folder)
     before_files = set(os.listdir(folder))
     try:
@@ -259,9 +320,14 @@ def _download_video(iframe_src: str, folder: str) -> bool:
     return False
 
 
-def _entry_folder(base_path: str, title: str) -> str:
-    safe = dc._sanitize_filename_stem(title) or 'untitled'
-    return os.path.join(base_path, safe)
+def _entry_folder(base_path: str, title: str, series: str | None = None) -> str:
+    """<base_path>/<title>, or <base_path>/<series>/<title> when this entry
+    is part of a multi-part series (see _video_page_info)."""
+    safe_title = dc._sanitize_filename_stem(title) or 'untitled'
+    if series:
+        safe_series = dc._sanitize_filename_stem(series) or 'series'
+        return os.path.join(base_path, safe_series, safe_title)
+    return os.path.join(base_path, safe_title)
 
 
 def _entry_already_done(folder: str) -> bool:
@@ -292,13 +358,7 @@ def run(base_path: str) -> None:
         done = skipped = failed = 0
         for i, entry in enumerate(entries, start=1):
             title = entry['title']
-            folder = _entry_folder(base_path, title)
             print(f'\n  [{i}/{len(entries)}] {title}')
-
-            if _entry_already_done(folder):
-                print('    [skip] already have a video and a funscript here')
-                skipped += 1
-                continue
 
             resolved = _resolve_entry(driver, entry['funscript_url'])
             if resolved is None:
@@ -306,22 +366,40 @@ def run(base_path: str) -> None:
                       ' (tier may not cover it)')
                 failed += 1
                 continue
-            download_url, video_url = resolved
+            # download_url itself isn't used below -- _download_funscript
+            # re-navigates and re-finds the link -- but _resolve_entry
+            # having found it at all confirms this entry is actually
+            # downloadable before any folder gets created for it.
+            _download_url, video_url = resolved
+
+            # Visit the video page now (not after downloading the funscript)
+            # so its playlist sidebar, if any, decides the folder path before
+            # anything gets saved -- see _download_funscript for why the
+            # funscript download itself re-navigates back afterward.
+            iframe_src, playlist_info = _video_page_info(driver, video_url)
+            if not iframe_src:
+                print('    [fail] could not find the video player on the linked page')
+                failed += 1
+                continue
+
+            series = playlist_info['series'] if playlist_info else None
+            folder = _entry_folder(base_path, title, series=series)
+
+            if _entry_already_done(folder):
+                print('    [skip] already have a video and a funscript here')
+                skipped += 1
+                continue
 
             os.makedirs(folder, exist_ok=True)
+            if playlist_info:
+                _write_playlist_file(base_path, series, playlist_info['items'])
 
-            script_path = _download_funscript(driver, folder, download_url)
+            script_path = _download_funscript(driver, folder, entry['funscript_url'])
             if script_path:
                 action_log.record('copy', dst=script_path)
                 print(f'    [funscript] saved: {os.path.basename(script_path)}')
             else:
                 print('    [funscript] failed to download')
-
-            iframe_src = _video_iframe_src(driver, video_url)
-            if not iframe_src:
-                print('    [video] could not find the video player on the linked page')
-                failed += 1
-                continue
 
             before = set(os.listdir(folder))
             if _download_video(iframe_src, folder):
