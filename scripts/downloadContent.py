@@ -873,15 +873,16 @@ def _wait_for_download_to_start(download_dir: str, before_files: set[str], timeo
     return False
 
 
-# Once joi.moe's in-button progress reaches this percentage, a stall clock
-# arms (see _wait_for_joimoe_download): below it, there is no timeout at all
-# -- an arbitrarily large/slow file is fine as long as the percentage is
-# still climbing. 98, not 100: some UIs never actually render the last
-# couple of %.
+# Once joi.moe's in-button progress reaches this percentage, start checking
+# download_dir for the actual file on every poll (see _wait_for_joimoe_download)
+# -- no point looking any earlier, since it can't have landed yet. 98, not
+# 100: some UIs never actually render the last couple of %.
 _JOIMOE_PROGRESS_NEAR_DONE = 98
 
-# Seconds of no change (percentage stuck, no new file) once the stall clock
-# is armed before giving up.
+# Seconds of no change in the observed percentage (a genuinely new value, or
+# the indicator disappearing after being seen) before giving up. This check
+# runs constantly for the whole wait, not just past _JOIMOE_PROGRESS_NEAR_DONE
+# -- a stall at 45% for 90s is just as much a failure as one at 99%.
 _JOIMOE_STALL_TIMEOUT = 90
 
 
@@ -893,23 +894,20 @@ def _wait_for_joimoe_download(driver, download_dir: str, before_files: set[str])
     the finished file to the browser once that's done -- the-joi-database.com
     has no such indicator. This deliberately has no raw wall-clock timeout:
     a large file can take a long time to climb from 0-98%, and that's fine as
-    long as the percentage keeps moving. A stall clock only arms once the
-    percentage reaches _JOIMOE_PROGRESS_NEAR_DONE (the risky final handoff to
-    the browser) -- if nothing changes (percentage stuck, no new file) for
-    _JOIMOE_STALL_TIMEOUT seconds past that point, this gives up and reports
-    failure instead of hanging forever. If the percentage indicator never
-    shows up at all within a short grace window (this project's guess at its
-    markup could simply be wrong for this page), the stall clock arms
-    immediately instead of waiting forever for a signal that may never come.
+    long as the percentage keeps changing -- the _JOIMOE_STALL_TIMEOUT check
+    (see its own docstring) is what catches a genuine hang, at any point, not
+    a fixed overall duration. Once the percentage crosses
+    _JOIMOE_PROGRESS_NEAR_DONE (or the indicator disappears after being seen
+    at all, which usually means the same thing -- handoff to the browser),
+    this also starts checking download_dir for the actual file on every poll.
     """
-    grace_deadline = time.time() + 20
-    ever_seen_pct = False
-    armed = False
-    last_state: int | None = None
+    prev_state: int | str | None = None  # a percentage, 'gone', or None (never seen yet)
     last_change = time.time()
+    ever_seen_pct = False
+    near_done = False
 
     while True:
-        if set(os.listdir(download_dir)) - before_files:
+        if near_done and (set(os.listdir(download_dir)) - before_files):
             return True
 
         spans = driver.find_elements(By.XPATH, '//span[contains(text(),"%")]')
@@ -923,18 +921,16 @@ def _wait_for_joimoe_download(driver, download_dir: str, before_files: set[str])
         if current_pct is not None:
             ever_seen_pct = True
             if current_pct >= _JOIMOE_PROGRESS_NEAR_DONE:
-                armed = True
+                near_done = True
         elif ever_seen_pct:
-            armed = True  # indicator was there and is now gone -- likely mid-handoff
+            near_done = True  # indicator was there and is now gone -- likely mid-handoff
 
-        if not ever_seen_pct and time.time() >= grace_deadline:
-            armed = True  # indicator never appeared at all -- don't wait forever blind
-
-        if current_pct != last_state:
-            last_state = current_pct
+        state = current_pct if current_pct is not None else ('gone' if ever_seen_pct else None)
+        if state != prev_state:
+            prev_state = state
             last_change = time.time()
 
-        if armed and (time.time() - last_change) >= _JOIMOE_STALL_TIMEOUT:
+        if (time.time() - last_change) >= _JOIMOE_STALL_TIMEOUT:
             return False
 
         time.sleep(1)
