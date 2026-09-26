@@ -2470,8 +2470,8 @@ def _finalize_joimoe_video_download(driver, download_dir: str, before_files: set
     return True
 
 
-def download_joi_moe(driver, url: str, download_dir: str) -> bool:
-    """Navigate to a joi.moe page and trigger its download.
+def _joimoe_download_page(driver, url: str, download_dir: str) -> bool:
+    """Navigate to a joi.moe page (already logged in) and trigger its download.
 
     Unlike the-joi-database.com, joi.moe has no separate stream-only page --
     /video/<slug> pages ("Stream and Download on JOI.moe") serve the video
@@ -2483,10 +2483,6 @@ def download_joi_moe(driver, url: str, download_dir: str) -> bool:
     page's real title afterward (see _finalize_joimoe_video_download) --
     funscript filenames from /file/ pages aren't a video title at all.
     """
-    if not _joimoe_browser_login(driver):
-        print('  [joi.moe] cannot continue without a working login')
-        return False
-
     driver.get(url)
     try:
         time.sleep(1.5)
@@ -2530,6 +2526,70 @@ def download_joi_moe(driver, url: str, download_dir: str) -> bool:
         print(f'  [joi.moe] handler error: {e}')
 
     return False
+
+
+def _joimoe_linked_video_urls(driver) -> list[str]:
+    """Scrape the "Linked videos" section of the current (already-loaded)
+    joi.moe page for /video/ links.
+
+    A funscript archive has a script for each video listed there -- even one
+    that technically belongs to a different post (confirmed live: a
+    SpiritJOI funscript pack can cover an earlier post's video too, one its
+    own post text never mentions) -- so every one of them needs to actually
+    land in this same folder for check_funscripts.py's duration-based
+    reverse-matching to have anything to pair those scripts against at all.
+    """
+    hrefs = []
+    for a in driver.find_elements(By.XPATH, '//a[contains(@href,"/video/")]'):
+        href = a.get_attribute('href')
+        if href and href not in hrefs:
+            hrefs.append(href)
+    return hrefs
+
+
+def _ensure_joimoe_linked_videos(driver, download_dir: str, linked_video_urls: list[str]) -> None:
+    """After a funscript download, make sure at least as many videos are
+    sitting in *download_dir* as the page's own "Linked videos" section
+    listed -- fetch whichever still seem to be missing.
+
+    Best-effort and non-fatal: a failure here never fails the funscript
+    download itself. This can't tell which *specific* linked video is
+    missing (downloaded video filenames use the real title now, not the
+    URL slug -- see _finalize_joimoe_video_download -- so they can't be
+    matched back to a /video/ URL by name), so it just tries every linked
+    URL once the count looks short; _save_downloaded's own content-hash
+    dedup discards any that turn out to already be present, so attempting
+    one that's technically already there is wasted bandwidth, not a bug.
+    """
+    if not linked_video_urls:
+        return
+    existing = sum(1 for f in os.listdir(download_dir) if _is_video_filename(f))
+    if existing >= len(linked_video_urls):
+        return
+    print(f'  [joi.moe] this funscript archive covers {len(linked_video_urls)} video(s), '
+          f'only {existing} already in this folder — fetching the rest...')
+    for video_url in linked_video_urls:
+        try:
+            _joimoe_download_page(driver, video_url, download_dir)
+        except Exception as e:
+            print(f'  [joi.moe] could not fetch linked video {video_url}: {e}')
+
+
+def download_joi_moe(driver, url: str, download_dir: str) -> bool:
+    """Log into joi.moe (if needed), download *url*, and -- for a funscript
+    /file/ page specifically -- also make sure every video its archive
+    covers ends up in this same folder (see _ensure_joimoe_linked_videos).
+    """
+    if not _joimoe_browser_login(driver):
+        print('  [joi.moe] cannot continue without a working login')
+        return False
+
+    is_funscript_page = '/file/' in urlparse(url).path
+    ok = _joimoe_download_page(driver, url, download_dir)
+    if ok and is_funscript_page:
+        linked_videos = _joimoe_linked_video_urls(driver)
+        _ensure_joimoe_linked_videos(driver, download_dir, linked_videos)
+    return ok
 
 
 def _pixeldrain_allow_anonymous() -> bool:
