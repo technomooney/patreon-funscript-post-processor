@@ -855,6 +855,24 @@ def wait_for_download(download_dir: str, before_files: set[str],
         time.sleep(1)
 
 
+def _wait_for_download_to_start(download_dir: str, before_files: set[str], timeout: int = 60) -> bool:
+    """Poll *download_dir* until any new file (even a .part/.crdownload) appears.
+
+    Some sites process a download request server-side (e.g. building a zip)
+    before the browser's actual file transfer begins, so a fixed sleep after
+    clicking isn't reliable -- the handler would report success before the
+    browser has done anything, and the caller's own wait_for_download() (built
+    to wait out an already-started transfer, not this pre-download delay)
+    could then time out for nothing. Returns False if nothing ever appears.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if set(os.listdir(download_dir)) - before_files:
+            return True
+        time.sleep(1)
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Shared download utilities
 # ---------------------------------------------------------------------------
@@ -2219,8 +2237,11 @@ def download_the_joi_database(driver, url: str, download_dir: str) -> bool:
             return False
 
         print('  [the-joi-database.com] triggering download...')
+        before_files = set(os.listdir(download_dir))
         driver.execute_script('arguments[0].click()', candidates[0])
-        time.sleep(1)
+        if not _wait_for_download_to_start(download_dir, before_files):
+            print('  [the-joi-database.com] clicked but no download appears to have started')
+            return False
         return True
 
     except Exception as e:
@@ -2368,8 +2389,11 @@ def download_joi_moe(driver, url: str, download_dir: str) -> bool:
             return False
 
         print('  [joi.moe] triggering download...')
+        before_files = set(os.listdir(download_dir))
         driver.execute_script('arguments[0].click()', candidates[0])
-        time.sleep(1)
+        if not _wait_for_download_to_start(download_dir, before_files):
+            print('  [joi.moe] clicked but no download appears to have started')
+            return False
         return True
 
     except Exception as e:
