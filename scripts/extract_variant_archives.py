@@ -310,12 +310,35 @@ def _walk_files(root_dir: str) -> list[str]:
     return paths
 
 
+# A trailing parenthetical variant tag, e.g. "(SMOOTH)", "(WITH FILL)" --
+# same convention (and same pattern) as check_funscripts._VARIANT_RE. Applied
+# repeatedly so a chain like "(max interval) (SMOOTH)" fully unwraps.
+_TRAILING_VARIANT_RE = re.compile(r'\s*\([^)]+\)\s*$')
+
+
+def _strip_trailing_variants(stem: str) -> str:
+    while True:
+        stripped = _TRAILING_VARIANT_RE.sub('', stem)
+        if stripped == stem:
+            return stem
+        stem = stripped
+
+
 def _funscript_base_names(extracted_dir: str) -> set[str]:
-    """Every distinct funscript base name (axis suffix stripped) found
-    anywhere in the extracted tree (see _walk_files). A normal single-post
-    variant archive has exactly one — more than one means this is actually a
-    bulk multi-video collection (see module docstring), not something
-    extract_one() should extract automatically."""
+    """Every distinct funscript base name (axis suffix and trailing
+    parenthetical variant tags stripped) found anywhere in the extracted
+    tree (see _walk_files). A normal single-post variant archive has exactly
+    one — more than one means this is actually a bulk multi-video collection
+    (see module docstring), not something extract_one() should extract
+    automatically.
+
+    Stripping variant tags here (not just axis suffixes) matters: SpiritJOI
+    ships archives with e.g. "13 Full - Regular.funscript" and "13 Full -
+    Regular (WITH FILL).funscript" side by side -- without this, each such
+    pair counted as two different "videos" and inflated the count well past
+    the real number of distinct videos actually in the archive (confirmed
+    live: a single-video archive misreported as 12).
+    """
     bases = set()
     for path in _walk_files(extracted_dir):
         f = os.path.basename(path)
@@ -326,7 +349,7 @@ def _funscript_base_names(extracted_dir: str) -> set[str]:
             if stem.endswith(sfx):
                 stem = stem[: -len(sfx)]
                 break
-        bases.add(stem)
+        bases.add(_strip_trailing_variants(stem))
     return bases
 
 
@@ -535,7 +558,7 @@ def _video_url_for_stem(folder: str, stem: str) -> str:
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             continue
         url = (data.get('metadata') or {}).get('video_url', '')
         if isinstance(url, str) and url.strip():
