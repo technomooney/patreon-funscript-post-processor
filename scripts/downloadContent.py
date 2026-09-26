@@ -873,35 +873,43 @@ def _wait_for_download_to_start(download_dir: str, before_files: set[str], timeo
     return False
 
 
-# Once joi.moe's in-button progress reaches this percentage, start checking
-# download_dir for the file on every poll too -- the percentage element can
-# disappear at the same instant the file shows up, so waiting for it to
-# fully vanish before ever looking at the filesystem risks missing that
-# handoff. 98, not 100: some UIs never actually render the last couple of %.
+# Once joi.moe's in-button progress reaches this percentage, a stall clock
+# arms (see _wait_for_joimoe_download): below it, there is no timeout at all
+# -- an arbitrarily large/slow file is fine as long as the percentage is
+# still climbing. 98, not 100: some UIs never actually render the last
+# couple of %.
 _JOIMOE_PROGRESS_NEAR_DONE = 98
 
+# Seconds of no change (percentage stuck, no new file) once the stall clock
+# is armed before giving up.
+_JOIMOE_STALL_TIMEOUT = 90
 
-def _wait_for_joimoe_download(driver, download_dir: str, before_files: set[str], timeout: int = 300) -> bool:
-    """Wait out joi.moe's in-button progress indicator, then confirm the file landed.
+
+def _wait_for_joimoe_download(driver, download_dir: str, before_files: set[str]) -> bool:
+    """Track joi.moe's in-button download percentage until the file lands.
 
     joi.moe processes the download server-side and shows a percentage inside
     the button itself while it works (e.g. a <span>13%</span>), only handing
     the finished file to the browser once that's done -- the-joi-database.com
-    has no such indicator. Two ways this resolves as done, whichever comes
-    first: the percentage passes _JOIMOE_PROGRESS_NEAR_DONE and a new file
-    then appears in download_dir, or the percentage element disappears
-    outright (seen at all, then gone). Best-effort: if no percentage shows up
-    within the first 15s (indicator never appeared, or this project's guess
-    at its markup is wrong), falls back to plain download_dir polling for the
-    rest of *timeout* instead of ignoring the filesystem for the whole wait.
+    has no such indicator. This deliberately has no raw wall-clock timeout:
+    a large file can take a long time to climb from 0-98%, and that's fine as
+    long as the percentage keeps moving. A stall clock only arms once the
+    percentage reaches _JOIMOE_PROGRESS_NEAR_DONE (the risky final handoff to
+    the browser) -- if nothing changes (percentage stuck, no new file) for
+    _JOIMOE_STALL_TIMEOUT seconds past that point, this gives up and reports
+    failure instead of hanging forever. If the percentage indicator never
+    shows up at all within a short grace window (this project's guess at its
+    markup could simply be wrong for this page), the stall clock arms
+    immediately instead of waiting forever for a signal that may never come.
     """
-    deadline = time.time() + timeout
-    grace_deadline = time.time() + 15
-    seen_progress = False
-    near_done = False
-    while time.time() < deadline:
-        watching_filesystem = near_done or (not seen_progress and time.time() >= grace_deadline)
-        if watching_filesystem and (set(os.listdir(download_dir)) - before_files):
+    grace_deadline = time.time() + 20
+    ever_seen_pct = False
+    armed = False
+    last_state: int | None = None
+    last_change = time.time()
+
+    while True:
+        if set(os.listdir(download_dir)) - before_files:
             return True
 
         spans = driver.find_elements(By.XPATH, '//span[contains(text(),"%")]')
@@ -910,16 +918,26 @@ def _wait_for_joimoe_download(driver, download_dir: str, before_files: set[str],
             m = re.fullmatch(r'(\d{1,3})%', (s.get_attribute('textContent') or '').strip())
             if m:
                 pct_values.append(int(m.group(1)))
+        current_pct = max(pct_values) if pct_values else None
 
-        if pct_values:
-            seen_progress = True
-            if max(pct_values) >= _JOIMOE_PROGRESS_NEAR_DONE:
-                near_done = True
-        elif seen_progress:
-            return True  # the indicator was there and is now gone
+        if current_pct is not None:
+            ever_seen_pct = True
+            if current_pct >= _JOIMOE_PROGRESS_NEAR_DONE:
+                armed = True
+        elif ever_seen_pct:
+            armed = True  # indicator was there and is now gone -- likely mid-handoff
+
+        if not ever_seen_pct and time.time() >= grace_deadline:
+            armed = True  # indicator never appeared at all -- don't wait forever blind
+
+        if current_pct != last_state:
+            last_state = current_pct
+            last_change = time.time()
+
+        if armed and (time.time() - last_change) >= _JOIMOE_STALL_TIMEOUT:
+            return False
 
         time.sleep(1)
-    return False
 
 
 # ---------------------------------------------------------------------------
