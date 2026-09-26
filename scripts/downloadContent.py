@@ -2233,7 +2233,9 @@ _joimoe_browser_logged_in: bool = False
 
 
 def _joimoe_browser_login(driver) -> bool:
-    """Log into joi.moe via its /login form. Returns True if successful.
+    """Log into joi.moe via a header 'Login' button that opens a modal
+    (unlike the-joi-database.com, joi.moe has no dedicated /login page).
+    Returns True if successful.
 
     joi.moe mirrors the-joi-database.com's videos/funscripts and is preferred
     over it (see _prefer_joimoe_mirror) when both are linked in the same post,
@@ -2250,13 +2252,22 @@ def _joimoe_browser_login(driver) -> bool:
               '`scripts/setup_config.py --credentials`')
         return False
 
-    driver.get('https://joi.moe/login')
+    driver.get('https://joi.moe/')
     time.sleep(2)
 
     try:
         wait = WebDriverWait(driver, 10)
 
-        pw_field = wait.until(EC.presence_of_element_located((By.XPATH, '//input[@type="password"]')))
+        # Open the login modal via the header login button/link.
+        login_btn = wait.until(EC.element_to_be_clickable((By.XPATH,
+            '//a[contains(translate(normalize-space(.),"LOGIN","login"),"login")] | '
+            '//button[contains(translate(normalize-space(.),"LOGIN","login"),"login")] | '
+            '//*[@href="#login"]'
+        )))
+        driver.execute_script('arguments[0].click()', login_btn)
+        time.sleep(1)
+
+        pw_field = wait.until(EC.visibility_of_element_located((By.XPATH, '//input[@type="password"]')))
         user_field = driver.find_element(By.XPATH,
             '//input[@type="text" or @type="email" or contains(@name,"user") or contains(@name,"email")]'
         )
@@ -2282,12 +2293,22 @@ def _joimoe_browser_login(driver) -> bool:
                 '//button[contains(translate(normalize-space(.),"LOGIN","login"),"login")]')
         driver.execute_script('arguments[0].click()', submit)
 
+        # Success: the modal's password field disappears from the DOM, or a
+        # profile/account/logout element shows up in the header.
+        def _logged_in(d):
+            if not d.find_elements(By.XPATH, '//input[@type="password"]'):
+                return True
+            return bool(d.find_elements(By.XPATH,
+                '//*[contains(@class,"profile") or contains(@class,"account") or '
+                'contains(@href,"/logout") or contains(@href,"/profile")]'
+            ))
+
         try:
-            WebDriverWait(driver, 10).until(lambda d: 'login' not in d.current_url)
+            WebDriverWait(driver, 10).until(_logged_in)
         except WebDriverException:
             pass
 
-        if 'login' in driver.current_url:
+        if not _logged_in(driver):
             print('  [joi.moe] login failed — check JOIMOE_USERNAME/JOIMOE_PASSWORD')
             return False
 
