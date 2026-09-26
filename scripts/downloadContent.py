@@ -889,22 +889,30 @@ _JOIMOE_STALL_TIMEOUT = 90
 def _wait_for_joimoe_download(driver, download_dir: str, before_files: set[str]) -> bool:
     """Track joi.moe's in-button download percentage until the file lands.
 
-    joi.moe processes the download server-side and shows a percentage inside
-    the button itself while it works (e.g. a <span>13%</span>), only handing
-    the finished file to the browser once that's done -- the-joi-database.com
-    has no such indicator. This deliberately has no raw wall-clock timeout:
-    a large file can take a long time to climb from 0-98%, and that's fine as
-    long as the percentage keeps changing -- the _JOIMOE_STALL_TIMEOUT check
-    (see its own docstring) is what catches a genuine hang, at any point, not
-    a fixed overall duration. Once the percentage crosses
-    _JOIMOE_PROGRESS_NEAR_DONE (or the indicator disappears after being seen
-    at all, which usually means the same thing -- handoff to the browser),
-    this also starts checking download_dir for the actual file on every poll.
+    joi.moe processes large video downloads server-side and shows a
+    percentage inside the button itself while it works (e.g. a <span>13%
+    </span>), only handing the finished file to the browser once that's
+    done -- the-joi-database.com has no such indicator, and neither does
+    joi.moe itself for a small funscript zip (confirmed live: no percentage
+    ever appears on those pages, presumably because there's no server-side
+    work to show progress on). This deliberately has no raw wall-clock
+    timeout: a large file can take a long time to climb from 0-98%, and
+    that's fine as long as the percentage keeps changing -- the
+    _JOIMOE_STALL_TIMEOUT check (see its own docstring) is what catches a
+    genuine hang, at any point, not a fixed overall duration. Once the
+    percentage crosses _JOIMOE_PROGRESS_NEAR_DONE (or the indicator
+    disappears after being seen at all, which usually means the same thing
+    -- handoff to the browser), this also starts checking download_dir for
+    the actual file on every poll -- and if no percentage shows up at all
+    within a short grace window, download_dir gets checked from then on
+    regardless, since a page with no progress indicator at all still needs
+    *something* watching for the file to land.
     """
     prev_state: int | str | None = None  # a percentage, 'gone', or None (never seen yet)
     last_change = time.time()
     ever_seen_pct = False
     near_done = False
+    no_indicator_grace_deadline = time.time() + 5
 
     while True:
         if near_done and (set(os.listdir(download_dir)) - before_files):
@@ -924,6 +932,8 @@ def _wait_for_joimoe_download(driver, download_dir: str, before_files: set[str])
                 near_done = True
         elif ever_seen_pct:
             near_done = True  # indicator was there and is now gone -- likely mid-handoff
+        elif time.time() >= no_indicator_grace_deadline:
+            near_done = True  # no progress indicator on this page at all -- watch the filesystem instead
 
         state = current_pct if current_pct is not None else ('gone' if ever_seen_pct else None)
         if state != prev_state:
