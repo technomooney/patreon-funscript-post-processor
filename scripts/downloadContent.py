@@ -873,29 +873,53 @@ def _wait_for_download_to_start(download_dir: str, before_files: set[str], timeo
     return False
 
 
-def _wait_for_joimoe_button_progress(driver, timeout: int = 300) -> None:
-    """Wait out joi.moe's in-button progress indicator (e.g. "13%") before
-    moving on to _wait_for_download_to_start.
+# Once joi.moe's in-button progress reaches this percentage, start checking
+# download_dir for the file on every poll too -- the percentage element can
+# disappear at the same instant the file shows up, so waiting for it to
+# fully vanish before ever looking at the filesystem risks missing that
+# handoff. 98, not 100: some UIs never actually render the last couple of %.
+_JOIMOE_PROGRESS_NEAR_DONE = 98
+
+
+def _wait_for_joimoe_download(driver, download_dir: str, before_files: set[str], timeout: int = 300) -> bool:
+    """Wait out joi.moe's in-button progress indicator, then confirm the file landed.
 
     joi.moe processes the download server-side and shows a percentage inside
-    the button itself while it works, only handing the finished file to the
-    browser once that reaches completion -- the-joi-database.com has no such
-    indicator (just a plain, often slow, wait). Best-effort and silent: if no
-    percentage ever shows up (indicator never appeared, or this project's
-    guess at its markup is wrong), this returns immediately rather than
-    burning the full timeout for nothing.
+    the button itself while it works (e.g. a <span>13%</span>), only handing
+    the finished file to the browser once that's done -- the-joi-database.com
+    has no such indicator. Two ways this resolves as done, whichever comes
+    first: the percentage passes _JOIMOE_PROGRESS_NEAR_DONE and a new file
+    then appears in download_dir, or the percentage element disappears
+    outright (seen at all, then gone). Best-effort: if no percentage shows up
+    within the first 15s (indicator never appeared, or this project's guess
+    at its markup is wrong), falls back to plain download_dir polling for the
+    rest of *timeout* instead of ignoring the filesystem for the whole wait.
     """
     deadline = time.time() + timeout
+    grace_deadline = time.time() + 15
     seen_progress = False
+    near_done = False
     while time.time() < deadline:
+        watching_filesystem = near_done or (not seen_progress and time.time() >= grace_deadline)
+        if watching_filesystem and (set(os.listdir(download_dir)) - before_files):
+            return True
+
         spans = driver.find_elements(By.XPATH, '//span[contains(text(),"%")]')
-        pct_spans = [s for s in spans
-                     if re.fullmatch(r'\d{1,3}%', (s.get_attribute('textContent') or '').strip())]
-        if pct_spans:
+        pct_values = []
+        for s in spans:
+            m = re.fullmatch(r'(\d{1,3})%', (s.get_attribute('textContent') or '').strip())
+            if m:
+                pct_values.append(int(m.group(1)))
+
+        if pct_values:
             seen_progress = True
+            if max(pct_values) >= _JOIMOE_PROGRESS_NEAR_DONE:
+                near_done = True
         elif seen_progress:
-            return
+            return True  # the indicator was there and is now gone
+
         time.sleep(1)
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -2261,13 +2285,15 @@ def download_the_joi_database(driver, url: str, download_dir: str) -> bool:
                 print('  [the-joi-database.com] no download link/button found on the page')
             return False
 
-        print('  [the-joi-database.com] triggering download — this site has no progress '
-              'indicator and can take several minutes...')
+        print('  [the-joi-database.com] triggering download...')
         before_files = set(os.listdir(download_dir))
         driver.execute_script('arguments[0].click()', candidates[0])
-        # No in-page progress signal here (unlike joi.moe) -- just a long,
-        # opaque wait, so give it a generous timeout rather than guessing.
-        if not _wait_for_download_to_start(download_dir, before_files, timeout=600):
+        # This site has no in-page progress indicator (unlike joi.moe), but
+        # the download itself starts promptly -- it's the transfer afterward
+        # that's genuinely slow (bandwidth, not a processing queue), and the
+        # caller's own wait_for_download() already tolerates that fine (its
+        # idle timeout resets on every byte of growth, however slow).
+        if not _wait_for_download_to_start(download_dir, before_files):
             print('  [the-joi-database.com] clicked but no download appears to have started')
             return False
         return True
@@ -2419,8 +2445,7 @@ def download_joi_moe(driver, url: str, download_dir: str) -> bool:
         print('  [joi.moe] triggering download...')
         before_files = set(os.listdir(download_dir))
         driver.execute_script('arguments[0].click()', candidates[0])
-        _wait_for_joimoe_button_progress(driver)
-        if not _wait_for_download_to_start(download_dir, before_files):
+        if not _wait_for_joimoe_download(driver, download_dir, before_files):
             print('  [joi.moe] clicked but no download appears to have started')
             return False
         return True
