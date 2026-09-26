@@ -199,6 +199,8 @@ KNOWN_DOMAINS = [
     'spankbang.com',
     'faptap.net',
     'e621.net',
+    'the-joi-database.com',
+    'joi.moe',
 ]
 
 # mega.nz link handling (password-protected links, task ordering) needs to
@@ -238,6 +240,7 @@ SKIP_DOMAINS = {
     'carrd.co',
     'discord.gg',    # invite/server links — not downloadable (CDN links are fine)
     'discordapp.net',  # not an official Discord domain
+    'thehandy.com',  # toy-store affiliate links — SpiritJOI links these in nearly every post
 }
 
 
@@ -361,6 +364,126 @@ def extract_links_from_description(desc_path: str) -> list:
     ProseMirror JSON file. See extract_link_entries_from_description for the node
     shapes handled."""
     return [entry['href'] for entry in extract_link_entries_from_description(desc_path)]
+
+
+def _extract_link_paragraph_text(desc_path: str) -> dict[str, str]:
+    """Map each link href to the visible text of its containing paragraph/heading.
+
+    Unlike extract_link_entries_from_description (which only captures a link's
+    own marked text), this also captures qualifying text that sits next to the
+    link as a separate, unmarked node -- e.g. "Funscripts on JOI.moe (With
+    handy 2 PRO compatibility.)", where the parenthetical isn't part of the
+    link itself. Used to disambiguate multiple funscript links for the same
+    video -- see _prefer_marked_funscript_links.
+    """
+    with open(desc_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    result: dict[str, str] = {}
+
+    def collect(node, hrefs: list, text_parts: list):
+        if isinstance(node, dict):
+            if node.get('type') == 'cta':
+                attrs = node.get('attrs', {})
+                if attrs.get('button_link'):
+                    hrefs.append(attrs['button_link'])
+                if attrs.get('button_text'):
+                    text_parts.append(attrs['button_text'])
+            for mark in node.get('marks', []):
+                if mark.get('type') == 'link':
+                    href = mark.get('attrs', {}).get('href')
+                    if href:
+                        hrefs.append(href)
+            if node.get('type') == 'text' and node.get('text'):
+                text_parts.append(node['text'])
+            for value in node.values():
+                if isinstance(value, (dict, list)):
+                    collect(value, hrefs, text_parts)
+        elif isinstance(node, list):
+            for item in node:
+                collect(item, hrefs, text_parts)
+
+    def walk_blocks(node):
+        if isinstance(node, dict):
+            if node.get('type') in ('paragraph', 'heading'):
+                hrefs: list = []
+                text_parts: list = []
+                collect(node, hrefs, text_parts)
+                full_text = ''.join(text_parts)
+                for href in hrefs:
+                    result[href] = (result.get(href, '') + ' ' + full_text).strip()
+                return
+            for value in node.values():
+                if isinstance(value, (dict, list)):
+                    walk_blocks(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk_blocks(item)
+
+    walk_blocks(data)
+    return result
+
+
+def _funscript_link_preference_marker() -> str:
+    """FUNSCRIPT_LINK_PREFERENCE from the environment: when a post offers more
+    than one funscript-producing link, keep only the one(s) whose containing
+    paragraph mentions this phrase (case-insensitive) and drop the rest.
+
+    Default targets SpiritJOI's recurring pattern: a plain "Funscripts" link
+    alongside a second "Funscripts (... handy 2 PRO compatibility)" link, both
+    pointing at the same video -- downloading both leaves two non-identical
+    .funscript files for one video instead of one. '' disables this entirely.
+    """
+    return os.getenv('FUNSCRIPT_LINK_PREFERENCE', 'handy 2 pro').strip().lower()
+
+
+def _prefer_joimoe_mirror(links: list[str]) -> list[str]:
+    """Prefer joi.moe over the-joi-database.com when a post links both.
+
+    joi.moe mirrors the same videos and funscripts as the-joi-database.com
+    but downloads faster, so when a post links both, the-joi-database.com
+    copies are dropped outright rather than downloading both mirrors of the
+    same content. A post that links only the-joi-database.com (no joi.moe
+    account, or joi.moe simply isn't offered for it) is untouched -- this
+    only ever removes a link when a working joi.moe alternative is right
+    there in the same post, never the creator's only copy of anything
+    (including bonus/DLC videos, which each get their own joi.moe link when
+    joi.moe is offered for the post at all).
+    """
+    if not any(get_domain(l) == 'joi.moe' for l in links):
+        return links
+    dropped = [l for l in links if get_domain(l) == 'the-joi-database.com']
+    if not dropped:
+        return links
+    for l in dropped:
+        print(f'  [mirror-preference] dropping the-joi-database.com link — joi.moe mirror preferred: {l}')
+    return [l for l in links if l not in dropped]
+
+
+def _prefer_marked_funscript_links(links: list[str], paragraph_text: dict[str, str]) -> list[str]:
+    """Drop redundant funscript-link duplicates within the same post.
+
+    A link counts as a "funscript candidate" when its own paragraph's text
+    mentions "funscript" -- true for every source seen so far (mega.nz, the
+    joi database, joi.moe). If the preference marker matches some candidates
+    but not all, keep only the matching ones (e.g. a plain "Funscripts" link
+    vs a second "Funscripts (... handy 2 PRO compatibility)" link for the
+    same video). A single candidate, or a post where every/no candidate
+    matches, is untouched -- this is what keeps genuinely different scripts
+    (e.g. "regular" vs "halftime" speed variants, or a main video's script
+    vs a separate DLC video's own script) from being collapsed into one.
+    """
+    candidates = [l for l in links if 'funscript' in paragraph_text.get(l, '').lower()]
+    marker = _funscript_link_preference_marker()
+    if not marker or len(candidates) <= 1:
+        return links
+    marked = [l for l in candidates if marker in paragraph_text.get(l, '').lower()]
+    if not marked or len(marked) == len(candidates):
+        return links
+    dropped = [l for l in candidates if l not in marked]
+    for l in dropped:
+        print(f'  [funscript-preference] dropping duplicate funscript link (another matches "{marker}"): {l}')
+    return [l for l in links if l not in dropped]
 
 
 def get_funscript_basename(folder: str):
@@ -1964,6 +2087,268 @@ def download_rule34video(driver, url: str, download_dir: str) -> bool:
 
     except Exception as e:
         print(f'  [rule34video.com] handler error: {e}')
+
+    return False
+
+
+# ---------------------------------------------------------------------------
+# the-joi-database.com / joi.moe handlers
+# ---------------------------------------------------------------------------
+
+_joidb_browser_logged_in: bool = False
+
+
+def _joidb_browser_login(driver) -> bool:
+    """Log into the-joi-database.com via its /login form. Returns True if successful.
+
+    Unlike rule34video.com's best-effort login, every video and funscript here
+    is Patreon-gated (an account with a linked Patreon subscription is
+    required for all of it, not just some) -- so download_the_joi_database
+    treats a failed login as a hard failure rather than trying anonymously.
+    """
+    global _joidb_browser_logged_in
+    if _joidb_browser_logged_in:
+        return True
+
+    username = _get_secret('JOIDB_USERNAME').strip()
+    password = _get_secret('JOIDB_PASSWORD').strip()
+    if not username or not password:
+        print('  [the-joi-database.com] no credentials — set JOIDB_USERNAME and JOIDB_PASSWORD via '
+              '`scripts/setup_config.py --credentials`')
+        return False
+
+    driver.get('https://www.the-joi-database.com/login')
+    time.sleep(2)
+
+    try:
+        wait = WebDriverWait(driver, 10)
+
+        pw_field = wait.until(EC.presence_of_element_located((By.XPATH, '//input[@type="password"]')))
+        user_field = driver.find_element(By.XPATH,
+            '//input[@type="text" or @type="email" or contains(@name,"user") or contains(@name,"email")]'
+        )
+        user_field.click()
+        time.sleep(0.3)
+        user_field.clear()
+        for char in username:
+            user_field.send_keys(char)
+            time.sleep(0.05)
+
+        pw_field.click()
+        time.sleep(0.3)
+        for char in password:
+            pw_field.send_keys(char)
+            time.sleep(0.05)
+
+        time.sleep(0.3)
+        try:
+            login_form = pw_field.find_element(By.XPATH, './ancestor::form')
+            submit = login_form.find_element(By.XPATH, './/button[@type="submit"] | .//input[@type="submit"]')
+        except WebDriverException:
+            submit = driver.find_element(By.XPATH,
+                '//button[contains(translate(normalize-space(.),"LOGIN","login"),"login")]')
+        driver.execute_script('arguments[0].click()', submit)
+
+        try:
+            WebDriverWait(driver, 10).until(lambda d: 'login' not in d.current_url)
+        except WebDriverException:
+            pass
+
+        if 'login' in driver.current_url:
+            print('  [the-joi-database.com] login failed — check JOIDB_USERNAME/JOIDB_PASSWORD')
+            return False
+
+        print('  [the-joi-database.com] browser login successful')
+        _joidb_browser_logged_in = True
+        return True
+    except Exception as e:
+        print(f'  [the-joi-database.com] browser login failed: {e}')
+        return False
+
+
+def download_the_joi_database(driver, url: str, download_dir: str) -> bool:
+    """Navigate to a the-joi-database.com page and trigger its download.
+
+    /watch/<id> pages are the streaming player -- every post that links one
+    also links a matching /file/<id> page that does the actual download, so a
+    /watch/ link is a deliberate no-op here rather than a scrape attempt
+    against the player itself. /file/<id> pages serve both videos and
+    funscripts behind the same "click Download" shape, so both are handled by
+    finding and clicking whatever download control the page has and letting
+    the browser's own (already-authenticated) download land in download_dir --
+    the caller's wait_for_download() picks it up from there, same as every
+    other handler.
+    """
+    global _last_download_skipped
+    if not _joidb_browser_login(driver):
+        print('  [the-joi-database.com] cannot continue without a working login')
+        return False
+
+    if '/watch/' in urlparse(url).path:
+        print('  [the-joi-database.com] stream-only page — skipping '
+              '(the matching /file/ link in the same post does the actual download)')
+        _last_download_skipped = True
+        return False
+
+    driver.get(url)
+    try:
+        time.sleep(1.5)
+
+        candidates = driver.find_elements(By.XPATH,
+            '//a[contains(@href,".funscript") or contains(@href,".mp4") or '
+            'contains(@href,".zip") or contains(@href,".rar")]'
+        )
+        if not candidates:
+            candidates = driver.find_elements(By.XPATH,
+                '//button[contains(translate(normalize-space(.),"DOWNLOAD","download"),"download")]'
+            )
+        if not candidates:
+            candidates = [
+                el for el in driver.find_elements(By.XPATH,
+                    '//a[contains(translate(normalize-space(.),"DOWNLOAD","download"),"download")]')
+                if (el.get_attribute('href') or '').rstrip('/').rsplit('/', 1)[-1]
+                not in ('downloads', 'videos', '')
+            ]
+
+        if not candidates:
+            if 'patreon subscription' in driver.page_source.lower():
+                print('  [the-joi-database.com] still shows the login wall — check JOIDB_USERNAME/'
+                      'JOIDB_PASSWORD and that the account has a linked Patreon subscription')
+            else:
+                print('  [the-joi-database.com] no download link/button found on the page')
+            return False
+
+        print('  [the-joi-database.com] triggering download...')
+        driver.execute_script('arguments[0].click()', candidates[0])
+        time.sleep(1)
+        return True
+
+    except Exception as e:
+        print(f'  [the-joi-database.com] handler error: {e}')
+
+    return False
+
+
+_joimoe_browser_logged_in: bool = False
+
+
+def _joimoe_browser_login(driver) -> bool:
+    """Log into joi.moe via its /login form. Returns True if successful.
+
+    joi.moe mirrors the-joi-database.com's videos/funscripts and is preferred
+    over it (see _prefer_joimoe_mirror) when both are linked in the same post,
+    so -- like JDB -- login here is required, not best-effort.
+    """
+    global _joimoe_browser_logged_in
+    if _joimoe_browser_logged_in:
+        return True
+
+    username = _get_secret('JOIMOE_USERNAME').strip()
+    password = _get_secret('JOIMOE_PASSWORD').strip()
+    if not username or not password:
+        print('  [joi.moe] no credentials — set JOIMOE_USERNAME and JOIMOE_PASSWORD via '
+              '`scripts/setup_config.py --credentials`')
+        return False
+
+    driver.get('https://joi.moe/login')
+    time.sleep(2)
+
+    try:
+        wait = WebDriverWait(driver, 10)
+
+        pw_field = wait.until(EC.presence_of_element_located((By.XPATH, '//input[@type="password"]')))
+        user_field = driver.find_element(By.XPATH,
+            '//input[@type="text" or @type="email" or contains(@name,"user") or contains(@name,"email")]'
+        )
+        user_field.click()
+        time.sleep(0.3)
+        user_field.clear()
+        for char in username:
+            user_field.send_keys(char)
+            time.sleep(0.05)
+
+        pw_field.click()
+        time.sleep(0.3)
+        for char in password:
+            pw_field.send_keys(char)
+            time.sleep(0.05)
+
+        time.sleep(0.3)
+        try:
+            login_form = pw_field.find_element(By.XPATH, './ancestor::form')
+            submit = login_form.find_element(By.XPATH, './/button[@type="submit"] | .//input[@type="submit"]')
+        except WebDriverException:
+            submit = driver.find_element(By.XPATH,
+                '//button[contains(translate(normalize-space(.),"LOGIN","login"),"login")]')
+        driver.execute_script('arguments[0].click()', submit)
+
+        try:
+            WebDriverWait(driver, 10).until(lambda d: 'login' not in d.current_url)
+        except WebDriverException:
+            pass
+
+        if 'login' in driver.current_url:
+            print('  [joi.moe] login failed — check JOIMOE_USERNAME/JOIMOE_PASSWORD')
+            return False
+
+        print('  [joi.moe] browser login successful')
+        _joimoe_browser_logged_in = True
+        return True
+    except Exception as e:
+        print(f'  [joi.moe] browser login failed: {e}')
+        return False
+
+
+def download_joi_moe(driver, url: str, download_dir: str) -> bool:
+    """Navigate to a joi.moe page and trigger its download.
+
+    Unlike the-joi-database.com, joi.moe has no separate stream-only page --
+    /video/<slug> pages ("Stream and Download on JOI.moe") serve the video
+    download directly, and /file/<slug> pages serve funscripts -- so both
+    path shapes are handled the same way here: find and click whatever
+    download control the page has and let the browser's own (already
+    authenticated) download land in download_dir, same as
+    download_the_joi_database.
+    """
+    if not _joimoe_browser_login(driver):
+        print('  [joi.moe] cannot continue without a working login')
+        return False
+
+    driver.get(url)
+    try:
+        time.sleep(1.5)
+
+        candidates = driver.find_elements(By.XPATH,
+            '//a[contains(@href,".funscript") or contains(@href,".mp4") or '
+            'contains(@href,".zip") or contains(@href,".rar")]'
+        )
+        if not candidates:
+            candidates = driver.find_elements(By.XPATH,
+                '//button[contains(translate(normalize-space(.),"DOWNLOAD","download"),"download")]'
+            )
+        if not candidates:
+            candidates = [
+                el for el in driver.find_elements(By.XPATH,
+                    '//a[contains(translate(normalize-space(.),"DOWNLOAD","download"),"download")]')
+                if (el.get_attribute('href') or '').rstrip('/').rsplit('/', 1)[-1]
+                not in ('videos', '')
+            ]
+
+        if not candidates:
+            if 'patreon' in driver.page_source.lower() and 'login' in driver.current_url:
+                print('  [joi.moe] still shows the login wall — check JOIMOE_USERNAME/JOIMOE_PASSWORD '
+                      'and that the account has a linked Patreon subscription')
+            else:
+                print('  [joi.moe] no download link/button found on the page')
+            return False
+
+        print('  [joi.moe] triggering download...')
+        driver.execute_script('arguments[0].click()', candidates[0])
+        time.sleep(1)
+        return True
+
+    except Exception as e:
+        print(f'  [joi.moe] handler error: {e}')
 
     return False
 
@@ -3971,6 +4356,8 @@ DOMAIN_HANDLERS = {
     'spankbang.com':     download_spankbang,
     'faptap.net':        download_faptap,
     'e621.net':          download_e621,
+    'the-joi-database.com': download_the_joi_database,
+    'joi.moe':           download_joi_moe,
 }
 
 
@@ -4835,6 +5222,16 @@ def collect_tasks(base_path: str, require_funscript: bool = True,
                       f'skipping in: {_safe(os.path.basename(root))}')
             if not validated_links:
                 continue
+
+        # Prefer joi.moe over its slower the-joi-database.com mirror when a
+        # post links both (video and funscript links alike), then dedupe any
+        # remaining same-post funscript links that are just alternate
+        # versions of each other (e.g. plain vs device-specific).
+        validated_links = _prefer_joimoe_mirror(validated_links)
+        link_paragraph_text = _extract_link_paragraph_text(desc_path)
+        validated_links = _prefer_marked_funscript_links(validated_links, link_paragraph_text)
+        if not validated_links:
+            continue
 
         # This folder already completed a downloadContent run, but the post
         # has since gained links that weren't there before (e.g. Pize's

@@ -728,6 +728,28 @@ def _configure_credentials() -> None:
     else:
         print('  Skipping rule34video.com.')
 
+    print()
+    print('the-joi-database.com  (required for all videos/funscripts; leave blank to skip)')
+    joidb_user = _ask('Username', current=_keyring_get('JOIDB_USERNAME'))
+    if joidb_user:
+        _keyring_set('JOIDB_USERNAME', joidb_user)
+        joidb_pass = _ask_secret('Password', current=_keyring_get('JOIDB_PASSWORD'))
+        if joidb_pass:
+            _keyring_set('JOIDB_PASSWORD', joidb_pass)
+    else:
+        print('  Skipping the-joi-database.com.')
+
+    print()
+    print('joi.moe  (preferred over the-joi-database.com when both mirror a post; leave blank to skip)')
+    joimoe_user = _ask('Username', current=_keyring_get('JOIMOE_USERNAME'))
+    if joimoe_user:
+        _keyring_set('JOIMOE_USERNAME', joimoe_user)
+        joimoe_pass = _ask_secret('Password', current=_keyring_get('JOIMOE_PASSWORD'))
+        if joimoe_pass:
+            _keyring_set('JOIMOE_PASSWORD', joimoe_pass)
+    else:
+        print('  Skipping joi.moe.')
+
 
 if __name__ == '__main__':
     try:
