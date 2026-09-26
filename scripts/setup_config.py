@@ -741,9 +741,9 @@ def _configure_credentials() -> None:
 
     print()
     print('joi.moe  (preferred over the-joi-database.com when both mirror a post; leave blank to skip)')
-    joimoe_user = _ask('Username', current=_keyring_get('JOIMOE_USERNAME'))
-    if joimoe_user:
-        _keyring_set('JOIMOE_USERNAME', joimoe_user)
+    joimoe_email = _ask('Email', current=_keyring_get('JOIMOE_EMAIL'))
+    if joimoe_email:
+        _keyring_set('JOIMOE_EMAIL', joimoe_email)
         joimoe_pass = _ask_secret('Password', current=_keyring_get('JOIMOE_PASSWORD'))
         if joimoe_pass:
             _keyring_set('JOIMOE_PASSWORD', joimoe_pass)

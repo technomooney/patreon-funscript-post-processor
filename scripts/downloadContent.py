@@ -2245,10 +2245,10 @@ def _joimoe_browser_login(driver) -> bool:
     if _joimoe_browser_logged_in:
         return True
 
-    username = _get_secret('JOIMOE_USERNAME').strip()
+    email = _get_secret('JOIMOE_EMAIL').strip()
     password = _get_secret('JOIMOE_PASSWORD').strip()
-    if not username or not password:
-        print('  [joi.moe] no credentials — set JOIMOE_USERNAME and JOIMOE_PASSWORD via '
+    if not email or not password:
+        print('  [joi.moe] no credentials — set JOIMOE_EMAIL and JOIMOE_PASSWORD via '
               '`scripts/setup_config.py --credentials`')
         return False
 
@@ -2275,14 +2275,14 @@ def _joimoe_browser_login(driver) -> bool:
         modal = wait.until(EC.visibility_of_element_located(
             (By.XPATH, '//div[@role="dialog" and contains(@class,"auth-modal")]')
         ))
-        user_field = modal.find_element(By.XPATH, './/input[@name="email"]')
+        email_field = modal.find_element(By.XPATH, './/input[@name="email"]')
         pw_field = modal.find_element(By.XPATH, './/input[@name="password"]')
 
-        user_field.click()
+        email_field.click()
         time.sleep(0.3)
-        user_field.clear()
-        for char in username:
-            user_field.send_keys(char)
+        email_field.clear()
+        for char in email:
+            email_field.send_keys(char)
             time.sleep(0.05)
 
         pw_field.click()
@@ -2313,7 +2313,7 @@ def _joimoe_browser_login(driver) -> bool:
             pass
 
         if not _logged_in(driver):
-            print('  [joi.moe] login failed — check JOIMOE_USERNAME/JOIMOE_PASSWORD')
+            print('  [joi.moe] login failed — check JOIMOE_EMAIL/JOIMOE_PASSWORD')
             return False
 
         print('  [joi.moe] browser login successful')
@@ -2361,7 +2361,7 @@ def download_joi_moe(driver, url: str, download_dir: str) -> bool:
 
         if not candidates:
             if 'patreon' in driver.page_source.lower() and 'login' in driver.current_url:
-                print('  [joi.moe] still shows the login wall — check JOIMOE_USERNAME/JOIMOE_PASSWORD '
+                print('  [joi.moe] still shows the login wall — check JOIMOE_EMAIL/JOIMOE_PASSWORD '
                       'and that the account has a linked Patreon subscription')
             else:
                 print('  [joi.moe] no download link/button found on the page')
