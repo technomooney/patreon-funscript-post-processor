@@ -2413,6 +2413,53 @@ def _joimoe_browser_login(driver) -> bool:
         return False
 
 
+def _joimoe_page_title(driver) -> str | None:
+    """Best-effort real video title from a joi.moe page.
+
+    Prefers a prominent <h1> heading -- an SPA's <title> tag is often just
+    the generic site name ("joi.moe - The #1 Site for Hentai JOI") rather
+    than anything page-specific -- falling back to driver.title if no
+    suitable heading is found.
+    """
+    try:
+        for h1 in driver.find_elements(By.TAG_NAME, 'h1'):
+            text = (h1.get_attribute('textContent') or '').strip()
+            if text and 'joi.moe' not in text.lower():
+                return text
+    except WebDriverException:
+        pass
+    return driver.title
+
+
+def _finalize_joimoe_video_download(driver, download_dir: str, before_files: set[str]) -> bool:
+    """Wait for a started joi.moe video download to finish, then rename it
+    from joi.moe's URL-slug filename to the page's real title.
+
+    The slug (e.g. "big-sis-ruins-your-no-cum-challenge-...-ally-kirser-...")
+    does carry distinguishing detail (character name included), but the real
+    title reads far better -- same reasoning as hanime1.me's title-based
+    naming (_HANIME_TITLE_SUFFIX_RE). Renames to a temp-prefixed placeholder
+    and sets _last_fetch_original_name so the caller's own save step (which
+    only trusts that override for a *_temp-named file, not one that already
+    looks like a real name) picks up the title instead of the slug.
+    """
+    global _last_fetch_original_name
+    completed = wait_for_download(download_dir, before_files, timeout=300)
+    if not completed:
+        return False
+
+    title = _joimoe_page_title(driver)
+    if title:
+        ext = os.path.splitext(completed)[1]
+        temp_path = os.path.join(download_dir, f'_joimoe_temp{ext}')
+        try:
+            os.rename(completed, temp_path)
+            _last_fetch_original_name = _page_title_override(title)
+        except OSError as e:
+            print(f'  [joi.moe] could not apply the real title, keeping the slug name: {e}')
+    return True
+
+
 def download_joi_moe(driver, url: str, download_dir: str) -> bool:
     """Navigate to a joi.moe page and trigger its download.
 
@@ -2422,7 +2469,9 @@ def download_joi_moe(driver, url: str, download_dir: str) -> bool:
     path shapes are handled the same way here: find and click whatever
     download control the page has and let the browser's own (already
     authenticated) download land in download_dir, same as
-    download_the_joi_database.
+    download_the_joi_database. Only a /video/ download gets renamed to the
+    page's real title afterward (see _finalize_joimoe_video_download) --
+    funscript filenames from /file/ pages aren't a video title at all.
     """
     if not _joimoe_browser_login(driver):
         print('  [joi.moe] cannot continue without a working login')
@@ -2462,6 +2511,9 @@ def download_joi_moe(driver, url: str, download_dir: str) -> bool:
         if not _wait_for_joimoe_download(driver, download_dir, before_files):
             print('  [joi.moe] clicked but no download appears to have started')
             return False
+
+        if '/video/' in urlparse(url).path:
+            return _finalize_joimoe_video_download(driver, download_dir, before_files)
         return True
 
     except Exception as e:
