@@ -152,9 +152,13 @@ _discord_history_cache: dict[str, list[str]] = {}
 
 
 def _fetch_discord_history_cached(creator_key: str) -> list[str]:
+    """Only called after every known password has already failed against a real
+    archive (see open_archive) -- a password is genuinely needed here, so this
+    passes force=True to ask again even for a creator who previously declined
+    Discord setup as part of some earlier, merely speculative lookup."""
     if creator_key not in _discord_history_cache:
         import discord_passwords
-        _discord_history_cache[creator_key] = discord_passwords.fetch_password_history(creator_key)
+        _discord_history_cache[creator_key] = discord_passwords.fetch_password_history(creator_key, force=True)
     return _discord_history_cache[creator_key]
 
 

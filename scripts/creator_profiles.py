@@ -59,6 +59,21 @@ def set_discord_channel(creator_key: str, guild_id: str, channel_id: str, note: 
     save(profiles)
 
 
+def set_discord_declined(creator_key: str) -> None:
+    """Record that *creator_key* was offered Discord password setup and declined it.
+
+    Lets discord_passwords._load_channel_messages stop asking on every
+    speculative lookup (e.g. every mega link with no inline password) for a
+    creator who doesn't use Discord for this at all, while still allowing a
+    genuinely confirmed need (an archive that actually turns out to require a
+    password) to ask again via its own `force` path.
+    """
+    profiles = load()
+    entry = profiles.setdefault(creator_key, {})
+    entry['discord'] = {'declined': True}
+    save(profiles)
+
+
 def get_unattended_config(creator_key: str) -> dict | None:
     """Return *creator_key*'s saved unattended-run config (source,
     destination, ordered steps with their default answers), or None if

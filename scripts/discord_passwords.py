@@ -223,12 +223,16 @@ def _prompt_setup(creator_key: str) -> dict | None:
     per-creator thing that's only ever needed the first time a password
     lookup for that creator actually falls through to Discord. Returns the
     saved discord config, or None if declined, not answerable (no TTY), or
-    left incomplete.
+    left incomplete -- every decline path also records set_discord_declined
+    so _load_channel_messages stops asking on future speculative lookups
+    (see its own docstring for the `force` escape hatch).
     """
     if not sys.stdin.isatty():
         return None
     print(f'  [discord] no Discord channel configured yet for "{creator_key}".')
     if input('  [discord] set one up now? (y/n): ').strip().lower() != 'y':
+        creator_profiles.set_discord_declined(creator_key)
+        print('  [discord] won\'t ask again for this creator unless a password is actually needed.')
         return None
 
     print('  [discord] needs Discord\'s Developer Mode on (User Settings > Advanced),')
@@ -246,11 +250,13 @@ def _prompt_setup(creator_key: str) -> dict | None:
 
     guild_id = _ask_id('server (guild) ID')
     if not guild_id:
-        print('  [discord] skipped.')
+        creator_profiles.set_discord_declined(creator_key)
+        print('  [discord] skipped — won\'t ask again unless a password is actually needed.')
         return None
     channel_id = _ask_id('channel ID')
     if not channel_id:
-        print('  [discord] skipped.')
+        creator_profiles.set_discord_declined(creator_key)
+        print('  [discord] skipped — won\'t ask again unless a password is actually needed.')
         return None
     note = input('  [discord] note (optional, e.g. "mega password channel"): ').strip()
 
@@ -259,14 +265,24 @@ def _prompt_setup(creator_key: str) -> dict | None:
     return creator_profiles.get(creator_key).get('discord')
 
 
-def _load_channel_messages(creator_key: str, max_messages: int) -> tuple[list[str], dict] | None:
+def _load_channel_messages(creator_key: str, max_messages: int, force: bool = False) -> tuple[list[str], dict] | None:
     """Navigate to *creator_key*'s configured Discord channel and return its recent
     message texts (newest first) alongside the channel config, or None on any
     failure (no channel configured and not set up when asked, login
-    declined/timed out, channel didn't load)."""
+    declined/timed out, channel didn't load).
+
+    *force*: re-prompt even if this creator previously declined setup
+    (set_discord_declined). Speculative callers (e.g. "no inline password
+    found, check Discord just in case" for a mega link that might not even
+    need one) should leave this False so a declined creator is never asked
+    again; a caller that already knows a password is genuinely needed (every
+    known password failed against an actual archive) should pass True.
+    """
     profile = creator_profiles.get(creator_key)
     discord_cfg = profile.get('discord')
     if not discord_cfg or not discord_cfg.get('guild_id') or not discord_cfg.get('channel_id'):
+        if discord_cfg and discord_cfg.get('declined') and not force:
+            return None
         discord_cfg = _prompt_setup(creator_key)
         if not discord_cfg:
             print(f'  [discord] no Discord channel configured for "{creator_key}" '
@@ -316,7 +332,7 @@ def _load_channel_messages(creator_key: str, max_messages: int) -> tuple[list[st
     return texts, discord_cfg
 
 
-def fetch_password_history(creator_key: str, max_messages: int = 50) -> list[str]:
+def fetch_password_history(creator_key: str, max_messages: int = 50, force: bool = False) -> list[str]:
     """Return every distinct password-looking value posted in *creator_key*'s
     channel within the last *max_messages* messages, most recent first.
 
@@ -326,8 +342,13 @@ def fetch_password_history(creator_key: str, max_messages: int = 50) -> list[str
     that fails to extract with the latest password may still need to fall
     back through history. Results are persisted to creator_db so later runs
     (or extraction retries) have them without re-scanning Discord.
+
+    *force*: see _load_channel_messages -- pass True when the caller already
+    knows a password is genuinely needed (e.g. every known password just
+    failed against a real archive), so a previously-declined creator still
+    gets asked in that specific situation.
     """
-    loaded = _load_channel_messages(creator_key, max_messages)
+    loaded = _load_channel_messages(creator_key, max_messages, force=force)
     if loaded is None:
         return []
     texts, discord_cfg = loaded
@@ -357,9 +378,9 @@ def fetch_password_history(creator_key: str, max_messages: int = 50) -> list[str
     return passwords
 
 
-def fetch_latest_password(creator_key: str, max_messages: int = 50) -> str | None:
+def fetch_latest_password(creator_key: str, max_messages: int = 50, force: bool = False) -> str | None:
     """Return the most recent password posted in *creator_key*'s configured Discord channel, or None."""
-    history = fetch_password_history(creator_key, max_messages)
+    history = fetch_password_history(creator_key, max_messages, force=force)
     return history[0] if history else None
 
 
