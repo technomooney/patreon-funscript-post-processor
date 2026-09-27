@@ -2189,6 +2189,23 @@ def download_rule34video(driver, url: str, download_dir: str) -> bool:
 _joidb_browser_logged_in: bool = False
 
 
+def _joidb_dismiss_age_gate(driver) -> None:
+    """Dismiss the-joi-database.com's 18+ modal if it's showing (confirmed
+    live 2026-09-26: a Bootstrap modal whose "Yes" button calls the page's
+    own onclick="_yesModalAdult()" -- no button ID/class specific enough to
+    target directly, but invoking that JS function itself sidesteps the
+    modal's overlay intercepting a synthetic click on whatever's under it,
+    which is what broke login before this existed). Safe to call
+    unconditionally: a no-op if the modal isn't showing or the function
+    isn't defined on this page.
+    """
+    try:
+        driver.execute_script('if (typeof _yesModalAdult === "function") { _yesModalAdult(); }')
+        time.sleep(0.5)
+    except WebDriverException:
+        pass
+
+
 def _joidb_browser_login(driver) -> bool:
     """Log into the-joi-database.com via its /login form. Returns True if successful.
 
@@ -2210,6 +2227,7 @@ def _joidb_browser_login(driver) -> bool:
 
     driver.get('https://www.the-joi-database.com/login')
     time.sleep(2)
+    _joidb_dismiss_age_gate(driver)
 
     try:
         wait = WebDriverWait(driver, 10)
@@ -2295,6 +2313,7 @@ def download_the_joi_database(driver, url: str, download_dir: str) -> bool:
     driver.get(url)
     try:
         time.sleep(1.5)
+        _joidb_dismiss_age_gate(driver)
 
         candidates = driver.find_elements(By.XPATH,
             '//a[contains(@href,".funscript") or contains(@href,".mp4") or '
