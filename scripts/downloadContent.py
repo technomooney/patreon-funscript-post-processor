@@ -2257,6 +2257,17 @@ def _joidb_browser_login(driver) -> bool:
         return False
 
 
+# the-joi-database.com's video "Download" button runs an in-page HLS-to-mp4
+# transcode (fetches every .ts segment, then an in-browser ffmpeg.wasm build)
+# before the browser download itself ever starts -- for a long video that's
+# well over the default _wait_for_download_to_start timeout (60s), so the
+# handler would give up and report failure while the page kept working in
+# the background. There's no in-page progress indicator to poll here (unlike
+# joi.moe's percentage button, see _wait_for_joimoe_download), so this is
+# just a much longer flat ceiling rather than a stall-based wait.
+_JOIDB_DOWNLOAD_START_TIMEOUT = 1200
+
+
 def download_the_joi_database(driver, url: str, download_dir: str) -> bool:
     """Navigate to a the-joi-database.com page and trigger its download.
 
@@ -2312,12 +2323,12 @@ def download_the_joi_database(driver, url: str, download_dir: str) -> bool:
         print('  [the-joi-database.com] triggering download...')
         before_files = set(os.listdir(download_dir))
         driver.execute_script('arguments[0].click()', candidates[0])
-        # This site has no in-page progress indicator (unlike joi.moe), but
-        # the download itself starts promptly -- it's the transfer afterward
-        # that's genuinely slow (bandwidth, not a processing queue), and the
-        # caller's own wait_for_download() already tolerates that fine (its
-        # idle timeout resets on every byte of growth, however slow).
-        if not _wait_for_download_to_start(download_dir, before_files):
+        # For a video, the click kicks off an in-page HLS-to-mp4 transcode
+        # (see _JOIDB_DOWNLOAD_START_TIMEOUT) -- the browser download itself
+        # doesn't start until that finishes, so this wait needs real slack.
+        # A funscript's small zip has no such step and lands almost
+        # immediately, well inside the same ceiling.
+        if not _wait_for_download_to_start(download_dir, before_files, timeout=_JOIDB_DOWNLOAD_START_TIMEOUT):
             print('  [the-joi-database.com] clicked but no download appears to have started')
             return False
         return True
