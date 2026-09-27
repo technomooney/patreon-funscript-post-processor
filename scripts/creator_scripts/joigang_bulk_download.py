@@ -192,17 +192,41 @@ def _resolve_entry(driver, funscript_url: str) -> tuple[str, str] | None:
 _PLAYLIST_SUFFIX_RE = re.compile(r'\s*[—-]\s*\d+\s*parts?\s*$', re.IGNORECASE)
 
 
-def _video_page_info(driver, video_url: str) -> tuple[str | None, dict | None]:
-    """Visit a video page and return (iframe_src, playlist_info).
+def _video_page_title(driver) -> str | None:
+    """Best-effort real title from a joigang.com video page.
+
+    Same heuristic as joi.moe's _joimoe_page_title (downloadContent.py) --
+    prefer a prominent <h1> over the page's <title> tag, which is often just
+    the generic site name. The funscript-library row's own title is close
+    but not guaranteed identical to the actual video's title (same reason its
+    own video link can point to the wrong variant, see module docstring), so
+    this is preferred when found; callers fall back to the row title otherwise.
+    """
+    try:
+        for h1 in driver.find_elements(By.TAG_NAME, 'h1'):
+            text = (h1.get_attribute('textContent') or '').strip()
+            if text and 'joigang' not in text.lower():
+                return text
+    except WebDriverException:
+        pass
+    return None
+
+
+def _video_page_info(driver, video_url: str) -> tuple[str | None, dict | None, str | None]:
+    """Visit a video page and return (iframe_src, playlist_info, page_title).
 
     iframe_src is the Bunny.net (mediadelivery.net) embed URL, or None if not
     found. playlist_info is {'series': name, 'items': [{'num','title','href',
     'duration'}, ...]} when this video is part of a multi-part series (see
     the .jgvp-playlist sidebar), or None otherwise -- most entries aren't.
+    page_title is this page's own real title (see _video_page_title), or
+    None if it couldn't be found.
     """
     driver.get(video_url)
     _dismiss_age_gate(driver)
     time.sleep(1.5)
+
+    page_title = _video_page_title(driver)
 
     iframe_src = None
     try:
@@ -230,7 +254,7 @@ def _video_page_info(driver, video_url: str) -> tuple[str | None, dict | None]:
     except WebDriverException:
         pass
 
-    return iframe_src, playlist_info
+    return iframe_src, playlist_info, page_title
 
 
 def _write_playlist_file(base_path: str, series: str, items: list[dict]) -> None:
@@ -298,6 +322,14 @@ def _download_video(iframe_src: str, folder: str) -> bool:
         '--no-write-subs',
         '--no-write-auto-subs',
         '--no-keep-fragments',
+        # Bunny CDN throws waves of transient 502s on long videos (confirmed
+        # live, e.g. a 1367-fragment video hitting 10+ separate runs of
+        # "HTTP Error 502... Giving up after 10 retries"). The default 10
+        # fragment-retries with no backoff burns through in seconds and
+        # permanently skips the fragment, corrupting the output -- more
+        # retries with real backoff between them gives a wave time to pass.
+        '--fragment-retries', '20',
+        '--retry-sleep', 'fragment:exp=1:30',
         '--referer', 'https://joigang.com/',
         '--merge-output-format', 'mp4',
         '-f', (
@@ -318,6 +350,24 @@ def _download_video(iframe_src: str, folder: str) -> bool:
     except Exception as e:
         print(f'  [joigang] yt-dlp error: {e}')
     return False
+
+
+def _rename_to_title(path: str, title: str) -> str:
+    """Rename *path* to <sanitized title><original extension>, in the same
+    directory. Returns the new path, or the original path unchanged if the
+    name already matches or the rename fails (caller keeps using whatever
+    this returns either way)."""
+    safe_title = dc._sanitize_filename_stem(title) or 'untitled'
+    ext = os.path.splitext(path)[1]
+    new_path = os.path.join(os.path.dirname(path), safe_title + ext)
+    if os.path.abspath(new_path) == os.path.abspath(path):
+        return path
+    try:
+        os.rename(path, new_path)
+        return new_path
+    except OSError as e:
+        print(f'  [joigang] could not rename to the entry title: {e}')
+        return path
 
 
 def _entry_folder(base_path: str, title: str, series: str | None = None) -> str:
@@ -376,11 +426,12 @@ def run(base_path: str) -> None:
             # so its playlist sidebar, if any, decides the folder path before
             # anything gets saved -- see _download_funscript for why the
             # funscript download itself re-navigates back afterward.
-            iframe_src, playlist_info = _video_page_info(driver, video_url)
+            iframe_src, playlist_info, page_title = _video_page_info(driver, video_url)
             if not iframe_src:
                 print('    [fail] could not find the video player on the linked page')
                 failed += 1
                 continue
+            video_title = page_title or title
 
             series = playlist_info['series'] if playlist_info else None
             folder = _entry_folder(base_path, title, series=series)
@@ -396,6 +447,7 @@ def run(base_path: str) -> None:
 
             script_path = _download_funscript(driver, folder, entry['funscript_url'])
             if script_path:
+                script_path = _rename_to_title(script_path, title)
                 action_log.record('copy', dst=script_path)
                 print(f'    [funscript] saved: {os.path.basename(script_path)}')
             else:
@@ -405,7 +457,10 @@ def run(base_path: str) -> None:
             if _download_video(iframe_src, folder):
                 new_files = set(os.listdir(folder)) - before
                 for f in new_files:
-                    action_log.record('copy', dst=os.path.join(folder, f))
+                    path = os.path.join(folder, f)
+                    if dc._is_video_filename(f):
+                        path = _rename_to_title(path, video_title)
+                    action_log.record('copy', dst=path)
                 print('    [video] saved')
                 done += 1
             else:
