@@ -1139,6 +1139,11 @@ def _video_quality(path_or_url: str, headers: dict[str, str] | None = None) -> d
         return None
 
 
+def _protect_av1_enabled() -> bool:
+    """PROTECT_AV1_FROM_REPLACE from the environment (default off)."""
+    return os.getenv('PROTECT_AV1_FROM_REPLACE', 'false').strip().lower() in ('true', '1', 'yes')
+
+
 def _quality_is_replacement_candidate(remote_q: dict, local_q: dict,
                                        remote_size: int, local_size: int) -> bool:
     """Return True if the remote file is worth downloading to replace the local one.
@@ -1150,7 +1155,19 @@ def _quality_is_replacement_candidate(remote_q: dict, local_q: dict,
     remote would bypass that preference.
 
     remote_size / local_size of 0 means unknown — treated conservatively.
+
+    Opt-in guard (PROTECT_AV1_FROM_REPLACE=true): never replace a local AV1
+    file with a non-AV1 remote, whatever the sizes. Why it exists: this
+    rule is codec-blind and assumes "smaller = better-compressed". After a
+    library-wide AV1 transcode that assumption breaks -- a source that was
+    already heavily compressed can be *smaller* than its own transparent
+    AV1 re-encode, so a re-download would trash the AV1 and put the
+    original back. Off by default because it only matters for libraries
+    that have been transcoded to AV1.
     """
+    if (_protect_av1_enabled() and local_q.get('codec') == 'av1'
+            and remote_q.get('codec') != 'av1'):
+        return False
     r_w, r_h = remote_q.get('width', 0), remote_q.get('height', 0)
     l_w, l_h = local_q.get('width', 0), local_q.get('height', 0)
 
