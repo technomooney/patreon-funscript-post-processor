@@ -607,6 +607,17 @@ def main():
     _write_env('SKIP_KNOWN_FAILURES', 'true' if skip_known else 'false',
                comment='Skip previously-failed links from failed_downloads.csv. Original CSV entries are preserved.')
 
+    protect_av1 = _ask_bool(
+        'Never replace a local AV1 video with a non-AV1 one? (true/false)\n'
+        '  Enable after an AV1 library transcode: the "same content, smaller file" download-replace\n'
+        '  rule is codec-blind, so a heavily-compressed source smaller than its own AV1 re-encode\n'
+        '  would otherwise replace the AV1 on a re-download',
+        current=_read_env('PROTECT_AV1_FROM_REPLACE').lower() in ('true', '1', 'yes'),
+    )
+    _write_env('PROTECT_AV1_FROM_REPLACE', 'true' if protect_av1 else 'false',
+               comment='Never let the "same content, strictly smaller file" download-replace rule swap a '
+                        'local AV1 video for a non-AV1 one. Enable after an AV1 library transcode.')
+
     skip_keywords = _ask(
         'Skip downloading folders whose title contains any of these words '
         '(semicolon-separated, blank = off — e.g. for periodic vote/poll posts '
