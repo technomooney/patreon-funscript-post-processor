@@ -158,6 +158,25 @@ All settings live in `.env` (created by setup). Key options:
 
 ---
 
+## Shared library database and migration
+
+History, file identity and pixeldrain state now live in one SQLite file per library, `<library root>/.library-data/library.db`,
+shared with the AV1 compressor (contract: `docs/LIBRARY_DB.md`, reasons: `docs/DECISIONS.md`). Per-user data (creator
+profiles, passwords, browser logins) lives in your user data directory (`~/.local/share/library-tools`, or
+`%LOCALAPPDATA%\library-tools`; override with `LIBRARY_TOOLS_HOME`), copied in from the old repo-folder files on first use.
+
+To convert an existing library, run the migration **outside the menu**. It is a dry run unless you add `--apply`, never
+moves or deletes anything, and is safe to repeat:
+
+```
+./migrate.sh /path/to/library-root            # report only
+./migrate.sh /path/to/library-root --apply
+```
+
+`/path/to/library-root` is the folder above all the creator folders you want in one database. Creator-specific
+"Pixeldrain repo sync" and "Discord channel" plugins (menu `s`) then download only files you do not already own,
+including ones the compressor transcoded.
+
 ## Disclaimer
 
 This is a personal project provided **as-is**, without warranty of any kind. The author accepts no responsibility for any data loss, file corruption, or damage that may result from using this software. **Always keep backups of your files before running any automated renaming, deduplication, or download operations.**
