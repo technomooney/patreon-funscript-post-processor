@@ -199,8 +199,7 @@ def process(root_dir: str, dry_run: bool, skip_folders: set[str] | None = None) 
     report: list[dict] = []
     _protected = creator_config.protected_paths(root_dir)
     for dirpath, dirnames, filenames in os.walk(root_dir):
-        if action_log.TRASH_DIRNAME in dirnames:
-            dirnames.remove(action_log.TRASH_DIRNAME)
+        dirnames[:] = [d for d in dirnames if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, dirpath, dirnames)
         if '.manual' in filenames:
             print(f'  SKIP (manual)  {dirpath}')
@@ -463,8 +462,7 @@ def find_media_misnames(root_dir: str, dry_run: bool, skip_folders: set[str] | N
     report = []
     _protected = creator_config.protected_paths(root_dir)
     for dirpath, dirnames, filenames in os.walk(root_dir):
-        if action_log.TRASH_DIRNAME in dirnames:
-            dirnames.remove(action_log.TRASH_DIRNAME)
+        dirnames[:] = [d for d in dirnames if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, dirpath, dirnames)
         if '.manual' in filenames:
             continue
@@ -539,8 +537,7 @@ def find_funscript_misnames(root_dir: str, dry_run: bool, skip_folders: set[str]
     report = []
     _protected = creator_config.protected_paths(root_dir)
     for dirpath, dirnames, filenames in os.walk(root_dir):
-        if action_log.TRASH_DIRNAME in dirnames:
-            dirnames.remove(action_log.TRASH_DIRNAME)
+        dirnames[:] = [d for d in dirnames if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, dirpath, dirnames)
         if '.manual' in filenames:
             continue
@@ -610,8 +607,7 @@ def find_funscript_video_mismatches(
     report: list[dict] = []
     _protected = creator_config.protected_paths(root_dir)
     for dirpath, dirnames, filenames in os.walk(root_dir):
-        if action_log.TRASH_DIRNAME in dirnames:
-            dirnames.remove(action_log.TRASH_DIRNAME)
+        dirnames[:] = [d for d in dirnames if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, dirpath, dirnames)
         if '.manual' in filenames:
             continue
@@ -729,8 +725,7 @@ def run(root: str, dry_run: bool) -> None:
     _protected = creator_config.protected_paths(root)
     for _dp, _dirs, _fnames in os.walk(root):
         _dirs.sort()
-        if action_log.TRASH_DIRNAME in _dirs:
-            _dirs.remove(action_log.TRASH_DIRNAME)
+        _dirs[:] = [d for d in _dirs if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, _dp, _dirs)
         if '.manual' in _fnames:
             _dirs[:] = []
@@ -819,8 +814,7 @@ def run(root: str, dry_run: bool) -> None:
         _protected = creator_config.protected_paths(root)
         for _dp, _dirs, _fnames in os.walk(root):
             _dirs.sort()
-            if action_log.TRASH_DIRNAME in _dirs:
-                _dirs.remove(action_log.TRASH_DIRNAME)
+            _dirs[:] = [d for d in _dirs if d not in action_log.SKIP_DIRNAMES]
             creator_config.prune(_protected, _dp, _dirs)
             if '.manual' in _fnames or _dp in skip_set:
                 _dirs[:] = []

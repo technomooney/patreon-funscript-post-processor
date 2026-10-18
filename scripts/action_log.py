@@ -54,10 +54,14 @@ import os
 import shutil
 import time
 
+import library_db
+
 JOURNAL_FILENAME = '.last_action.json'
 _POINTER_PATH = os.getenv('ACTION_LOG_POINTER_PATH') or os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.last_action_pointer.json')
 TRASH_DIRNAME = '.trash'
+# Directories no tree walk may descend into: the soft-delete folder and the shared library database folder.
+SKIP_DIRNAMES = frozenset({TRASH_DIRNAME, library_db.DATA_DIRNAME})
 DEFAULT_TRASH_RETENTION_DAYS = 14
 
 _entries: list[dict] = []

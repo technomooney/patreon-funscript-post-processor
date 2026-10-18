@@ -482,8 +482,7 @@ def _find_stem_video_elsewhere(base_path: str, folder: str, stem: str) -> str | 
     _protected = creator_config.protected_paths(base_path)
     for root, dirs, files in os.walk(base_path):
         dirs.sort()
-        if action_log.TRASH_DIRNAME in dirs:
-            dirs.remove(action_log.TRASH_DIRNAME)
+        dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, root, dirs)
         if os.path.normpath(root) == folder:
             continue
@@ -802,8 +801,7 @@ def scan_and_extract(base_path: str, creator_key: str | None = None, ignore_manu
     found = extracted = skipped = failed = manual_skipped = 0
     _protected = creator_config.protected_paths(base_path)
     for root, dirs, files in os.walk(base_path):
-        if action_log.TRASH_DIRNAME in dirs:
-            dirs.remove(action_log.TRASH_DIRNAME)
+        dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, root, dirs)
         if '.manual' in files and not ignore_manual:
             has_archive = any(f.lower().endswith(_ARCHIVE_EXTS) for f in files)

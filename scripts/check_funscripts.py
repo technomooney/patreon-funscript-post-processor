@@ -661,8 +661,7 @@ def resolve_alt_tagged_videos(root_dir: str) -> tuple[int, int]:
     _protected = creator_config.protected_paths(root_dir)
     for dirpath, dirnames, _filenames in os.walk(root_dir):
         dirnames.sort()
-        if action_log.TRASH_DIRNAME in dirnames:
-            dirnames.remove(action_log.TRASH_DIRNAME)
+        dirnames[:] = [d for d in dirnames if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, dirpath, dirnames)
         for res in _resolve_alt_tagged_in_folder(dirpath):
             (resolved if res['action'] == 'renamed' else unresolved).append(res)
@@ -716,8 +715,7 @@ def scan(root_dir: str, do_rename: bool = False) -> list[FolderResult]:
     _protected = creator_config.protected_paths(root_dir) if do_rename else set()
     for dirpath, dirnames, filenames in os.walk(root_dir):
         dirnames.sort()
-        if action_log.TRASH_DIRNAME in dirnames:
-            dirnames.remove(action_log.TRASH_DIRNAME)
+        dirnames[:] = [d for d in dirnames if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, dirpath, dirnames)
         result = _check_folder(dirpath, do_rename=do_rename)
         if result is None:

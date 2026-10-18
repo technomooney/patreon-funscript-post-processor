@@ -283,8 +283,7 @@ def collect(base_path: str) -> tuple[dict[str, set[str]], dict[str, dict]]:
 
     for root, dirs, files in os.walk(base_path):
         dirs.sort()
-        if action_log.TRASH_DIRNAME in dirs:
-            dirs.remove(action_log.TRASH_DIRNAME)
+        dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES]
         dirs[:] = [d for d in dirs if os.path.normpath(os.path.join(root, d)) != lib_abs and not d.startswith('_')]
         creator_config.prune(protected, root, dirs)
         if 'description.json' not in files:

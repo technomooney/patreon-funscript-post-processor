@@ -123,8 +123,7 @@ def _scan(base_path: str):
     _protected = creator_config.protected_paths(base_path)
     for root, dirs, files in os.walk(base_path):
         dirs.sort()
-        if action_log.TRASH_DIRNAME in dirs:
-            dirs.remove(action_log.TRASH_DIRNAME)
+        dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, root, dirs)
         if _MANUAL_MARKER in files:
             dirs[:] = []

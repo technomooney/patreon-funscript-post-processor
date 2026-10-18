@@ -88,10 +88,10 @@ never implies any flag. The flags:
 
 See `mdemaxis_smooth_fix.py` in this folder for a real, working example.
 
-## Skip `.trash` when walking base_path
+## Skip `.trash` and `.library-data` when walking base_path
 
 If your script does its own `os.walk(base_path)`, prune out
-`action_log.TRASH_DIRNAME` the same way `mdemaxis_smooth_fix.py` does (and
+`action_log.SKIP_DIRNAMES` (`.trash` and the shared `.library-data` database folder) the same way `mdemaxis_smooth_fix.py` does (and
 the creator's `protected_dirs`, via `creator_config.prune`, unless your
 script is the one that owns them) —
 soft-deleted files live there and shouldn't be renamed, re-hashed, or
@@ -100,8 +100,7 @@ machinery:
 
 ```python
 for dirpath, dirnames, filenames in os.walk(base_path):
-    if action_log.TRASH_DIRNAME in dirnames:
-        dirnames.remove(action_log.TRASH_DIRNAME)
+    dirnames[:] = [d for d in dirnames if d not in action_log.SKIP_DIRNAMES]
     ...
 ```
 

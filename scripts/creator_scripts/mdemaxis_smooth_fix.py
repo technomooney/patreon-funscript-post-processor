@@ -43,8 +43,7 @@ def process(root_dir: str, extensions: list[str]) -> int:
     renamed = 0
     _protected = creator_config.protected_paths(root_dir)
     for dirpath, dirnames, filenames in os.walk(root_dir):
-        if action_log.TRASH_DIRNAME in dirnames:
-            dirnames.remove(action_log.TRASH_DIRNAME)
+        dirnames[:] = [d for d in dirnames if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, dirpath, dirnames)
         if '.manual' in filenames:
             print(f'  SKIP (manual)  {dirpath}')

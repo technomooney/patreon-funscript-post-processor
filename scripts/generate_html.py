@@ -430,7 +430,7 @@ def generate(root_dir: str, dry_run: bool) -> int:
     entries = []
     try:
         for name in sorted(os.listdir(root_dir)):
-            if name == action_log.TRASH_DIRNAME:
+            if name in action_log.SKIP_DIRNAMES:
                 continue
             folder = os.path.join(root_dir, name)
             if os.path.isdir(folder) and os.path.isfile(os.path.join(folder, 'description.json')):

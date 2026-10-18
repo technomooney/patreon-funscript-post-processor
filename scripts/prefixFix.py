@@ -161,8 +161,7 @@ def getFileList(filePath: str, extList: list):
     _protected = creator_config.protected_paths(filePath)
     for root, dirs, files in os.walk(filePath):
         dirs.sort()
-        if action_log.TRASH_DIRNAME in dirs:
-            dirs.remove(action_log.TRASH_DIRNAME)
+        dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, root, dirs)
         if '.manual' in files:
             print(f"  SKIP (manual): {root}")

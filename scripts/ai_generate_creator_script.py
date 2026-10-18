@@ -149,8 +149,8 @@ Hard rules, no exceptions:
   `action_log.start('<script_name>', base_path)` ... `action_log.finish()`.
 - Never overwrite an existing file — skip (with a printed reason) if the target name \
   already exists.
-- If you walk `base_path` with `os.walk`, prune `action_log.TRASH_DIRNAME` out of the \
-  yielded dirnames list before descending further, so the walk never enters `.trash` — \
+- If you walk `base_path` with `os.walk`, prune `action_log.SKIP_DIRNAMES` out of the \
+  yielded dirnames list before descending further, so the walk never enters `.trash` or `.library-data` — \
   soft-deleted files are quarantined there and must not be touched by anything except \
   `action_log`'s own trash/undo machinery.
 - Print one line per action taken (or skipped, with why), plus a final summary count.

@@ -70,8 +70,7 @@ def _scoped_files(root, funscripts_only):
     funscripts_only is set, only yields .funscript files.
     """
     for dirpath, dirnames, filenames in os.walk(root):
-        if action_log.TRASH_DIRNAME in dirnames:
-            dirnames.remove(action_log.TRASH_DIRNAME)
+        dirnames[:] = [d for d in dirnames if d not in action_log.SKIP_DIRNAMES]
         for fn in filenames:
             if fn.startswith('.') or fn.lower() in _JUNK_NAMES:
                 continue
