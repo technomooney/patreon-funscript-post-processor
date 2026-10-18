@@ -55,8 +55,9 @@ def _discord_driver():
 
     options = uc.ChromeOptions()
     options.set_capability('goog:loggingPrefs', {'browser': 'ALL'})      # lets capture_debug read console errors
-    if os.getenv('DISCORD_DISABLE_GPU', '').strip().lower() in ('1', 'true', 'yes'):
-        # A page that renders and then goes blank is often the GPU process failing; this is the quick test for it.
+    if os.getenv('DISCORD_DISABLE_GPU', 'true').strip().lower() not in ('0', 'false', 'no'):
+        # Confirmed live (2026-10-18): with the GPU on, Discord's page rendered once and then went blank in this
+        # Brave/Linux setup; software rendering fixes it. Set DISCORD_DISABLE_GPU=false to turn the GPU back on.
         options.add_argument('--disable-gpu')
     kwargs = dict(
         options=options,
