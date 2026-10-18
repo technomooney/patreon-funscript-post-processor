@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import creator_db
 import creator_profiles
 import downloadContent as dc
+import legacy_app_data
 
 import undetected_chromedriver as uc
 from selenium.common.exceptions import WebDriverException
@@ -34,9 +35,10 @@ from selenium.webdriver.support import expected_conditions as EC
 # because it needs to *keep* its login between runs — the whole point is the
 # user logs into Discord once by hand and every later run reuses that
 # session, instead of us ever touching Discord credentials ourselves.
-_PROFILE_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.discord_browser_profile'
-)
+# Lives in the machine-local app data directory (app_paths); a profile that still sits at the old repo-root
+# .discord_browser_profile is copied there once so the existing login carries over.
+def _profile_dir() -> str:
+    return legacy_app_data.profile_dir('discord', '.discord_browser_profile')
 
 # Discord messages (confirmed real example from Pize, 2026-08-02) read like
 # prose, not the "PW: xxxx" convention _MEGA_PASSWORD_RE anchors on for post
@@ -121,7 +123,7 @@ def _discord_driver():
     if _driver is not None:
         return _driver
 
-    os.makedirs(_PROFILE_DIR, exist_ok=True)
+    profile_dir = _profile_dir()
     browser = dc._find_browser()
     if browser is None:
         raise RuntimeError(
@@ -136,7 +138,7 @@ def _discord_driver():
         options=options,
         browser_executable_path=launch_browser,
         version_main=version,
-        user_data_dir=_PROFILE_DIR,
+        user_data_dir=profile_dir,
     )
     if cached_driver:
         kwargs['driver_executable_path'] = cached_driver
@@ -176,7 +178,7 @@ def ensure_login(driver, timeout_minutes: int = 20) -> bool:
     Returns True once logged in (immediately, or after the user finishes),
     False if the wait timed out or the browser window was closed. 20 minutes
     by default and deliberately generous — this only ever has to happen
-    *once*: the persistent profile (_PROFILE_DIR) keeps the session for
+    *once*: the persistent profile (_profile_dir()) keeps the session for
     every run after this one, so there's no reason to rush it or automate
     it. No credentials or 2FA codes should ever be typed in by this script;
     login is the one part of this flow that stays entirely manual.

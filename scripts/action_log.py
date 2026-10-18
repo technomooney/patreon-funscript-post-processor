@@ -14,8 +14,8 @@ place as the undo target.
 
 read_last()/clear_last() take an optional root_dir. Pass one to target that
 folder's journal specifically; omit it to fall back to "the last menu
-action" system-wide — resolved via a small pointer file (_POINTER_PATH,
-fixed at the repo root) that finish() updates with whichever root_dir it
+action" system-wide — resolved via a small pointer file (_pointer_path(),
+in the machine-local app data directory) that finish() updates with whichever root_dir it
 just wrote to. Nothing is ever destroyed by the pointer moving on: an
 older run's journal is still sitting in its own folder, just no longer the
 no-argument default — pass its root_dir explicitly to reach it.
@@ -34,8 +34,10 @@ honored inside a named-journal run: the core scripts don't all wrap their
 start/finish in try/finally, and a leaked "still active" state must never
 make an unrelated later core run silently append to a stale journal.
 
-_POINTER_PATH can be overridden with the ACTION_LOG_POINTER_PATH env var,
+The pointer can be overridden with the ACTION_LOG_POINTER_PATH env var,
 so a test run against a throwaway folder can't clobber the real pointer.
+(It used to be .last_action_pointer.json at the repo root; that file is copied
+to the new place once and left alone.)
 
 Soft-deletes (used by dedupe, where a file has to disappear but should stay
 recoverable) are moved into a '.trash' folder next to the files being
@@ -54,11 +56,24 @@ import os
 import shutil
 import time
 
+import app_paths
+import legacy_app_data
 import library_db
 
 JOURNAL_FILENAME = '.last_action.json'
-_POINTER_PATH = os.getenv('ACTION_LOG_POINTER_PATH') or os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.last_action_pointer.json')
+_POINTER_LEGACY_NAME = '.last_action_pointer.json'
+
+
+def _pointer_path() -> str:
+    """Where the "last menu action" pointer lives (resolved lazily, so importing creates nothing)."""
+    override = os.getenv('ACTION_LOG_POINTER_PATH')
+    if override:
+        return override
+    path = os.path.join(app_paths.app_home(), 'last_action_pointer.json')
+    legacy_app_data.copy_file_once(_POINTER_LEGACY_NAME, path)
+    return path
+
+
 TRASH_DIRNAME = '.trash'
 # Directories no tree walk may descend into: the soft-delete folder and the shared library database folder.
 SKIP_DIRNAMES = frozenset({TRASH_DIRNAME, library_db.DATA_DIRNAME})
@@ -131,10 +146,10 @@ def _resolve_root_dir(root_dir: str | None) -> str | None:
     acted on most recently. None if there's nothing to resolve to."""
     if root_dir is not None:
         return root_dir
-    if not os.path.exists(_POINTER_PATH):
+    if not os.path.exists(_pointer_path()):
         return None
     try:
-        with open(_POINTER_PATH, 'r', encoding='utf-8') as f:
+        with open(_pointer_path(), 'r', encoding='utf-8') as f:
             return json.load(f).get('root_dir')
     except (OSError, json.JSONDecodeError):
         return None
@@ -170,7 +185,7 @@ def finish() -> None:
         payload['journal'] = journal
     _write_json(_journal_path(_root_dir, journal), payload)
     if journal is None:
-        _write_json(_POINTER_PATH, {'root_dir': _root_dir})
+        _write_json(_pointer_path(), {'root_dir': _root_dir})
 
 
 def read_last(root_dir: str | None = None, journal: str | None = None) -> dict | None:
@@ -217,7 +232,7 @@ def clear_last(root_dir: str | None = None, journal: str | None = None) -> None:
         pass
     if _resolve_root_dir(None) == resolved:
         try:
-            os.remove(_POINTER_PATH)
+            os.remove(_pointer_path())
         except OSError:
             pass
 

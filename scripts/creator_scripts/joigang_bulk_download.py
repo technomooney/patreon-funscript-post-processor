@@ -41,6 +41,7 @@ from pathlib import Path
 
 import action_log
 import downloadContent as dc
+import legacy_app_data
 
 import undetected_chromedriver as uc
 from selenium.common.exceptions import WebDriverException
@@ -56,10 +57,9 @@ MENU_DESCRIPTION = (
 )
 REPLACES_DOWNLOAD = True
 
-_PROFILE_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    '.joigang_browser_profile',
-)
+def _profile_dir() -> str:
+    """Machine-local app data directory; an old repo-root .joigang_browser_profile is copied there once."""
+    return legacy_app_data.profile_dir('joigang', '.joigang_browser_profile')
 
 _driver = None  # module-level singleton, same convention as discord_passwords._driver
 
@@ -72,7 +72,7 @@ def _joigang_driver():
     if _driver is not None:
         return _driver
 
-    os.makedirs(_PROFILE_DIR, exist_ok=True)
+    profile_dir = _profile_dir()
     browser = dc._find_browser()
     if browser is None:
         raise RuntimeError(
@@ -87,7 +87,7 @@ def _joigang_driver():
         options=options,
         browser_executable_path=launch_browser,
         version_main=version,
-        user_data_dir=_PROFILE_DIR,
+        user_data_dir=profile_dir,
     )
     if cached_driver:
         kwargs['driver_executable_path'] = cached_driver

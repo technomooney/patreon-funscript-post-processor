@@ -8,7 +8,8 @@ sometimes not — so a later extraction attempt may need to try several
 passwords, oldest-known to newest, not just "whatever we last saw". A single
 JSON blob doesn't fit that as naturally as a real table does.
 
-DB file: .creator_data.db at repo root, gitignored (mirrors .creators.json).
+DB file: the machine-local app database (app_db: <app home>/app.db), alongside creator_profiles. It used to be
+.creator_data.db at the repo root; that file's rows are copied in once and the file is left untouched.
 
 Used by extract_variant_archives.py; discord_passwords.py persists what it
 finds here so a later run doesn't need to re-scan Discord for a password
@@ -20,18 +21,61 @@ import os
 import re
 import sqlite3
 
+import app_db
+import app_paths
+import legacy_app_data
+
 # CREATOR_DB_PATH overrides the location -- lets a test run against a
 # throwaway folder use its own DB instead of the real password history.
-_DB_PATH = os.getenv('CREATOR_DB_PATH') or os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.creator_data.db')
+# (Unset: the shared app database, resolved lazily so importing has no side effects.)
+_DB_OVERRIDE = os.getenv('CREATOR_DB_PATH')
+_LEGACY_NAME = '.creator_data.db'
+_LEGACY_TABLES = ('passwords', 'extractions', 'password_labels')
+_IMPORTED_KEY = 'creator_data_db_imported'
 
 
 def _now() -> str:
     return datetime.datetime.now().isoformat(timespec='seconds')
 
 
+def _db_path() -> str:
+    return _DB_OVERRIDE or app_paths.app_db_path()
+
+
+def _import_legacy(conn: sqlite3.Connection) -> None:
+    """Copy the rows of the old repo-root .creator_data.db into this database, once (INSERT OR IGNORE, so a
+    password already on file wins). The old file is only read."""
+    if _DB_OVERRIDE:
+        return
+    conn.execute('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)')
+    if conn.execute('SELECT 1 FROM meta WHERE key=?', (_IMPORTED_KEY,)).fetchone():
+        return
+    src_path = legacy_app_data.legacy_path(_LEGACY_NAME)
+    if os.path.isfile(src_path):
+        src = None
+        try:
+            src = sqlite3.connect(f'file:{src_path}?mode=ro', uri=True)
+            for table in _LEGACY_TABLES:
+                try:
+                    rows = src.execute(f'SELECT * FROM {table}').fetchall()
+                except sqlite3.Error:
+                    continue        # the old file never had this table
+                if rows:
+                    marks = ','.join('?' * len(rows[0]))
+                    conn.executemany(f'INSERT OR IGNORE INTO {table} VALUES ({marks})', rows)
+        except sqlite3.Error as e:
+            print(f'  [creator_db] could not read {src_path}: {e} -- will retry next time')
+            return
+        finally:
+            if src is not None:
+                src.close()
+    conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES(?, '1')", (_IMPORTED_KEY,))
+    conn.commit()
+
+
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(_DB_PATH)
+    conn = sqlite3.connect(_db_path(), timeout=30)
+    conn.execute('PRAGMA busy_timeout=30000')
     conn.execute('''
         CREATE TABLE IF NOT EXISTS passwords (
             creator_key       TEXT NOT NULL,
@@ -69,6 +113,7 @@ def _connect() -> sqlite3.Connection:
             PRIMARY KEY (creator_key, password, date_label, kind)
         )
     ''')
+    _import_legacy(conn)
     return conn
 
 
