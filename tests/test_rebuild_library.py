@@ -105,6 +105,9 @@ class RebuildTests(unittest.TestCase):
                                                'NOFILE': 'missing_local', 'PIZE': 'pize_archive', 'SAME': 'identical',
                                                'UNK': 'unverified'})
         self.assertIn('orphans', plan['no_source'])
+        self.assertIn({'path': 'm', 'kind': '.manual'}, plan['manual_locations'])
+        html_ = rb.render_plan_html(dict(plan, token='T', expires_at='x'))
+        self.assertIn('Marked folders (1)', html_)
 
     def test_planning_changes_no_library_file_and_report_is_escaped(self):
         self.add('LIVE', '<script>alert(1)</script>.mkv')

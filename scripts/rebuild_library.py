@@ -167,7 +167,11 @@ def build_plan(root: str, list_entries=None, file_info=None, hash_file=None) -> 
     with library_db.db(root) as con:
         for r in con.execute("SELECT folder, COUNT(*) n FROM files WHERE COALESCE(pixeldrain_id,'')='' GROUP BY folder"):
             no_source[r['folder']] = r['n']
-    return {'root': root, 'generated_at': _now(), 'fingerprint': fingerprint, 'items': items, 'no_source': no_source}
+    # every hand-organised / consolidated folder, whether or not it holds a pixeldrain-linked file, so the user can
+    # find and redo them by hand after a rebuild
+    markers = sorted(library_drift_markers(root), key=lambda m: (m['kind'], m['path']))
+    return {'root': root, 'generated_at': _now(), 'fingerprint': fingerprint, 'items': items, 'no_source': no_source,
+            'manual_locations': markers}
 
 
 def _remote(info: dict) -> dict:
@@ -252,6 +256,13 @@ def render_plan_html(plan: dict) -> str:
     live = [it for it in plan['items'] if it['verdict'] == 'live']
     fetch_bytes = sum((it.get('remote') or {}).get('size') or 0 for it in live)
     ns = ''.join(f'<tr><td>{_e(k or "(library root)")}</td><td>{n}</td></tr>' for k, n in sorted(plan['no_source'].items())[:300])
+    mk = plan.get('manual_locations', [])
+    mk_rows = ''.join(f'<tr><td>{_e(m["kind"])}</td><td>{_e(m["path"] or "(library root)")}</td></tr>' for m in mk)
+    marker_section = (
+        f'<h2>Marked folders ({len(mk)})</h2><p class="muted">Every folder holding a <code>.manual</code> (you organised it by hand) '
+        f'or <code>.consolidated</code> marker. A rebuild never touches files in <code>.manual</code> folders, so these are your '
+        f'list of places to redo by hand.</p><table><tr><th>Marker</th><th>Folder</th></tr>{mk_rows}</table>'
+        if mk else '')
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Library rebuild plan</title><style>{_CSS}</style></head><body><main>
 <h1>Library rebuild plan</h1>
@@ -270,7 +281,7 @@ def render_plan_html(plan: dict) -> str:
 {simple('identical', 'Already identical to the source (left as is)', 'The local copy has the same sha256 as the source.')}
 {simple('pize_archive', 'Pize archives', 'Handled by the Pize plugin, not here.')}
 {simple('missing_local', 'Recorded but missing locally', 'Not re-fetched; use the drift report to review.')}
-<h2>Files with no known pixeldrain source</h2><p class="muted">Not touched. Counted per folder (top 300).</p>
+{marker_section}<h2>Files with no known pixeldrain source</h2><p class="muted">Not touched. Counted per folder (top 300).</p>
 <table><tr><th>Folder</th><th>Files</th></tr>{ns or '<tr><td colspan="2" class="muted">None.</td></tr>'}</table>
 </main><script>
 function exportDecisions(){{var items={{}};document.querySelectorAll('input[data-link]').forEach(function(i){{var v=i.value.trim();
