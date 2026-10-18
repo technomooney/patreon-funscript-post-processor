@@ -186,10 +186,13 @@ class ResetTests(unittest.TestCase):
             return rc, buf.getvalue()
         folder = os.path.join(self.root, 'Creator')
         _, out1 = run(folder)
-        token = out1.split('Token:')[1].split()[0]
+        token = rs.all_plans(self.root)[0]['token']
+        self.assertNotIn(token, out1)                                # the token is only in the report
+        self.assertIn(token, open(rs.all_plans(self.root)[0]['report'], encoding='utf-8').read())
         _, out2 = run(folder)
         self.assertIn('reusing', out2)
-        self.assertEqual(out2.split('Token:')[1].split()[0], token)
+        self.assertNotIn(token, out2)
+        self.assertEqual(len(rs.all_plans(self.root)), 1)
         real = rs.shutil.rmtree
         calls = {'n': 0}
 
@@ -203,7 +206,7 @@ class ResetTests(unittest.TestCase):
                 run(folder, '--confirm', token, '--yes')
         rc, out3 = run(folder)                                       # launching again: told to resume, no new plan
         self.assertEqual(rc, 3)
-        self.assertIn(token, out3)
+        self.assertNotIn(token, out3)
         self.assertIn('IN PROGRESS', out3)
         rc, _ = run(folder, '--confirm', token, '--yes')
         self.assertEqual(rc, 0)

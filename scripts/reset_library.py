@@ -6,7 +6,8 @@ you want the normal download process to rebuild it from scratch. Standalone, not
     ./reset.sh /path/to/folder --confirm TOKEN                2. apply (resumable)
 The folder is the whole library (the one holding .library-data) or any folder inside it, e.g. one creator's folder:
 then only that folder is reset and the rest of the library is left alone. Running step 1 again while a plan is still
-waiting prints the SAME token and report; running it while a reset is half-done tells you to resume it instead.
+waiting shows the SAME report; running it while a reset is half-done tells you to resume it instead. The token is
+never printed in the terminal -- it is only in the HTML report, so the report has to be opened and read first.
 Compare afterwards with  ./compare_tree.sh /path/to/library-root   (see compare_tree.py).
 
 What it does:
@@ -485,11 +486,11 @@ def interactive(ask=input) -> int:
             return 1
         root, scope = os.path.join(root, name), ''
         target = root
-    code = main([target])                       # plans (or says a reset is in progress) and prints report + token
+    code = main([target])                       # plans (or says a reset is in progress) and prints the report path
     if code not in (0, 3):
         return code
     print()
-    token = ask('Paste the token to continue (just Enter to stop for now; the same token is shown next time): ').strip()
+    token = ask('Paste the token from the report to continue (just Enter to stop for now; the report stays the same next time): ').strip()
     if not token:
         print('Stopped. Nothing was changed.')
         return 0
@@ -523,7 +524,7 @@ def main(argv=None) -> int:
         running = in_progress(root)
         if running:
             print(f'A reset of {os.path.join(running["root"], running["scope"])} is already IN PROGRESS (phase: {running["phase"]}).\n'
-                  f'Finish it first with the same token:\n  ./reset.sh "{os.path.join(running["root"], running["scope"])}" --confirm {running["token"]}')
+                  f'Finish it first: run reset.sh on that folder again and give the token from its report:\n  {running.get("report", "(report not found)")}')
             return 3
         print(f'Planning {label} (reading the tree; nothing is changed)...')
         plan = build_plan(root, scope)
@@ -539,7 +540,8 @@ def main(argv=None) -> int:
             plan['report'] = report
             _save(root, plan)
         print(f'  would remove {plan["total_files"]} file(s), {_gb(plan["total_bytes"])}; keeping {len(plan["manual"])} .manual folder(s)')
-        print(f'\nReport: {report}\nToken:  {token}\nRead the report, then apply with:\n  ./reset.sh "{target}" --confirm {token}')
+        print(f'\nReport: {report}\nOpen and read it; the confirmation token is in the report, not here.\n'
+              f'Then run reset.sh again on this folder and give it the token (or: ./reset.sh "{target}" --confirm <token from the report>).')
         return 0
 
     try:
