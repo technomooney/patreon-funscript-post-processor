@@ -112,9 +112,10 @@ class DiscordPluginTests(unittest.TestCase):
         self.assertIsNone(store.newest_stored_id(self.lib, 'creator'))   # the original channel is untouched
         self.assertEqual(store.newest_stored_id(self.lib, 'creator#secrets'), '7')
 
-    def test_non_pixeldrain_links_are_ignored(self):
-        self.run_pass([msg(10, hrefs=['https://example.com/a', 'https://pixeldrain.com/d/xyz/file'])])
-        self.assertEqual(self.calls, [])
+    def test_only_pixeldrain_lists_files_and_folder_shares_are_synced(self):
+        self.run_pass([msg(10, hrefs=['https://example.com/a', 'https://pixeldrain.com/d/Share001',
+                                      'https://pixeldrain.com/api/x'])])
+        self.assertEqual(self.calls[0][0], ['https://pixeldrain.com/d/Share001'])
 
 
 if __name__ == '__main__':

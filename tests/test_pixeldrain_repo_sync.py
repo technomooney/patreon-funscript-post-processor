@@ -20,6 +20,64 @@ def remote(i, name, size=1000, sha=None):
     return {'id': i, 'name': name, 'size': size, 'sha256': sha, 'url': f'https://pixeldrain.com/u/{i}'}
 
 
+class FilesystemShareTests(unittest.TestCase):
+    """/d/ folder shares: walked recursively, files identified by content hash, subfolders preserved."""
+
+    def setUp(self):
+        self._old = (pdu._get_json, pdu._dc)
+        tree = {
+            'SHARE': {'children': [
+                {'type': 'dir', 'name': 'Monthly 2024', 'path': '/SHARE/Monthly 2024'},
+                {'type': 'file', 'name': 'top.funscript', 'path': '/SHARE/top.funscript', 'size': 10, 'hash_sha256': 'aa'}]},
+            'SHARE/Monthly%202024': {'children': [
+                {'type': 'file', 'name': 'a.mp4', 'path': '/SHARE/Monthly 2024/a.mp4', 'size': 99, 'hash_sha256': 'bb'}]},
+        }
+        self.asked = []
+
+        def fake_get(api_url, label):
+            self.asked.append(api_url)
+            key = api_url.split('/api/filesystem/')[1].removesuffix('?stat')
+            return tree[key]
+        pdu._get_json = fake_get
+
+    def tearDown(self):
+        pdu._get_json, pdu._dc = self._old
+
+    def test_walks_subfolders_and_ids_files_by_content_hash(self):
+        files = pdu.list_entries('https://pixeldrain.com/d/SHARE')
+        got = {f['name']: (f['id'], f['subdir'], f['sha256']) for f in files}
+        self.assertEqual(got, {'top.funscript': ('fs:aa', '', 'aa'),
+                               'a.mp4': ('fs:bb', 'Monthly 2024', 'bb')})
+        self.assertEqual(files[0]['url'].split('/d/')[1].split('/')[0], 'SHARE')
+
+    def test_a_gone_share_is_empty_not_unreadable(self):
+        import urllib.error
+        import downloadContent as dc
+
+        def gone(api_url, label):
+            raise urllib.error.HTTPError(api_url, 404, 'nf', {}, None)
+        pdu._get_json = gone
+        self.assertEqual(pdu.list_entries('https://pixeldrain.com/d/DEAD'), [])
+
+    def test_plan_places_files_in_matching_subfolders_and_download_skips_the_funscript_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lib = library_db.use_root(os.path.join(os.path.realpath(tmp), 'lib'))
+            base = os.path.join(lib, 'c')
+            os.makedirs(base)
+            items = prs.plan(lib, base, [{'url': 'https://pixeldrain.com/d/SHARE', 'dest': 'archive'}])
+            self.assertEqual(sorted(os.path.relpath(i['dest_folder'], base) for i in items),
+                             ['archive', os.path.join('archive', 'Monthly 2024')])
+            import downloadContent as dc
+            seen = {}
+            old = dc.download_pixeldrain
+            dc.download_pixeldrain = lambda drv, url, d, funscript_gate=True: seen.update(gate=funscript_gate) or False
+            try:
+                pdu.download_file(items[0]['remote'], base, base)
+            finally:
+                dc.download_pixeldrain = old
+            self.assertEqual(seen, {'gate': False})
+
+
 class SyncTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

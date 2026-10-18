@@ -2890,11 +2890,15 @@ def _pixeldrain_filesystem_funscript_gate(api_url: str, download_dir: str) -> st
             'skipping to avoid downloading a video with nothing to match it to')
 
 
-def download_pixeldrain(_driver, url: str, download_dir: str) -> bool:
-    """Download a pixeldrain.com file directly via its public API (no browser needed)."""
+def download_pixeldrain(_driver, url: str, download_dir: str, funscript_gate: bool = True) -> bool:
+    """Download a pixeldrain.com file directly via its public API (no browser needed).
+
+    *funscript_gate*: for /d/ filesystem-share videos, skip ones with no matching funscript (see
+    _pixeldrain_filesystem_funscript_gate). Callers that deliberately want everything in a share (the archive
+    sync) pass False."""
     video_url, label = _pixeldrain_api_url(url)
 
-    if '/api/filesystem/' in video_url:
+    if funscript_gate and '/api/filesystem/' in video_url:
         skip_reason = _pixeldrain_filesystem_funscript_gate(video_url, download_dir)
         if skip_reason:
             print(f'  [pixeldrain.com] {skip_reason}')

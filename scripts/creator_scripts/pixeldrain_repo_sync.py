@@ -9,8 +9,8 @@ It prints a plan first (new / already have / ambiguous) and asks before download
 same name but a different size or extension -- are reported and never overwritten or re-fetched. New downloads
 are sha256-verified, journaled for undo, and recorded in <library root>/.library-data/library.db as they finish.
 
-Sources (pixeldrain /l/ lists and /u/ files) are saved per creator in the creator profile. /d/ filesystem shares
-are not listed by this version.
+Sources (pixeldrain /l/ lists, /u/ files and /d/ folder shares, walked recursively into matching subfolders) are
+saved per creator in the creator profile.
 """
 import os
 
@@ -49,7 +49,7 @@ def run(base_path: str, options: dict | None = None) -> None:
                 url = input('  pixeldrain URL (blank to finish): ').strip()
                 if not url:
                     break
-                if pdu.kind(url) not in ('list', 'file'):
+                if pdu.kind(url) not in pdu.SYNCABLE_KINDS:
                     print('  only pixeldrain /l/ lists and /u/ files are supported here.')
                     continue
                 dest = input('  save into which subfolder of this creator folder? (blank = the folder itself): ').strip()
@@ -86,4 +86,4 @@ def setup_unattended(current: dict) -> dict:
     raw = input('  pixeldrain list/file URLs, space-separated (Enter keeps current): ').strip()
     if not raw:
         return current
-    return {**current, 'sources': [{'url': u, 'dest': ''} for u in raw.split() if pdu.kind(u) in ('list', 'file')]}
+    return {**current, 'sources': [{'url': u, 'dest': ''} for u in raw.split() if pdu.kind(u) in pdu.SYNCABLE_KINDS]}

@@ -84,8 +84,9 @@ def plan(root: str, base_path: str, sources: list[dict]) -> list[dict]:
             items.append({'source': src, 'verdict': 'unreadable', 'reason': 'could not list this source'})
             continue
         for remote in remotes:
-            verdict, reason, extra = classify(root, dest_folder, remote)
-            items.append({'source': src, 'dest_folder': dest_folder, 'remote': remote,
+            folder = os.path.join(dest_folder, *[safe_name(p) for p in remote.get('subdir', '').split(os.sep) if p])
+            verdict, reason, extra = classify(root, folder, remote)
+            items.append({'source': src, 'dest_folder': folder, 'remote': remote,
                           'verdict': verdict, 'reason': reason, 'extra': extra})
     return items
 
@@ -174,7 +175,7 @@ def sync_urls(base_path: str, urls: list[str], dest: str = '', dry_run: bool = F
     root = resolve_root(base_path, interactive)
     if root is None:
         return None
-    sources = [{'url': u, 'dest': dest} for u in urls if pdu.kind(u) in ('list', 'file')]
+    sources = [{'url': u, 'dest': dest} for u in urls if pdu.kind(u) in pdu.SYNCABLE_KINDS]
     items = plan(root, base_path, sources)
     counts = summarize(items)
     print_plan(items, counts)

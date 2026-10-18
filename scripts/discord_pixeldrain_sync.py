@@ -31,7 +31,7 @@ DEFAULT_DEST = 'discord'
 
 
 def _is_pixeldrain(url: str) -> bool:
-    return pdu.kind(url) in ('list', 'file')
+    return pdu.kind(url) in pdu.SYNCABLE_KINDS
 
 
 def links_from_messages(messages: list[dict]) -> list[str]:
