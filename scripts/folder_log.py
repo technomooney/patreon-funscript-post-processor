@@ -8,7 +8,8 @@ declare one with library_db.use_root(). A folder under NO declared root keeps th
 .folder_log.json inside the folder) so ordinary folders do not each grow their own database.
 
 Records still sitting in legacy files are merged into read(): the folder's .folder_log.json and, for libraries the
-AV1 compressor already used, its .av1-compressor/library_log.jsonl. Legacy files are never moved or deleted here
+AV1 compressor already used, its .av1-compressor/library_log.jsonl and the per-folder logs an earlier
+compressor parked under .av1-compressor/legacy_folder_logs/<folder>/. Legacy files are never moved or deleted here
 (migrate_library_data.py imports them); duplicates already imported into the DB are ignored.
 """
 import json
@@ -19,6 +20,8 @@ import library_db
 
 FILENAME = '.folder_log.json'                       # legacy per-folder file
 COMPRESSOR_LOG = os.path.join('.av1-compressor', 'library_log.jsonl')
+# Per-folder logs an earlier AV1 compressor parked here instead of leaving them in place.
+PARKED_DIR = os.path.join('.av1-compressor', 'legacy_folder_logs')
 _UPDATED_BY = 'downloader'
 
 
@@ -72,7 +75,8 @@ def read(folder: str) -> list:
     rel = library_db.rel_folder(root, folder)
     records = library_db.runs_for(root, rel)
     seen = {_key(r) for r in records}
-    for r in _legacy_file(folder) + _compressor_log(root, rel):
+    parked = _legacy_file(os.path.join(root, PARKED_DIR, rel))
+    for r in parked + _legacy_file(folder) + _compressor_log(root, rel):
         if _key(r) not in seen:
             seen.add(_key(r))
             records.append(r)

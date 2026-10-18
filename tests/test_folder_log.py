@@ -68,6 +68,16 @@ class FolderLogTests(unittest.TestCase):
         self.assertEqual([r['file'] for r in recs], ['a.mp4'])
         self.assertTrue(folder_log.has_run(d, 'compress_library'))
 
+    def test_logs_parked_by_old_compressor_are_found(self):
+        root = library_db.use_root(os.path.join(self.base, 'lib'))
+        parked = os.path.join(root, '.av1-compressor', 'legacy_folder_logs', 'post')
+        os.makedirs(parked)
+        with open(os.path.join(parked, '.folder_log.json'), 'w') as f:
+            json.dump([{'timestamp': '1', 'script': 'fix_garbled_names'}], f)
+        d = os.path.join(root, 'post')
+        os.makedirs(d)
+        self.assertTrue(folder_log.has_run(d, 'fix_garbled_names'))
+
     def test_force_rerun(self):
         root = library_db.use_root(os.path.join(self.base, 'lib'))
         folder_log.append_run(root, 's')
