@@ -267,11 +267,12 @@ def _prompt_setup(creator_key: str) -> dict | None:
     return creator_profiles.get(creator_key).get('discord')
 
 
-def _load_channel_messages(creator_key: str, max_messages: int, force: bool = False) -> tuple[list[str], dict] | None:
-    """Navigate to *creator_key*'s configured Discord channel and return its recent
-    message texts (newest first) alongside the channel config, or None on any
-    failure (no channel configured and not set up when asked, login
-    declined/timed out, channel didn't load).
+def open_channel(creator_key: str, force: bool = False):
+    """Log in (once, by hand) and open *creator_key*'s configured Discord channel.
+
+    Returns (driver, discord_cfg) with the channel's first batch of messages rendered, or None on any failure
+    (no channel configured and not set up when asked, login declined/timed out, channel didn't load).
+    Shared by the recent-messages reader here and the full-history reader (discord_history.py).
 
     *force*: re-prompt even if this creator previously declined setup
     (set_discord_declined). Speculative callers (e.g. "no inline password
@@ -328,10 +329,42 @@ def _load_channel_messages(creator_key: str, max_messages: int, force: bool = Fa
         print(f'  [discord] channel did not load: {url}')
         return None
 
+    return driver, discord_cfg
+
+
+def _load_channel_messages(creator_key: str, max_messages: int, force: bool = False) -> tuple[list[str], dict] | None:
+    """Return *creator_key*'s configured Discord channel's recent message texts (newest first) alongside the
+    channel config, or None on any failure (see open_channel).
+
+    *force*: see open_channel's callers -- re-prompt even if this creator previously declined setup.
+    """
+    opened = open_channel(creator_key, force)
+    if opened is None:
+        return None
+    driver, discord_cfg = opened
+    message_xpath = '//*[@data-list-id="chat-messages"]//*[@id and contains(@id, "message-content-")]'
     # Messages render newest-at-bottom; callers want newest-first.
     messages = driver.find_elements(By.XPATH, message_xpath)
     texts = [(el.text or '') for el in reversed(messages[-max_messages:])]
     return texts, discord_cfg
+
+
+def passwords_from_texts(texts: list[str]) -> tuple[list[str], list[dict]]:
+    """Every distinct password-looking value in *texts* (given newest first -> result newest first), plus the
+    date-labelled hints (see parse_labeled_passwords). Pure parsing, no browser."""
+    passwords: list[str] = []
+    labeled: list[dict] = []
+    for text in texts:
+        labeled.extend(parse_labeled_passwords(text))
+        match = _PASSWORD_RE.search(text)
+        if match and _looks_like_password(match.group(1)):
+            pw = match.group(1).strip()
+            if pw not in passwords:
+                passwords.append(pw)
+    for entry in labeled:
+        if entry['password'] not in passwords:
+            passwords.append(entry['password'])
+    return passwords, labeled
 
 
 def fetch_password_history(creator_key: str, max_messages: int = 50, force: bool = False) -> list[str]:
@@ -355,18 +388,7 @@ def fetch_password_history(creator_key: str, max_messages: int = 50, force: bool
         return []
     texts, discord_cfg = loaded
 
-    passwords: list[str] = []
-    labeled: list[dict] = []
-    for text in texts:
-        labeled.extend(parse_labeled_passwords(text))
-        match = _PASSWORD_RE.search(text)
-        if match and _looks_like_password(match.group(1)):
-            pw = match.group(1).strip()
-            if pw not in passwords:
-                passwords.append(pw)
-    for entry in labeled:
-        if entry['password'] not in passwords:
-            passwords.append(entry['password'])
+    passwords, labeled = passwords_from_texts(texts)
 
     if passwords:
         print(f'  [discord] found {len(passwords)} distinct password(s) for "{creator_key}" '
