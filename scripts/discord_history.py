@@ -13,10 +13,12 @@ back to the caller to process.
 import time
 
 import discord_store as store
+import progress
 from discord_store import snowflake
 
 
-def collect_history(read_rows, scroll_up, since_id=None, max_messages=None, stall_limit=6, wait=lambda: None) -> list[dict]:
+def collect_history(read_rows, scroll_up, since_id=None, max_messages=None, stall_limit=6, wait=lambda: None,
+                    progress=None) -> list[dict]:
     """Scroll up and gather messages until the start of the channel, a known message, or *max_messages*.
 
     read_rows()  -> list of message dicts currently rendered (each has an 'id' snowflake string)
@@ -24,6 +26,7 @@ def collect_history(read_rows, scroll_up, since_id=None, max_messages=None, stal
     since_id     -> a message id already processed: stop once it (or anything older) has been seen, and return only
                     messages NEWER than it (incremental runs)
     stall_limit  -> consecutive scrolls that surface nothing new before we decide we are at the top
+    progress     -> optional callable(messages_seen_so_far), called after every scroll
     Returns message dicts newest first (Discord ids are time-ordered snowflakes).
     """
     seen: dict[int, dict] = {}
@@ -43,6 +46,8 @@ def collect_history(read_rows, scroll_up, since_id=None, max_messages=None, stal
         stalls = 0 if new else stalls + 1
         if stalls >= stall_limit:
             break
+        if progress:
+            progress(len(seen))
         scroll_up()
         wait()
     ordered = sorted(seen, reverse=True)
@@ -69,10 +74,13 @@ def fetch_channel_history(creator_key: str, since_message_id=None, max_messages=
 
     try:
         rows = collect_history(lambda: db.read_rows(driver), lambda: db.scroll_up(driver), since_id=since_message_id, max_messages=max_messages,
-                               wait=lambda: time.sleep(settle_seconds))
+                               wait=lambda: time.sleep(settle_seconds),
+                               progress=lambda n: progress.live(f'  [discord] reading the channel... {n} message(s) so far'))
     except db.WebDriverException:
+        progress.clear()
         print('  [discord] browser window was closed while reading the channel.')
         return None
+    progress.clear()
     print(f'  [discord] read {len(rows)} message(s) from channel {discord_cfg["channel_id"]}.')
     return rows
 

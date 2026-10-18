@@ -303,5 +303,19 @@ class BrowserDefaultsTests(unittest.TestCase):
                     os.environ[n] = v
 
 
+class ProgressTests(unittest.TestCase):
+    def test_collect_history_reports_messages_seen_after_each_scroll(self):
+        import progress as pr
+        seen = []
+        ch = [[msg(3), msg(4)], [msg(1), msg(2), msg(3), msg(4)], [msg(1), msg(2), msg(3), msg(4)]]
+        calls = iter(ch + [ch[-1]] * 20)
+        dh.collect_history(lambda: next(calls), lambda: None, stall_limit=1, progress=seen.append)
+        self.assertEqual(seen[:2], [2, 4])
+
+    def test_sizes_read_naturally(self):
+        import progress as pr
+        self.assertEqual([pr.size(n) for n in (None, 500, 2048, 5 * 1024 ** 3)], ['? size', '500 B', '2.0 KB', '5.0 GB'])
+
+
 if __name__ == '__main__':
     unittest.main()

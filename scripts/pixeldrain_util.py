@@ -65,10 +65,12 @@ FILESYSTEM_ID_PREFIX = 'fs:'
 _MAX_FS_DEPTH = 12
 
 
-def _walk_filesystem(fs_path: str, subdir: str, depth: int = 0) -> list[dict]:
+def _walk_filesystem(fs_path: str, subdir: str, depth: int = 0, on_progress=None, seen: list | None = None) -> list[dict]:
     """Every file under a /d/ share path, recursively. fs_path is '<share id>[/folder/...]' (percent-encoded)."""
     if depth > _MAX_FS_DEPTH:
         return []
+    seen = seen if seen is not None else [0, 0]       # [folders listed, files found]
+    seen[0] += 1
     data = _get_json(f'https://pixeldrain.com/api/filesystem/{fs_path}?stat', f'share {fs_path.split("/")[0]}')
     out: list[dict] = []
     for child in data.get('children') or []:
@@ -77,7 +79,8 @@ def _walk_filesystem(fs_path: str, subdir: str, depth: int = 0) -> list[dict]:
         if not name or not child_path:
             continue
         if child.get('type') == 'dir':
-            out += _walk_filesystem(quote(child_path, safe='/'), os.path.join(subdir, safe_name(name)), depth + 1)
+            out += _walk_filesystem(quote(child_path, safe='/'), os.path.join(subdir, safe_name(name)), depth + 1,
+                                    on_progress, seen)
         elif child.get('type') == 'file':
             sha = child.get('hash_sha256') or None
             out.append({
@@ -86,12 +89,15 @@ def _walk_filesystem(fs_path: str, subdir: str, depth: int = 0) -> list[dict]:
                 'id': FILESYSTEM_ID_PREFIX + (sha or child_path), 'name': name, 'size': child.get('size'),
                 'sha256': sha, 'subdir': subdir, 'url': 'https://pixeldrain.com/d/' + quote(child_path, safe='/'),
                 'filesystem': True})
+            seen[1] += 1
+    if on_progress:
+        on_progress(seen[0], seen[1])
     return out
 
 
-def list_entries(url: str):
+def list_entries(url: str, on_progress=None):
     """Files behind a pixeldrain /l/ list, /u/ file or /d/ folder-share URL:
-    [{'id','name','size','sha256','url'}] (/d/ files also carry 'subdir', their folder inside the share).
+    [{'id','name','size','sha256','url'}]; *on_progress*(folders, files) is called as a /d/ share is walked (/d/ files also carry 'subdir', their folder inside the share).
 
     Returns None when it could not be determined (network, auth, unreadable share) -- never an empty list for a
     failure, so "nothing there" and "could not look" stay different things. A share pixeldrain says is gone
@@ -103,7 +109,7 @@ def list_entries(url: str):
             path = urlparse(url).path.strip('/').split('/', 1)[1] if '/' in urlparse(url).path.strip('/') else ''
             if not path:
                 return None
-            return _walk_filesystem(quote(unquote(path), safe='/'), '')
+            return _walk_filesystem(quote(unquote(path), safe='/'), '', on_progress=on_progress)
         if k == 'list':
             data = _get_json(f'https://pixeldrain.com/api/list/{file_id(url)}', f'list {file_id(url)}')
             files = [_entry(f) for f in data.get('files', []) if f.get('id')]

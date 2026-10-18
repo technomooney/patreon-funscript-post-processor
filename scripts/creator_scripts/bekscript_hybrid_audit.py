@@ -29,6 +29,7 @@ import creator_profiles
 import funscript_utils as fu
 import library_db
 import pixeldrain_sync as ps
+import progress
 
 SCRIPT_ID = 'bekscript_hybrid_audit'
 MENU_LABEL = 'BekScript: audit Patreon vs pixeldrain archive + Discord secret ledger'
@@ -70,13 +71,17 @@ def archive_scripts(base_path: str) -> dict[str, list[str]]:
     """{fingerprint: [paths relative to base_path]} for every funscript in the downloaded archive folder."""
     top = os.path.join(base_path, ARCHIVE_DEST)
     found: dict[str, list[str]] = {}
+    count = 0
     for cur, dirs, files in os.walk(top):
         dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES]
         for f in sorted(files):
             if f.lower().endswith('.funscript'):
+                count += 1
+                progress.live(f'  reading archive funscripts... {count}')
                 p = os.path.join(cur, f)
                 found.setdefault(fingerprint(p), []).append(os.path.relpath(p, base_path))
     found.pop(None, None)       # unparseable files can never prove a match
+    progress.clear()
     return found
 
 
@@ -97,6 +102,7 @@ def scan_posts(base_path: str) -> dict[str, dict]:
         if 'description.json' not in files:
             continue
         rel = os.path.relpath(cur, base_path)
+        progress.live(f'  scanning Patreon posts... {len(posts) + 1}')
         try:
             entries = dc.extract_link_entries_from_description(os.path.join(cur, 'description.json'))
         except (OSError, ValueError):
@@ -118,6 +124,7 @@ def scan_posts(base_path: str) -> dict[str, dict]:
                     posts[rel]['scripts'].append((os.path.relpath(p, base_path), fingerprint(p)))
                 elif ext in _MEDIA:
                     posts[rel]['has_media'] = True
+    progress.clear()
     return posts
 
 
@@ -202,18 +209,22 @@ def audit(base_path: str, root: str) -> dict:
             'missing': missing, 'problems': problems, 'ledger': ledger, 'gap_csv': gap_csv, 'secret_csv': secret_csv}
 
 
-def fetch_archive(base_path: str, interactive: bool) -> None:
+def fetch_archive(base_path: str, interactive: bool, step=None) -> None:
     """Download whatever is still missing: the 'archive' Discord channel's links into the archive folder and the
     'secrets' channel's links into the discord folder (whole history the first time, then only newer messages),
-    plus any saved pixeldrain lists into the archive folder."""
+    plus any saved pixeldrain lists into the archive folder. *step*(title) announces each stage."""
     import discord_pixeldrain_sync as dps
+    step = step or (lambda title: None)
     creator_key = os.path.basename(os.path.normpath(base_path))
     for channel, dest in DISCORD_CHANNELS.items():
+        step(f'Discord "{channel}" channel -> {dest}/'
+             + (' (newest post only)' if channel in LATEST_ONLY_CHANNELS else ' (every post)'))
         dps.sync_channel(base_path, dest=dest, dry_run=False, interactive=interactive, channel=channel,
                          latest_only=channel in LATEST_ONLY_CHANNELS)
     sources = [s if isinstance(s, dict) else {'url': s, 'dest': ''}
                for s in creator_profiles.get(creator_key).get(ps.SOURCES_KEY) or []]
     if sources:
+        step(f'{len(sources)} saved pixeldrain source(s) -> {ARCHIVE_DEST}/')
         ps.sync_urls(base_path, [s['url'] for s in sources], dest=ARCHIVE_DEST, interactive=interactive)
 
 
@@ -225,14 +236,25 @@ def run(base_path: str, options: dict | None = None) -> None:
     fetch = (options or {}).get('fetch', True) if not interactive else input(
         f'  First fetch new archive links from the Discord channel into "{ARCHIVE_DEST}" (opens the browser)? (Y/n): '
     ).strip().lower() != 'n'
+    creator_key = os.path.basename(os.path.normpath(base_path))
+    n_sources = len(creator_profiles.get(creator_key).get(ps.SOURCES_KEY) or [])
+    total = (len(DISCORD_CHANNELS) + (1 if n_sources else 0) if fetch else 0) + 2
+    counter = [0]
+
+    def step(title):
+        counter[0] += 1
+        progress.stage(counter[0], total, title)
+
     if fetch:
         try:
-            fetch_archive(base_path, interactive)
+            fetch_archive(base_path, interactive, step)
         finally:
             import discord_browser
             discord_browser.close()
+    step('Comparing the Patreon downloads with the archive')
     r = audit(base_path, root)
-    print(f'  archive funscripts: {r["archive_scripts"]}   Patreon funscripts: {r["patreon_scripts"]}')
+    step('Report')
+    progress.say(f'  archive funscripts: {r["archive_scripts"]}   Patreon funscripts: {r["patreon_scripts"]}')
     print(f'  Patreon scripts missing from the archive: {len(r["missing"])}  ->  {r["gap_csv"]}')
     if r['missing']:
         print('  Run the normal download (menu 5) to fetch those posts\' media; they are listed with their links.')
@@ -240,6 +262,7 @@ def run(base_path: str, options: dict | None = None) -> None:
     print(f'  secret (title-only) posts: {len(r["ledger"])}, still unresolved: {unresolved}  ->  {r["secret_csv"]}')
     for p in r['problems']:
         print(f'  ! {p}')
+    print('\nDone.')
 
 
 def setup_unattended(current: dict) -> dict:

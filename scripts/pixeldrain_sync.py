@@ -16,6 +16,7 @@ import action_log
 import folder_log
 import library_db
 import pixeldrain_util as pdu
+import progress
 
 SCRIPT_ID = 'pixeldrain_repo_sync'      # also the undo-journal / folder_log name
 SOURCES_KEY = 'pixeldrain_sources'      # in the creator profile: [{'url': ..., 'dest': 'subfolder'}]
@@ -79,15 +80,19 @@ def plan(root: str, base_path: str, sources: list[dict]) -> list[dict]:
     items = []
     for src in sources:
         dest_folder = os.path.join(base_path, src.get('dest', ''))
-        remotes = pdu.list_entries(src['url'])
+        remotes = pdu.list_entries(src['url'], on_progress=lambda d, f: progress.live(
+            f'  listing {src["url"].rsplit("/", 1)[-1]}... {f} file(s) in {d} folder(s) so far'))
+        progress.clear()
         if remotes is None:
             items.append({'source': src, 'verdict': 'unreadable', 'reason': 'could not list this source'})
             continue
-        for remote in remotes:
+        for n, remote in enumerate(remotes, 1):
+            progress.live(f'  checking what you already have... {n}/{len(remotes)}')
             folder = os.path.join(dest_folder, *[safe_name(p) for p in remote.get('subdir', '').split(os.sep) if p])
             verdict, reason, extra = classify(root, folder, remote)
             items.append({'source': src, 'dest_folder': folder, 'remote': remote,
                           'verdict': verdict, 'reason': reason, 'extra': extra})
+        progress.clear()
     return items
 
 
@@ -125,6 +130,11 @@ def execute(root: str, base_path: str, items: list[dict], download=None) -> dict
     download = download or pdu.download_file
     result = {'adopted': 0, 'downloaded': 0, 'failed': 0}
     now = time.strftime('%Y-%m-%dT%H:%M:%S')
+    todo = [it for it in items if it['verdict'] == NEW]
+    todo_bytes = sum(it['remote'].get('size') or 0 for it in todo)
+    if todo:
+        progress.say(f'  downloading {len(todo)} new file(s), {progress.size(todo_bytes)} in total')
+    n_done = 0
     action_log.start(SCRIPT_ID, base_path, journal=SCRIPT_ID)
     try:
         for it in items:
@@ -136,11 +146,12 @@ def execute(root: str, base_path: str, items: list[dict], download=None) -> dict
                 library_db.upsert_link(root, remote['id'], SCRIPT_ID, source_url=it['source']['url'], status='pending',
                                        remote_sha256=remote.get('sha256'), remote_name=remote['name'],
                                        remote_size=remote.get('size'), first_attempt=now, last_attempt=now)
-                print(f'  downloading: {remote["name"]}')
+                n_done += 1
+                progress.say(f'  [{n_done}/{len(todo)}] {remote["name"]} ({progress.size(remote.get("size"))})')
                 path, why = download(remote, it['dest_folder'], base_path)
                 if path is None:
                     library_db.upsert_link(root, remote['id'], SCRIPT_ID, status='failed')
-                    print(f'  FAILED ({why}): {remote["name"]}')
+                    progress.say(f'  FAILED ({why}): {remote["name"]}')
                     result['failed'] += 1
                     continue
                 action_log.record('create_marker', path=path)

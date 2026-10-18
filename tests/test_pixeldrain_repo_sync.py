@@ -89,7 +89,7 @@ class SyncTests(unittest.TestCase):
         os.environ['LIBRARY_TOOLS_HOME'] = os.path.join(self._tmp.name, 'home')
         self.remotes = []
         self.downloaded = []
-        pdu.list_entries = lambda url: list(self.remotes)
+        pdu.list_entries = lambda url, **kw: list(self.remotes)
 
         def fake_download(entry, dest_dir, scratch_root):
             self.downloaded.append(entry['id'])
@@ -189,7 +189,7 @@ class SyncTests(unittest.TestCase):
         self.assertEqual((r['downloaded'], library_db.get_link(self.lib, 'A')['status']), (1, 'done'))
 
     def test_unreadable_source_is_reported_not_treated_as_empty(self):
-        pdu.list_entries = lambda url: None
+        pdu.list_entries = lambda url, **kw: None
         items, r = self.sync()
         self.assertEqual((items[0]['verdict'], r['downloaded']), ('unreadable', 0))
 
