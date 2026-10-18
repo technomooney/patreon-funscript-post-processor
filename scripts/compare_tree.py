@@ -34,6 +34,25 @@ def list_versions(root: str) -> list[str]:
     return sorted(d for d in os.listdir(base) if d[:1] == 'v' and os.path.isfile(os.path.join(base, d, 'tree.jsonl.gz')))
 
 
+def version_scope(root: str, version: str) -> str:
+    """The folder (below the library root, '' = all) that snapshot covered."""
+    try:
+        with open(os.path.join(root, library_db.DATA_DIRNAME, rs.PREVIOUS, version, 'snapshot.json'), encoding='utf-8') as f:
+            return json.load(f).get('scope', '')
+    except (OSError, json.JSONDecodeError):
+        return ''
+
+
+def region_for(version_scope_: str, wanted: str):
+    """The part of the library to compare for a snapshot of *version_scope_* when the user asked about *wanted*:
+    the more specific of the two, or None if they do not overlap."""
+    if not version_scope_ or wanted == version_scope_ or wanted.startswith(version_scope_ + os.sep):
+        return wanted
+    if not wanted or version_scope_.startswith(wanted + os.sep):
+        return version_scope_
+    return None
+
+
 def load_snapshot(root: str, version: str) -> dict[str, tuple]:
     path = os.path.join(root, library_db.DATA_DIRNAME, rs.PREVIOUS, version, 'tree.jsonl.gz')
     out = {}
@@ -155,24 +174,35 @@ def render_html(root: str, version: str, result: dict) -> str:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description='Compare a library with its saved pre-reset tree snapshot')
-    parser.add_argument('root')
+    parser.add_argument('root', help='the library root, or a folder inside it (compares just that folder)')
     parser.add_argument('--version', type=int, help='snapshot number (default: newest)')
     parser.add_argument('--creator', help='only this top-level creator folder')
     parser.add_argument('--only', help='only paths containing this text')
     parser.add_argument('--restore-names', action='store_true', help='list the renames that would restore old names')
     parser.add_argument('--apply', action='store_true', help='with --restore-names: actually rename')
     args = parser.parse_args(argv)
-    root = os.path.abspath(os.path.expanduser(args.root))
+    root, wanted = rs.resolve_target(args.root)
     versions = list_versions(root)
     if not versions:
         print(f'No snapshot in {root}/.library-data/{rs.PREVIOUS}. Run reset.sh first.')
         return 2
-    version = next((v for v in versions if args.version and int(v[1:4]) == args.version), None) if args.version else versions[-1]
-    if not version:
-        print(f'No snapshot v{args.version:03d}. Available: {", ".join(versions)}')
+    if args.version:
+        version = next((v for v in versions if int(v[1:4]) == args.version), None)
+        if not version:
+            print(f'No snapshot v{args.version:03d}. Available: {", ".join(versions)}')
+            return 2
+        region = region_for(version_scope(root, version), wanted)
+    else:
+        version, region = next(((v, r) for v in reversed(versions)
+                                if (r := region_for(version_scope(root, v), wanted)) is not None), (None, None))
+    if version is None or region is None:
+        print(f'No snapshot covers {wanted or "the library"}. Snapshots: ' +
+              ', '.join(f'{v} ({version_scope(root, v) or "whole library"})' for v in versions))
         return 2
-    old = load_snapshot(root, version)
-    new = {r: (k, s) for r, k, s, _m in rs.iter_tree(root)}
+    prefix = region + os.sep if region else ''
+    old = {p: v for p, v in load_snapshot(root, version).items() if not region or p == region or p.startswith(prefix)}
+    new = {r: (k, s) for r, k, s, _m in rs.iter_tree(root, region)}
+    print(f'Comparing {os.path.join(root, region) if region else root} with snapshot {version}.')
     result = compare(old, new, args.creator, args.only)
     print(f'Snapshot {version}: {len(result["missing"])} path(s) missing now, {len(result["added"])} new, '
           f'{len(result["dir_renames"])} folder(s) and {len(result["file_renames"])} file(s) renameable back.')

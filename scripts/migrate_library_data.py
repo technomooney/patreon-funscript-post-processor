@@ -1,11 +1,15 @@
 """Convert existing libraries to the shared library database (<library root>/.library-data/library.db).
 
 Run it by hand, outside the menu:
-    ./migrate.sh /path/to/Patreon            (dry run: prints a report, writes NOTHING)
-    ./migrate.sh /path/to/Patreon --apply    (imports)
-    migrate.bat D:\\Patreon [--apply]
+    ./migrate.sh /path/to/Patreon --children            (dry run: prints a report, writes NOTHING)
+    ./migrate.sh /path/to/Patreon --children --apply    (imports; one database per creator folder)
+    ./migrate.sh /path/to/Patreon/Pize --apply          (just one library)
+    migrate.bat D:\\Patreon --children [--apply]
 
-Give it a LIBRARY ROOT -- the folder above all the creator folders you want in one database. It imports:
+A LIBRARY is the folder the tools are run on -- for the downloader one creator's folder (Pize, MDemaxis, ...), for the
+compressor its library folder. Each library has its OWN database, `<library>/.library-data/library.db`, never one
+shared by a parent folder. Give it library folder(s), or use --children on a folder that holds several libraries
+(e.g. ~/funscripts/Patreon --children): every folder directly inside becomes its own library. It imports:
   * every per-folder .folder_log.json                                -> runs
   * the AV1 compressor's .av1-compressor/library_log.jsonl            -> runs
   * logs an older compressor parked in .av1-compressor/legacy_folder_logs/  -> runs (history that would otherwise
@@ -121,6 +125,14 @@ def scan(root: str) -> dict:
                 movable.append(os.path.join(dirpath, LEGACY_LOG))
                 runs += [(_rel(parked_root, dirpath), r) for r in data if isinstance(r, dict)]
 
+    parent = os.path.dirname(root)
+    while parent != os.path.dirname(parent):
+        if os.path.isdir(os.path.join(parent, library_db.DATA_DIRNAME)):
+            problems.append({'kind': 'parent_library_data', 'path': os.path.join(parent, library_db.DATA_DIRNAME),
+                             'detail': 'a parent folder has its own .library-data, which would take over this library; '
+                                       'each library must have its own and no parent may'})
+            break
+        parent = os.path.dirname(parent)
     for path in nested:
         problems.append({'kind': 'nested_library_data', 'path': path,
                          'detail': 'a second .library-data inside the library would shadow this root for everything '
@@ -308,17 +320,26 @@ def format_report(plan: dict, applied: dict | None, moved: list | None = None) -
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description='Convert libraries to the shared library database '
                                                  '(dry run unless --apply)')
-    parser.add_argument('roots', nargs='+', help='library root folder(s): the folder above the creator folders')
+    parser.add_argument('roots', nargs='+', help='library folder(s) (with --children: folder(s) holding libraries)')
+    parser.add_argument('--children', action='store_true',
+                        help='treat every folder directly inside each given folder as its own library')
     parser.add_argument('--apply', action='store_true', help='actually import (default: dry run, writes nothing)')
     parser.add_argument('--report', help='also write the full plan and problems to this JSON file')
     args = parser.parse_args(argv)
 
     full = []
-    for root in args.roots:
-        root = os.path.abspath(os.path.expanduser(root))
-        if not os.path.isdir(root):
-            print(f'Not a folder: {root}')
+    roots = []
+    for given in args.roots:
+        given = os.path.abspath(os.path.expanduser(given))
+        if not os.path.isdir(given):
+            print(f'Not a folder: {given}')
             return 2
+        if args.children:
+            roots += [os.path.join(given, d) for d in sorted(os.listdir(given))
+                      if not d.startswith('.') and d not in library_db.SKIP_DIRNAMES and os.path.isdir(os.path.join(given, d))]
+        else:
+            roots.append(given)
+    for root in roots:
         plan = build_plan(root)
         applied = apply_plan(plan) if args.apply else None
         moved = move_legacy(plan) if applied else None

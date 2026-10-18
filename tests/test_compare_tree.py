@@ -74,6 +74,13 @@ class CompareTests(unittest.TestCase):
         self.w('C/[11111] copy B/clip 1.mp4', 'a' * 100)
         self.assertEqual(self.result()['dir_renames'], [])
 
+    def test_scoped_snapshot_is_found_from_the_whole_library_and_from_the_folder(self):
+        self.assertEqual(ct.version_scope(self.root, ct.list_versions(self.root)[-1]), '')
+        self.assertEqual(ct.region_for('C', 'C'), 'C')
+        self.assertEqual(ct.region_for('C', ''), 'C')
+        self.assertEqual(ct.region_for('', 'C/x'), 'C/x')
+        self.assertIsNone(ct.region_for('C', 'D'))
+
     def test_filters(self):
         self.redownload_with_other_names()
         self.assertEqual(self.result(only='no-such-text')['dir_renames'], [])

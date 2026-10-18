@@ -2,8 +2,11 @@
 
 For when the whole library has to be downloaded again (e.g. everything was compressed by an old compressor) and
 you want the normal download process to rebuild it from scratch. Standalone, not in the menu:
-    ./reset.sh /path/to/library-root                          1. plan + HTML report + confirmation token (read-only)
-    ./reset.sh /path/to/library-root --confirm TOKEN          2. apply (resumable)
+    ./reset.sh /path/to/folder                                1. plan + HTML report + confirmation token (read-only)
+    ./reset.sh /path/to/folder --confirm TOKEN                2. apply (resumable)
+The folder is the whole library (the one holding .library-data) or any folder inside it, e.g. one creator's folder:
+then only that folder is reset and the rest of the library is left alone. Running step 1 again while a plan is still
+waiting prints the SAME token and report; running it while a reset is half-done tells you to resume it instead.
 Compare afterwards with  ./compare_tree.sh /path/to/library-root   (see compare_tree.py).
 
 What it does:
@@ -87,11 +90,26 @@ def _now() -> str:
 # Scanning
 # ---------------------------------------------------------------------------
 
-def find_manual_folders(root: str) -> list[str]:
+def resolve_target(path: str) -> tuple[str, str]:
+    """(library root, scope) for a folder given on the command line: the root is the nearest parent holding a
+    .library-data folder; the scope is the folder's path below it ('' = the whole library)."""
+    path = os.path.abspath(os.path.expanduser(path))
+    cur = path
+    while True:
+        if os.path.isfile(library_db.db_path(cur)):
+            rel = os.path.relpath(path, cur)
+            return cur, ('' if rel == '.' else rel)
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return path, ''
+        cur = parent
+
+
+def find_manual_folders(root: str, scope: str = '') -> list[str]:
     """Relative paths of every folder the USER marked `.manual` ('' = the root itself). A `.manual` that sits next to
     `.consolidated` was written by consolidate_packs / extract_variant_archives, not by a person, so it is not kept."""
     found = []
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(os.path.join(root, scope)):
         dirnames[:] = sorted(d for d in dirnames if d not in KEEP_DIRNAMES)
         if '.manual' in filenames and '.consolidated' not in filenames:
             rel = os.path.relpath(dirpath, root)
@@ -110,11 +128,11 @@ def _under(rel: str, folders) -> bool:
     return any(rel == f or rel.startswith(f + os.sep) for f in folders)
 
 
-def removal_entries(root: str, manual: list[str]) -> list[tuple[str, str]]:
+def removal_entries(root: str, manual: list[str], scope: str = '') -> list[tuple[str, str]]:
     """[(relative path, 'd'|'f')] -- the minimal set of entries whose removal clears everything except the
     protected `.manual` folders, the folders above them and the hidden/config entries at the top two levels."""
-    if '' in manual:
-        return []                                      # the root itself is marked: nothing is removed
+    if scope in manual:
+        return []                                      # the folder being reset is itself marked: nothing is removed
     keep_dirs = set(manual)
     above = set().union(*(_ancestors(m) for m in manual)) if manual else set()
     out: list[tuple[str, str]] = []
@@ -140,7 +158,7 @@ def removal_entries(root: str, manual: list[str]) -> list[tuple[str, str]]:
             else:
                 out.append((erel, 'd'))
 
-    walk('', 0)
+    walk(scope, len(scope.split(os.sep)) if scope else 0)
     return out
 
 
@@ -163,9 +181,9 @@ def _tree_stats(root: str, rel: str, kind: str) -> tuple[int, int]:
     return n, size
 
 
-def iter_tree(root: str):
-    """Yield (rel, 'd'|'f', size, mtime_ns) for everything under root except the tools' own folders."""
-    for dirpath, dirnames, filenames in os.walk(root):
+def iter_tree(root: str, scope: str = ''):
+    """Yield (rel, 'd'|'f', size, mtime_ns) for everything under root/scope except the tools' own folders."""
+    for dirpath, dirnames, filenames in os.walk(os.path.join(root, scope)):
         dirnames[:] = sorted(d for d in dirnames if d not in KEEP_DIRNAMES)
         rel_dir = os.path.relpath(dirpath, root)
         for d in dirnames:
@@ -191,9 +209,9 @@ def _mtime(path: str) -> int:
 # 1. Plan
 # ---------------------------------------------------------------------------
 
-def build_plan(root: str) -> dict:
-    manual = find_manual_folders(root)
-    entries = removal_entries(root, manual)
+def build_plan(root: str, scope: str = '') -> dict:
+    manual = find_manual_folders(root, scope)
+    entries = removal_entries(root, manual, scope)
     items, total_files, total_bytes = [], 0, 0
     per_creator: dict[str, list[int]] = {}
     for rel, kind in entries:
@@ -209,8 +227,8 @@ def build_plan(root: str) -> dict:
         n, size = _tree_stats(root, m, 'd')
         kept.append({'path': m, 'files': n, 'bytes': size})
     material = json.dumps([library_db.library_id(root), [[i['path'], i['kind'], i['files'], i['bytes']] for i in items],
-                           manual], sort_keys=True)
-    return {'root': root, 'generated_at': _now(), 'fingerprint': hashlib.sha256(material.encode()).hexdigest(),
+                           manual, scope], sort_keys=True)
+    return {'root': root, 'scope': scope, 'generated_at': _now(), 'fingerprint': hashlib.sha256(material.encode()).hexdigest(),
             'entries': items, 'manual': kept, 'total_files': total_files, 'total_bytes': total_bytes,
             'per_creator': {k: {'files': v[0], 'bytes': v[1]} for k, v in sorted(per_creator.items())}}
 
@@ -221,6 +239,23 @@ def record_plan(root: str, plan: dict) -> str:
     plan.update(token=token, expires_at=expires, status='planned', version=None, phase=None)
     library_db.tool_data_set(root, TOOL, PLAN_KEY + token, plan, _UPDATED_BY)
     return token
+
+
+def all_plans(root: str) -> list[dict]:
+    with library_db.db(root) as con:
+        rows = con.execute("SELECT value_json FROM tool_data WHERE tool=? AND key LIKE ?", (TOOL, PLAN_KEY + '%')).fetchall()
+    return [json.loads(r['value_json']) for r in rows]
+
+
+def in_progress(root: str) -> dict | None:
+    """A reset that was started (snapshot taken / removal begun) but not finished, if any."""
+    return next((p for p in all_plans(root) if p.get('status') == 'running'), None)
+
+
+def pending_same_plan(root: str, plan: dict) -> dict | None:
+    """An earlier, unexpired, not-yet-applied plan for exactly the same tree state, so the token can be reused."""
+    return next((p for p in all_plans(root) if p.get('status') == 'planned' and p['expires_at'] >= _now()
+                 and p['fingerprint'] == plan['fingerprint']), None)
 
 
 def _load(root: str, token: str) -> dict:
@@ -240,7 +275,7 @@ def check_token(root: str, token: str) -> dict:
         raise TokenError('This plan was already applied. Generate a new plan if you want to reset again.')
     if plan['expires_at'] < _now():
         raise TokenError('That token has expired. Generate a new plan.')
-    if plan['status'] == 'planned' and build_plan(root)['fingerprint'] != plan['fingerprint']:
+    if plan['status'] == 'planned' and build_plan(root, plan.get('scope', ''))['fingerprint'] != plan['fingerprint']:
         raise TokenError('The library changed since the report was made. Generate a new plan and read its report.')
     return plan
 
@@ -259,7 +294,7 @@ def render_plan_html(plan: dict) -> str:
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Library reset plan</title><style>{_CSS}</style></head><body><main>
 <h1>Library reset plan</h1>
-<p class="muted">{e(plan['root'])} &middot; generated {e(plan['generated_at'])}. Nothing has been changed yet.</p>
+<p class="muted">{e(plan['root'])}{(' &rsaquo; <b>' + e(plan['scope']) + '</b> only') if plan.get('scope') else ''} &middot; generated {e(plan['generated_at'])}. Nothing has been changed yet.</p>
 <div class="cards"><div class="card"><b>{plan['total_files']}</b>files to remove</div><div class="card"><b>{_gb(plan['total_bytes'])}</b>to be freed</div>
 <div class="card"><b>{len(plan['manual'])}</b>.manual folders kept</div></div>
 <p><b class="bad">This DELETES everything listed below</b> (it is not moved to .trash). Before that, a snapshot of the whole tree
@@ -269,7 +304,7 @@ themselves come back through your normal download. Folders holding a <code>.manu
 The library database then forgets run history, file identities, pixeldrain links and Pize manifest data outside the kept folders.</p>
 <div class="token"><b>Confirmation token</b> (valid until {e(plan['expires_at'])}; only works while the library is unchanged):<br>
 <code id="tok">{e(plan['token'])}</code> <button type="button" onclick="navigator.clipboard&&navigator.clipboard.writeText(document.getElementById('tok').textContent)">Copy</button><br>
-<span class="muted">Apply with:</span> <code>./reset.sh {e(plan['root'])} --confirm {e(plan['token'])}</code></div>
+<span class="muted">Apply with:</span> <code>./reset.sh {e(os.path.join(plan['root'], plan.get('scope', '')))} --confirm {e(plan['token'])}</code></div>
 <h2>Kept: .manual folders ({len(plan['manual'])})</h2><p class="muted">Untouched. These are the places you organised by hand.</p>
 <table><tr><th>Folder</th><th>Files</th><th>Size</th></tr>{kept}</table>
 <h2>Removed, per creator</h2><table><tr><th>Creator folder</th><th>Files</th><th>Size</th></tr>{cre}</table>
@@ -289,11 +324,11 @@ def _next_version_dir(root: str) -> str:
     return path
 
 
-def _write_snapshot(root: str, vdir: str, manual: list[str]) -> int:
+def _write_snapshot(root: str, vdir: str, manual: list[str], scope: str = '') -> int:
     tree = os.path.join(vdir, 'tree.jsonl.gz')
     count = 0
     with gzip.open(tree + '.tmp', 'wt', encoding='utf-8') as out:
-        for rel, kind, size, mtime in iter_tree(root):
+        for rel, kind, size, mtime in iter_tree(root, scope):
             out.write(json.dumps({'p': rel, 't': kind, 's': size, 'm': mtime}, ensure_ascii=False) + '\n')
             count += 1
             if kind == 'f' and os.path.basename(rel) in LOG_NAMES and not _under(os.path.dirname(rel), manual):
@@ -338,19 +373,36 @@ def _remove(root: str, entries: list[dict], progress=print) -> int:
     return done
 
 
-def _reset_db(root: str, manual: list[str]) -> dict:
-    """Forget everything outside the protected folders. One transaction."""
+def _reset_db(root: str, manual: list[str], scope: str = '') -> dict:
+    """Forget everything under *scope* (all of it when ''), except the protected folders. One transaction."""
+    def doomed(rel: str) -> bool:
+        rel = rel or ''
+        return (not scope or _under(rel, [scope])) and not _under(rel, manual)
+
     gone = {'runs': 0, 'files': 0, 'links': 0, 'drift': 0, 'markers': 0, 'tool_data': 0}
     with library_db.db(root, write=True) as con:
+        file_links = set()
         for table, key in (('runs', 'folder'), ('files', 'folder'), ('drift', 'folder'), ('markers', 'path')):
-            ids = [r['id'] for r in con.execute(f'SELECT id, {key} FROM {table}') if not _under(r[key] or '', manual)]
-            con.executemany(f'DELETE FROM {table} WHERE id=?', [(i,) for i in ids])
-            gone[table] = len(ids)
-        con.execute("DELETE FROM pixeldrain_links WHERE link_id NOT IN "
-                    "(SELECT pixeldrain_id FROM files WHERE COALESCE(pixeldrain_id,'')!='')")
-        gone['links'] = con.execute('SELECT changes()').fetchone()[0]
-        con.execute("DELETE FROM tool_data WHERE tool='pize_pixeldrain_archives'")
-        gone['tool_data'] = con.execute('SELECT changes()').fetchone()[0]
+            rows = [r for r in con.execute(f'SELECT * FROM {table}') if doomed(r[key])]
+            if table == 'files':
+                file_links = {r['pixeldrain_id'] for r in rows if r['pixeldrain_id']}
+            con.executemany(f'DELETE FROM {table} WHERE id=?', [(r['id'],) for r in rows])
+            gone[table] = len(rows)
+        still = {r[0] for r in con.execute("SELECT pixeldrain_id FROM files WHERE COALESCE(pixeldrain_id,'')!=''")}
+        for r in con.execute('SELECT link_id, extra_json FROM pixeldrain_links').fetchall():
+            try:
+                folder = json.loads(r['extra_json'] or '{}').get('creator_folder')
+            except json.JSONDecodeError:
+                folder = None
+            mine = (not scope) or r['link_id'] in file_links or (folder is not None and _under(folder, [scope]))
+            if mine and r['link_id'] not in still:
+                con.execute('DELETE FROM pixeldrain_links WHERE link_id=?', (r['link_id'],))
+                gone['links'] += 1
+        for r in con.execute("SELECT key FROM tool_data WHERE tool='pize_pixeldrain_archives'").fetchall():
+            creator = r['key'].split(':', 1)[-1]
+            if not scope or _under(creator, [scope]) or _under(scope, [creator]):
+                con.execute("DELETE FROM tool_data WHERE tool='pize_pixeldrain_archives' AND key=?", (r['key'],))
+                gone['tool_data'] += 1
         con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('last_reset', ?)", (_now(),))
     return gone
 
@@ -366,7 +418,9 @@ def apply(root: str, token: str, progress=print) -> dict:
     vdir = plan['version']
     if plan['phase'] == 'start':
         progress('Writing the tree snapshot...')
-        plan['snapshot_entries'] = _write_snapshot(root, vdir, manual)
+        with open(os.path.join(vdir, 'snapshot.json'), 'w', encoding='utf-8') as f:
+            json.dump({'scope': plan.get('scope', ''), 'created': _now(), 'root': root}, f)
+        plan['snapshot_entries'] = _write_snapshot(root, vdir, manual, plan.get('scope', ''))
         plan['phase'] = 'snapshot'
         _save(root, plan)
     if plan['phase'] == 'snapshot':
@@ -381,10 +435,10 @@ def apply(root: str, token: str, progress=print) -> dict:
         _save(root, plan)
     result = {'version': vdir}
     if plan['phase'] == 'removed':
-        result['forgot'] = _reset_db(root, manual)
+        result['forgot'] = _reset_db(root, manual, plan.get('scope', ''))
         plan.update(phase='done', status='done', finished_at=_now())
         _save(root, plan)
-        meta = {k: plan[k] for k in ('root', 'generated_at', 'finished_at', 'total_files', 'total_bytes',
+        meta = {k: plan[k] for k in ('root', 'scope', 'generated_at', 'finished_at', 'total_files', 'total_bytes',
                                      'snapshot_entries', 'manual', 'per_creator')}
         with open(os.path.join(vdir, 'meta.json'), 'w', encoding='utf-8') as f:
             json.dump(meta, f, indent=1, ensure_ascii=False)
@@ -401,30 +455,51 @@ def apply(root: str, token: str, progress=print) -> dict:
 # ---------------------------------------------------------------------------
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description='Reset a library for a fresh download, keeping a snapshot and .manual folders')
-    parser.add_argument('root', help='library root folder')
+    parser = argparse.ArgumentParser(description='Reset a library (or one folder in it) for a fresh download, keeping a '
+                                                 'snapshot and .manual folders')
+    parser.add_argument('folder', help='the library root, or any folder inside it (e.g. one creator)')
     parser.add_argument('--confirm', metavar='TOKEN', help='apply the plan that produced this token')
     parser.add_argument('--yes', action='store_true', help='skip the typed confirmation (the token is still required)')
     args = parser.parse_args(argv)
-    root = os.path.abspath(os.path.expanduser(args.root))
+    root, scope = resolve_target(args.folder)
     if not os.path.isfile(library_db.db_path(root)):
-        print(f'No library database in {root}. Run migrate.sh on it first.')
+        print(f'No library database found in or above {args.folder}. Run migrate.sh on the library first.')
         return 2
+    target = os.path.join(root, scope)
+    if not os.path.isdir(target):
+        print(f'Not a folder: {target}')
+        return 2
+    label = f'{root}  >  {scope}' if scope else root
 
     if not args.confirm:
-        print('Planning (reading the tree; nothing is changed)...')
-        plan = build_plan(root)
-        token = record_plan(root, plan)
-        report = os.path.join(library_db.data_dir(root, 'reports'), f'reset_plan_{time.strftime("%Y%m%d_%H%M%S")}.html')
-        with open(report, 'w', encoding='utf-8') as f:
-            f.write(render_plan_html(plan))
+        running = in_progress(root)
+        if running:
+            print(f'A reset of {os.path.join(running["root"], running["scope"])} is already IN PROGRESS (phase: {running["phase"]}).\n'
+                  f'Finish it first with the same token:\n  ./reset.sh "{os.path.join(running["root"], running["scope"])}" --confirm {running["token"]}')
+            return 3
+        print(f'Planning {label} (reading the tree; nothing is changed)...')
+        plan = build_plan(root, scope)
+        same = pending_same_plan(root, plan)
+        if same and same.get('report') and os.path.isfile(same['report']):
+            plan, token, report = same, same['token'], same['report']
+            print('A plan for exactly this state is already waiting; reusing it.')
+        else:
+            token = record_plan(root, plan)
+            report = os.path.join(library_db.data_dir(root, 'reports'), f'reset_plan_{time.strftime("%Y%m%d_%H%M%S")}.html')
+            with open(report, 'w', encoding='utf-8') as f:
+                f.write(render_plan_html(plan))
+            plan['report'] = report
+            _save(root, plan)
         print(f'  would remove {plan["total_files"]} file(s), {_gb(plan["total_bytes"])}; keeping {len(plan["manual"])} .manual folder(s)')
-        print(f'\nReport written: {report}\nRead it, then apply with:\n  ./reset.sh "{root}" --confirm {token}')
+        print(f'\nReport: {report}\nToken:  {token}\nRead the report, then apply with:\n  ./reset.sh "{target}" --confirm {token}')
         return 0
 
     try:
         plan = check_token(root, args.confirm)
-        print(f'Plan from {plan["generated_at"]}: remove {plan["total_files"]} file(s), {_gb(plan["total_bytes"])}.')
+        if plan.get('scope', '') != scope:
+            raise TokenError(f'That token is for {plan.get("scope") or "the whole library"}, not for '
+                             f'{scope or "the whole library"}. Use the same folder you planned.')
+        print(f'Plan from {plan["generated_at"]} for {label}: remove {plan["total_files"]} file(s), {_gb(plan["total_bytes"])}.')
         if plan['status'] == 'planned' and not args.yes and \
                 input('This DELETES them (a snapshot is saved first). Type RESET to continue: ').strip() != 'RESET':
             print('Cancelled. Nothing changed.')
@@ -434,7 +509,7 @@ def main(argv=None) -> int:
         print(f'Refused: {e}')
         return 2
     print(f'Done. Snapshot: {result["version"]}\nDatabase forgot: {result.get("forgot")}\n'
-          f'Now run the regular download; compare later with ./compare_tree.sh "{root}"')
+          f'Now run the regular download; compare later with ./compare_tree.sh "{target}"')
     return 0
 
 

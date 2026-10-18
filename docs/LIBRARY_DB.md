@@ -7,7 +7,7 @@ change one, copy to all.
 ## Two tiers
 | Tier | Where | Holds |
 |---|---|---|
-| Library DB | `<library root>/.library-data/library.db` | history of that library's content; travels with the library |
+| Library DB | `<library>/.library-data/library.db` (a library = the folder a tool is run on, e.g. one creator folder; never shared by a parent) | history of that library's content; travels with the library |
 | App DB | `app_paths.app_home()/app.db` (`~/.local/share/library-tools`, `%LOCALAPPDATA%\library-tools`, or `$LIBRARY_TOOLS_HOME`) | per-machine/user: creator profiles, passwords, Discord config, last-action pointer, library registry; browser profiles in `profiles/` |
 
 Libraries are not git repos, so a library's history must live inside it. Secrets stay in the OS keyring.

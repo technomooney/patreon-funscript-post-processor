@@ -146,6 +146,68 @@ class ResetTests(unittest.TestCase):
         self.assertFalse(self.exists('Pize/[9] emptied by tool'))
         self.assertTrue(self.exists('Creator/[2] manual post/keep.mp4'))
 
+    def test_resolves_a_folder_inside_the_library_to_root_and_scope(self):
+        self.assertEqual(rs.resolve_target(os.path.join(self.root, 'Other')), (self.root, 'Other'))
+        self.assertEqual(rs.resolve_target(self.root), (self.root, ''))
+
+    def test_scoped_reset_touches_only_that_folder_and_its_database_rows(self):
+        library_db.add_run(self.root, 'Other/[5] post', 'x', {'script': 'x'}, 't')
+        library_db.add_file(self.root, 't', folder='Other/[5] post', orig_name='b.mp4', cur_name='b.mp4', pixeldrain_id='OTHERLINK')
+        library_db.upsert_link(self.root, 'OTHERLINK', 't', status='done')
+        plan = rs.build_plan(self.root, 'Creator')
+        self.assertTrue(all(e['path'].startswith('Creator' + os.sep) for e in plan['entries']))
+        token = rs.record_plan(self.root, plan)
+        rs.apply(self.root, token, progress=lambda *_: None)
+        self.assertFalse(self.exists('Creator/[1] post one'))
+        self.assertTrue(self.exists('Creator/[2] manual post/keep.mp4'))
+        self.assertTrue(self.exists('Creator/creator_config.json'))
+        for kept in ('Other/[5] post/b.mp4', 'Pize/_pixeldrain/pack.zip', 'top-level-note.txt'):
+            self.assertTrue(self.exists(kept), kept)
+        self.assertEqual(library_db.runs_for(self.root, 'Creator/[1] post one'), [])
+        self.assertEqual(len(library_db.runs_for(self.root, 'Other/[5] post')), 1)
+        self.assertIsNone(library_db.get_link(self.root, 'GONE'))
+        self.assertIsNotNone(library_db.get_link(self.root, 'OTHERLINK'))
+        self.assertIsNotNone(library_db.tool_data_get(self.root, 'pize_pixeldrain_archives', 'legacy_manifest_extra:Pize'))
+
+    def test_token_is_tied_to_its_folder(self):
+        token = rs.record_plan(self.root, rs.build_plan(self.root, 'Creator'))
+        rc = rs.main([os.path.join(self.root, 'Other'), '--confirm', token, '--yes'])
+        self.assertEqual(rc, 2)
+        self.assertTrue(self.exists('Creator/[1] post one'))
+
+    def test_rerunning_the_plan_reuses_the_waiting_token_and_flags_a_half_done_reset(self):
+        import io
+        from contextlib import redirect_stdout
+
+        def run(*a):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = rs.main([*a])
+            return rc, buf.getvalue()
+        folder = os.path.join(self.root, 'Creator')
+        _, out1 = run(folder)
+        token = out1.split('Token:')[1].split()[0]
+        _, out2 = run(folder)
+        self.assertIn('reusing', out2)
+        self.assertEqual(out2.split('Token:')[1].split()[0], token)
+        real = rs.shutil.rmtree
+        calls = {'n': 0}
+
+        def flaky(path, *a, **k):
+            calls['n'] += 1
+            if calls['n'] == 2:
+                raise KeyboardInterrupt
+            return real(path, *a, **k)
+        with mock.patch.object(rs.shutil, 'rmtree', flaky):
+            with self.assertRaises(KeyboardInterrupt):
+                run(folder, '--confirm', token, '--yes')
+        rc, out3 = run(folder)                                       # launching again: told to resume, no new plan
+        self.assertEqual(rc, 3)
+        self.assertIn(token, out3)
+        self.assertIn('IN PROGRESS', out3)
+        rc, _ = run(folder, '--confirm', token, '--yes')
+        self.assertEqual(rc, 0)
+
     def test_marked_root_removes_nothing(self):
         self.w('.manual', '')
         self.assertEqual(rs.build_plan(self.root)['entries'], [])

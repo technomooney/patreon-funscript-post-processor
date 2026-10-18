@@ -153,6 +153,24 @@ class MigrateTests(unittest.TestCase):
         self.run_main('--apply')
         self.assertTrue(os.path.isfile(os.path.join(self.root, 'broken', '.folder_log.json')))   # unread -> not moved
 
+    def test_children_flag_gives_every_folder_its_own_database(self):
+        self._w('Other/post/.folder_log.json', json.dumps([{'timestamp': '2026-03-01T00:00:00', 'script': 'check_funscripts'}]))
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(mig.main([self.root, '--children', '--apply']), 0)
+        for creator in ('creator', 'pize', 'Other'):
+            self.assertTrue(os.path.isfile(os.path.join(self.root, creator, '.library-data', 'library.db')), creator)
+        self.assertFalse(os.path.exists(os.path.join(self.root, '.library-data')))     # the parent has none
+        library_db._roots.clear()
+        self.assertEqual(len(library_db.runs_for(os.path.join(self.root, 'Other'), 'post')), 1)
+
+    def test_a_parent_library_data_is_reported(self):
+        os.makedirs(os.path.join(self.root, '.library-data'))
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            mig.main([os.path.join(self.root, 'creator')])
+        self.assertIn('parent_library_data', buf.getvalue())
+
     def test_interrupted_apply_leaves_the_database_untouched(self):
         plan = mig.build_plan(self.root)
         plan['files'].append({'folder': 'x', 'orig_name': 'boom', 'cur_name': 'boom', 'orig_size': 1, 'cur_size': 1,

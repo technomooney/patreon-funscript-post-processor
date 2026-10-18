@@ -160,7 +160,7 @@ All settings live in `.env` (created by setup). Key options:
 
 ## Shared library database and migration
 
-History, file identity and pixeldrain state now live in one SQLite file per library, `<library root>/.library-data/library.db`,
+History, file identity and pixeldrain state now live in one SQLite file per library, `<library>/.library-data/library.db`,
 shared with the AV1 compressor (contract: `docs/LIBRARY_DB.md`, reasons: `docs/DECISIONS.md`). Per-user data (creator
 profiles, passwords, browser logins) lives in your user data directory (`~/.local/share/library-tools`, or
 `%LOCALAPPDATA%\library-tools`; override with `LIBRARY_TOOLS_HOME`), copied in from the old repo-folder files on first use.
@@ -169,11 +169,12 @@ To convert an existing library, run the migration **outside the menu**. It is a 
 moves or deletes anything, and is safe to repeat:
 
 ```
-./migrate.sh /path/to/library-root            # report only
-./migrate.sh /path/to/library-root --apply
+./migrate.sh /path/to/Patreon --children            # report only; every creator folder becomes its own library
+./migrate.sh /path/to/Patreon --children --apply
+./migrate.sh /path/to/Patreon/Pize --apply           # or just one library
 ```
 
-`/path/to/library-root` is the folder above all the creator folders you want in one database. Creator-specific
+A **library** is the folder a tool is run on: one creator's folder for the downloader (Pize, Uberdude430, ...), its library folder for the compressor. Every library has its own `.library-data` and no parent folder shares one. Creator-specific
 "Pixeldrain repo sync" and "Discord channel" plugins (menu `s`) then download only files you do not already own,
 including ones the compressor transcoded.
 
@@ -183,10 +184,10 @@ To redo a whole library through the regular download process (for example after 
 `reset.sh` (`reset.bat`) removes everything **except** folders holding a `.manual` marker, after saving a snapshot:
 
 ```
-./reset.sh /path/to/library-root                     # 1. plan: HTML report (what goes, what is kept) + token; changes nothing
-./reset.sh /path/to/library-root --confirm TOKEN     # 2. apply (resumable); type RESET to confirm
-./compare_tree.sh /path/to/library-root              # later: what differs from the old layout (HTML report)
-./compare_tree.sh /path/to/library-root --restore-names [--apply]   # put old post/file names back where they clearly match
+./reset.sh /path/to/library                     # 1. plan: HTML report (what goes, what is kept) + token; changes nothing
+./reset.sh /path/to/library --confirm TOKEN     # 2. apply (resumable); type RESET to confirm
+./compare_tree.sh /path/to/library              # later: what differs from the old layout (HTML report)
+./compare_tree.sh /path/to/library --restore-names [--apply]   # put old post/file names back where they clearly match
 ```
 
 The snapshot lives in `<library>/.library-data/previous/vNNN_<time>/` (every path with size and time, a copy of the
