@@ -49,11 +49,11 @@ class HybridTests(unittest.TestCase):
         desc(b, 'https://example.com/w')
         fs(os.path.join(b, 'B.funscript'), [(0, 5), (100, 50)])            # not in archive
         desc(os.path.join(self.base, 'Secret Thing'))                       # title only
-        os.makedirs(os.path.join(self.base, 'discord'))
-        fs(os.path.join(self.base, 'discord', 'Secret Thing.funscript'), [(0, 9)])
+        os.makedirs(os.path.join(self.base, hyb.DISCORD_DEST))
+        fs(os.path.join(self.base, hyb.DISCORD_DEST, 'Secret Thing.funscript'), [(0, 9)])
 
-        os.makedirs(os.path.join(self.base, 'archive', 'sub'))
-        fs(os.path.join(self.base, 'archive', 'sub', 'Totally Different.funscript'), [(0, 1), (100, 90)])
+        os.makedirs(os.path.join(self.base, hyb.ARCHIVE_DEST, 'sub'))
+        fs(os.path.join(self.base, hyb.ARCHIVE_DEST, 'sub', 'Totally Different.funscript'), [(0, 1), (100, 90)])
 
         r = hyb.audit(self.base, self.lib)
         self.assertEqual([g['post'] for g in r['missing']], ['Post B'])

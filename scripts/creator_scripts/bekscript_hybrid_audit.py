@@ -4,14 +4,14 @@ For a creator whose scripts come from three places -- the Patreon downloader, on
 files, and a Discord channel that shares "secret" scripts the other two never carry -- this answers:
 
   1. Does the pixeldrain archive hold every funscript the Patreon downloads got? The archive is downloaded IN FULL
-     into the creator's 'archive' subfolder (its links come from the creator's Discord 'archive' channel and/or
+     into the creator's '!archive' subfolder (its links come from the creator's Discord 'archive' channel and/or
      saved pixeldrain lists; the monthly reward scripts are in that archive too); the Patreon downloads are only the checklist. Matching is by the script's POINT DATA
      (funscript_utils.funscript_data), never by name, so a renamed or re-saved script still matches.
   2. Which Patreon posts carry a script the archive lacks? Those are listed with the post's own (non-pixeldrain)
      links, so the normal download (menu 5) can fetch their media. Nothing is downloaded or moved here.
   3. Which Patreon posts are "secret" posts -- a title but no links, no scripts, no media? Those are tracked in a
      ledger (library database) and matched against files fetched from the creator's Discord channel by the
-     core Discord link sync (discord_pixeldrain_sync.py) (default subfolder 'discord'), by
+     core Discord link sync (discord_pixeldrain_sync.py) ('!discord' subfolder), by
      funscript name; the ledger records what each secret post resolved to, or that it is still unresolved.
 
 The fetching steps reuse the existing Discord and pixeldrain sync plugins (only-what-is-new, journaled for undo
@@ -38,8 +38,10 @@ MENU_DESCRIPTION = (
     'got; lists posts whose script the archive lacks; tracks title-only "secret" posts against the Discord downloads.'
 )
 REPLACES_DOWNLOAD = False
-DISCORD_DEST = 'discord'
-ARCHIVE_DEST = 'archive'
+# A leading '!' sorts these above the '[<post id>] ...' post folders in every file manager (and in plain ls).
+# They hold downloaded archives, not Patreon posts; scan_posts skips them by name.
+DISCORD_DEST = '!discord'
+ARCHIVE_DEST = '!archive'
 # BekScript's Discord channels (named in the creator profile; each asks for its IDs on first use): the archive's
 # links (monthly reward scripts are in that archive too) and the secret scripts' links. channel name -> folder.
 DISCORD_CHANNELS = {'archive': ARCHIVE_DEST, 'secrets': DISCORD_DEST}
