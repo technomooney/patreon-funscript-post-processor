@@ -231,6 +231,15 @@ class ResetTests(unittest.TestCase):
             self.assertEqual(rs.interactive(ask=lambda _p: next(answers)), 0)
         self.assertTrue(self.exists('Creator/[1] post one'))
 
+    def test_reset_confirmation_and_token_are_not_case_sensitive(self):
+        import io
+        from contextlib import redirect_stdout
+        token = rs.record_plan(self.root, rs.build_plan(self.root, 'Other'))
+        with mock.patch('builtins.input', return_value='reset'), redirect_stdout(io.StringIO()):
+            rc = rs.main([os.path.join(self.root, 'Other'), '--confirm', token.upper()])
+        self.assertEqual(rc, 0)
+        self.assertFalse(self.exists('Other/[5] post'))
+
     def test_marked_root_removes_nothing(self):
         self.w('.manual', '')
         self.assertEqual(rs.build_plan(self.root)['entries'], [])

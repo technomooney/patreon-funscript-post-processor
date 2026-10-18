@@ -490,7 +490,7 @@ def interactive(ask=input) -> int:
     if code not in (0, 3):
         return code
     print()
-    token = ask('Paste the token from the report to continue (just Enter to stop for now; the report stays the same next time): ').strip()
+    token = ask('Paste the token from the report to continue (just Enter to stop for now; the report stays the same next time): ').strip().lower()
     if not token:
         print('Stopped. Nothing was changed.')
         return 0
@@ -506,6 +506,8 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if not args.folder:
         return interactive()
+    if args.confirm:
+        args.confirm = args.confirm.strip().lower()           # tokens are lowercase hex; accept pasted capitals
     root, scope = resolve_target(args.folder)
     if not os.path.isfile(library_db.db_path(root)):
         libs = libraries_inside(root)
@@ -551,7 +553,7 @@ def main(argv=None) -> int:
                              f'{scope or "the whole library"}. Use the same folder you planned.')
         print(f'Plan from {plan["generated_at"]} for {label}: remove {plan["total_files"]} file(s), {_gb(plan["total_bytes"])}.')
         if plan['status'] == 'planned' and not args.yes and \
-                input('This DELETES them (a snapshot is saved first). Type RESET to continue: ').strip() != 'RESET':
+                input('This DELETES them (a snapshot is saved first). Type RESET to continue: ').strip().upper() != 'RESET':
             print('Cancelled. Nothing changed.')
             return 1
         result = apply(root, args.confirm)
