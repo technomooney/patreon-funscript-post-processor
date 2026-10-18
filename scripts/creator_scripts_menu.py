@@ -175,12 +175,29 @@ def configure_flags(creator_folder: str) -> None:
     else:
         cfg['download_script'] = script_id(chosen)
         recommended = getattr(chosen, 'RECOMMENDED_CONFIG', None) or {}
-        if recommended:
+        if recommended and not _is_id(chosen, current):       # only when newly picked, not every time it is re-chosen
             print(f'\n  {script_id(chosen)} recommends:')
             for k, v in recommended.items():
                 print(f'    {k}: {v}')
             if input('  Apply these? (y/n, default n): ').strip().lower() == 'y':
                 cfg.update(recommended)
+
+    if cfg.get('download_script') and _is_id(chosen, 'pixeldrain_archives'):
+        cur = cfg.get('pixeldrain_archive')
+        print('\n  Is this creator\'s pixeldrain archive a share of LOOSE FILES that is downloaded in full into one')
+        print('  folder (e.g. BekScript), instead of password-protected archives linked from each post (e.g. Pize)?')
+        ans = input(f'  (y/n) [{"y" if cur else "n"}]: ').strip().lower() or ('y' if cur else 'n')
+        if ans == 'y':
+            cur = cur if isinstance(cur, dict) else {}
+            folder = input(f'  folder it is downloaded into [{cur.get("dir", "!archive")}]: ').strip() or cur.get('dir', '!archive')
+            channel = input(f'  Discord channel name that carries its link [{cur.get("discord_channel", "archive")}]: ').strip() \
+                or cur.get('discord_channel', 'archive')
+            latest = input(f'  only the newest link in that channel counts? (y/n) '
+                           f'[{"y" if cur.get("latest_only", True) else "n"}]: ').strip().lower()
+            cfg['pixeldrain_archive'] = {'dir': folder, 'discord_channel': channel,
+                                         'latest_only': (latest == 'y') if latest in ('y', 'n') else cur.get('latest_only', True)}
+        else:
+            cfg.pop('pixeldrain_archive', None)
 
     print()
     cfg['sync_exclude'] = _ask_list(
