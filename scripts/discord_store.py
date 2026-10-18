@@ -42,6 +42,21 @@ def save_messages(root: str, creator: str, rows: list[dict]) -> int:
     return added
 
 
+def update_hrefs(root: str, creator: str, rows: list[dict]) -> int:
+    """Replace the stored links of messages that were read again (Discord's attachment links are signed and
+    expire, so a retry needs the fresh ones). Returns how many stored rows changed."""
+    changed = 0
+    with library_db.db(root, write=True) as con:
+        for m in rows:
+            cur = con.execute('UPDATE discord_messages SET hrefs_json=?, updated_by=?, updated_at=? '
+                              'WHERE creator=? AND message_id=? AND hrefs_json!=?',
+                              (json.dumps(m.get('hrefs', []), ensure_ascii=False), UPDATED_BY,
+                               time.strftime('%Y-%m-%dT%H:%M:%S'), creator, str(m['id']),
+                               json.dumps(m.get('hrefs', []), ensure_ascii=False)))
+            changed += cur.rowcount
+    return changed
+
+
 def stored_messages(root: str, creator: str) -> list[dict]:
     """Every stored message for *creator*, oldest first, regardless of processed state."""
     with library_db.db(root) as con:

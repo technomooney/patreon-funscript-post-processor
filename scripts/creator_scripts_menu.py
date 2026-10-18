@@ -173,6 +173,56 @@ def _ask_channel_ids(creator_folder: str, label: str) -> None:
         print(f'  saved the "{label}" channel.')
 
 
+def _edit_channel_jobs(creator_folder: str, cfg: dict) -> None:
+    """The "Discord channels" section: list this creator's channel jobs (discord_channels.py), add or remove them."""
+    import discord_channels as dcs
+    raw = list(cfg.get(dcs.KEY) or [])
+    print('\n  Discord channels (what each of this creator\'s channels is used for):')
+    while True:
+        if not raw:
+            print('    (none set up)')
+        for i, r in enumerate(raw, 1):
+            j = dcs.normalize(r)
+            print(f'    {i}) {dcs.describe(j) if j else "(unusable entry: " + str(r) + ")"}')
+        ans = input('  a = add a channel, r = remove one, Enter = done: ').strip().lower()
+        if not ans:
+            break
+        if ans == 'r' and raw:
+            n = input('  remove which number? ').strip()
+            if n.isdigit() and 1 <= int(n) <= len(raw):
+                raw.pop(int(n) - 1)
+            continue
+        if ans != 'a':
+            continue
+        label = input('  label for the channel (just our nickname, e.g. archive, secrets, uploads): ').strip()
+        if not label:
+            continue
+        _ask_channel_ids(creator_folder, label)
+        methods = list(dcs.METHODS)
+        for i, m in enumerate(methods, 1):
+            print(f'    {i}) {dcs.METHODS[m]}')
+        pick = input(f'  what does this channel carry? (1-{len(methods)}): ').strip()
+        if not (pick.isdigit() and 1 <= int(pick) <= len(methods)):
+            print('  skipped.')
+            continue
+        job = {'channel': label, 'method': methods[int(pick) - 1]}
+        if job['method'] != 'passwords':
+            job['dir'] = input(f'  folder to download into [!{label}]: ').strip() or f'!{label}'
+        if job['method'] == 'pixeldrain_links':
+            print('    1) every message is its own link -- fetch them all')
+            print('    2) a new post replaces the last -- only the newest post\'s link counts')
+            job['mode'] = 'latest' if input('  which? (1/2) [1]: ').strip() == '2' else 'every'
+        if job['method'] == 'attachments':
+            exts = input('  only these file extensions, comma-separated (Enter = funscript, zip, rar, 7z, common videos): ').strip()
+            if exts:
+                job['exts'] = [e.strip() if e.strip().startswith('.') else '.' + e.strip() for e in exts.split(',') if e.strip()]
+        raw.append(job)
+    if raw:
+        cfg[dcs.KEY] = raw
+    else:
+        cfg.pop(dcs.KEY, None)
+
+
 def configure_flags(creator_folder: str) -> None:
     """Interactively edit *creator_folder*/creator_config.json. Every answer
     defaults to what's already there (Enter keeps); nothing is written
@@ -216,15 +266,12 @@ def configure_flags(creator_folder: str) -> None:
         if ans == 'y':
             cur = cur if isinstance(cur, dict) else {}
             folder = input(f'  folder it is downloaded into [{cur.get("dir", "!archive")}]: ').strip() or cur.get('dir', '!archive')
-            channel = input(f'  label for the Discord channel that carries its link (just our nickname for it) '
-                            f'[{cur.get("discord_channel", "archive")}]: ').strip() or cur.get('discord_channel', 'archive')
-            _ask_channel_ids(creator_folder, channel)
-            latest = input(f'  only the newest link in that channel counts? (y/n) '
-                           f'[{"y" if cur.get("latest_only", True) else "n"}]: ').strip().lower()
-            cfg['pixeldrain_archive'] = {'dir': folder, 'discord_channel': channel,
-                                         'latest_only': (latest == 'y') if latest in ('y', 'n') else cur.get('latest_only', True)}
+            cfg['pixeldrain_archive'] = {**cur, 'dir': folder}
+            print('  (Which Discord channel carries its link is set in the Discord channels section below.)')
         else:
             cfg.pop('pixeldrain_archive', None)
+
+    _edit_channel_jobs(creator_folder, cfg)
 
     print()
     cfg['sync_exclude'] = _ask_list(

@@ -42,11 +42,30 @@ REPLACES_DOWNLOAD = False
 # They hold downloaded archives, not Patreon posts; scan_posts skips them by name.
 DISCORD_DEST = '!discord'
 ARCHIVE_DEST = '!archive'
-# BekScript's Discord channels (named in the creator profile; each asks for its IDs on first use): the archive's
-# links (monthly reward scripts are in that archive too) and the secret scripts' links. channel name -> folder.
-DISCORD_CHANNELS = {'archive': ARCHIVE_DEST, 'secrets': DISCORD_DEST}
-# Bek re-posts the archive link now and then and the newest one holds everything, so only that one is used.
-LATEST_ONLY_CHANNELS = {'archive'}
+# BekScript's Discord channels when creator_config.json lists none (it can list any number: discord_channels.py):
+# the archive's link (monthly reward scripts are in that archive too) -- Bek re-posts it now and then and the newest
+# one holds everything, so only that one is used -- and the secret scripts' links, where every message is its own.
+DEFAULT_JOBS = [
+    {'channel': 'archive', 'method': 'pixeldrain_links', 'dir': ARCHIVE_DEST, 'mode': 'latest'},
+    {'channel': 'secrets', 'method': 'pixeldrain_links', 'dir': DISCORD_DEST, 'mode': 'every'},
+]
+
+
+def channel_jobs(base_path: str) -> list[dict]:
+    """The pixeldrain-link channel jobs: the creator's configured ones, else BekScript's defaults."""
+    import discord_channels
+    configured = [j for j in discord_channels.jobs(base_path) if j['method'] == 'pixeldrain_links']
+    return configured or DEFAULT_JOBS
+
+
+def archive_dirs(base_path: str) -> list[str]:
+    import discord_channels
+    return discord_channels.dirs_for(channel_jobs(base_path), 'latest') or [ARCHIVE_DEST]
+
+
+def secret_dirs(base_path: str) -> list[str]:
+    import discord_channels
+    return discord_channels.dirs_for(channel_jobs(base_path), 'every') or [DISCORD_DEST]
 _LEDGER_KEY = 'secret_post_ledger'
 _TOOL = SCRIPT_ID
 _MEDIA = {'.mp4', '.mkv', '.webm', '.avi', '.mov', '.m4v', '.wmv', '.zip', '.rar', '.7z'}
@@ -71,17 +90,17 @@ def norm(name: str) -> str:
 
 def archive_scripts(base_path: str) -> dict[str, list[str]]:
     """{fingerprint: [paths relative to base_path]} for every funscript in the downloaded archive folder."""
-    top = os.path.join(base_path, ARCHIVE_DEST)
     found: dict[str, list[str]] = {}
     count = 0
-    for cur, dirs, files in os.walk(top):
-        dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES]
-        for f in sorted(files):
-            if f.lower().endswith('.funscript'):
-                count += 1
-                progress.live(f'  reading archive funscripts... {count}')
-                p = os.path.join(cur, f)
-                found.setdefault(fingerprint(p), []).append(os.path.relpath(p, base_path))
+    for top in (os.path.join(base_path, d) for d in archive_dirs(base_path)):
+        for cur, dirs, files in os.walk(top):
+            dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES]
+            for f in sorted(files):
+                if f.lower().endswith('.funscript'):
+                    count += 1
+                    progress.live(f'  reading archive funscripts... {count}')
+                    p = os.path.join(cur, f)
+                    found.setdefault(fingerprint(p), []).append(os.path.relpath(p, base_path))
     found.pop(None, None)       # unparseable files can never prove a match
     progress.clear()
     return found
@@ -99,7 +118,7 @@ def scan_posts(base_path: str) -> dict[str, dict]:
     protected = creator_config.protected_paths(base_path)
     for cur, dirs, files in os.walk(base_path):
         dirs.sort()
-        dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES and not d.startswith('_') and d not in (DISCORD_DEST, ARCHIVE_DEST)]
+        dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES and not d.startswith(('_', '!'))]
         creator_config.prune(protected, cur, dirs)
         if 'description.json' not in files:
             continue
@@ -153,12 +172,12 @@ def secret_posts(posts: dict[str, dict]) -> list[str]:
 
 def discord_files(base_path: str) -> list[str]:
     """Funscripts under the Discord destination folder, relative to base_path."""
-    top = os.path.join(base_path, DISCORD_DEST)
     out = []
-    for cur, dirs, files in os.walk(top):
-        dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES]
-        out += [os.path.relpath(os.path.join(cur, f), base_path) for f in files
-                if f.lower().endswith('.funscript')]
+    for top in (os.path.join(base_path, d) for d in secret_dirs(base_path)):
+        for cur, dirs, files in os.walk(top):
+            dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES]
+            out += [os.path.relpath(os.path.join(cur, f), base_path) for f in files
+                    if f.lower().endswith('.funscript')]
     return sorted(out)
 
 
@@ -197,8 +216,9 @@ def _csv(base_path: str, name: str, header: list[str], rows: list[list]) -> str:
 
 def audit(base_path: str, root: str) -> dict:
     archive = archive_scripts(base_path)
-    problems = [] if os.path.isdir(os.path.join(base_path, ARCHIVE_DEST)) else \
-        [f'no "{ARCHIVE_DEST}" folder yet -- fetch the archive first, or every Patreon script will look missing']
+    missing_dirs = [d for d in archive_dirs(base_path) if not os.path.isdir(os.path.join(base_path, d))]
+    problems = [f'no "{d}" folder yet -- fetch the archive first, or every Patreon script will look missing'
+                for d in missing_dirs]
     posts = scan_posts(base_path)
     missing = gaps(posts, archive)
     ledger = update_ledger(root, base_path, secret_posts(posts), discord_files(base_path))
@@ -212,22 +232,18 @@ def audit(base_path: str, root: str) -> dict:
 
 
 def fetch_archive(base_path: str, interactive: bool, step=None) -> None:
-    """Download whatever is still missing: the 'archive' Discord channel's links into the archive folder and the
-    'secrets' channel's links into the discord folder (whole history the first time, then only newer messages),
-    plus any saved pixeldrain lists into the archive folder. *step*(title) announces each stage."""
-    import discord_pixeldrain_sync as dps
-    step = step or (lambda title: None)
+    """Download whatever is still missing: every configured pixeldrain-link channel (see channel_jobs) into its
+    folder (whole history the first time, then only newer messages), plus any saved pixeldrain lists into the
+    archive folder. *step*(title) announces each stage."""
+    import discord_channels
     creator_key = os.path.basename(os.path.normpath(base_path))
-    for channel, dest in DISCORD_CHANNELS.items():
-        step(f'Discord "{channel}" channel -> {dest}/'
-             + (' (newest post only)' if channel in LATEST_ONLY_CHANNELS else ' (every post)'))
-        dps.sync_channel(base_path, dest=dest, dry_run=False, interactive=interactive, channel=channel,
-                         latest_only=channel in LATEST_ONLY_CHANNELS)
+    discord_channels.run_jobs(base_path, interactive=interactive, job_list=channel_jobs(base_path), step=step)
     sources = [s if isinstance(s, dict) else {'url': s, 'dest': ''}
                for s in creator_profiles.get(creator_key).get(ps.SOURCES_KEY) or []]
     if sources:
-        step(f'{len(sources)} saved pixeldrain source(s) -> {ARCHIVE_DEST}/')
-        ps.sync_urls(base_path, [s['url'] for s in sources], dest=ARCHIVE_DEST, interactive=interactive)
+        dest = archive_dirs(base_path)[0]
+        (step or (lambda title: None))(f'{len(sources)} saved pixeldrain source(s) -> {dest}/')
+        ps.sync_urls(base_path, [s['url'] for s in sources], dest=dest, interactive=interactive)
 
 
 def run(base_path: str, options: dict | None = None) -> None:
@@ -236,11 +252,11 @@ def run(base_path: str, options: dict | None = None) -> None:
     if root is None:
         return
     fetch = (options or {}).get('fetch', True) if not interactive else input(
-        f'  First fetch new archive links from the Discord channel into "{ARCHIVE_DEST}" (opens the browser)? (Y/n): '
+        '  First fetch new links from the creator\'s Discord channel(s) (opens the browser)? (Y/n): '
     ).strip().lower() != 'n'
     creator_key = os.path.basename(os.path.normpath(base_path))
     n_sources = len(creator_profiles.get(creator_key).get(ps.SOURCES_KEY) or [])
-    total = (len(DISCORD_CHANNELS) + (1 if n_sources else 0) if fetch else 0) + 2
+    total = (len(channel_jobs(base_path)) + (1 if n_sources else 0) if fetch else 0) + 2
     counter = [0]
 
     def step(title):

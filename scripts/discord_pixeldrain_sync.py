@@ -1,8 +1,8 @@
 """Core: Discord channel -> pixeldrain links -> download only what is new.
 
-Not a menu option. Creator pipelines call sync_channel() when a creator's content links live in a Discord channel
-(BekScript's hybrid audit does; any other creator opts in with "discord_pixeldrain_links": "<subfolder>" in
-creator_config.json and a pipeline that calls sync_if_enabled()).
+Not a menu option. Creator pipelines call sync_channel() when a creator's content links live in a Discord channel.
+Which channels a creator has and how each is used is configured in creator_config.json ("discord_channels", see
+discord_channels.py); pipelines call discord_channels.run_jobs / sync_if_enabled.
 
 For creators who share their content as pixeldrain links in a Discord channel, often hidden as base64 text.
 Reads the channel's WHOLE history the first time (then only newer messages), decodes base64-hidden links with the
@@ -17,7 +17,6 @@ creator (prompted on first use, stored in the creator profile). Files go to a su
 """
 import os
 
-import creator_profiles
 import discord_history as dh
 import discord_parser
 import discord_store as store
@@ -39,12 +38,10 @@ def links_from_messages(messages: list[dict]) -> list[str]:
     return discord_parser.links(messages, accept=_is_pixeldrain)
 
 
-def sync_channel(base_path: str, dest: str = DEFAULT_DEST, dry_run: bool = False, interactive: bool = False,
-                 fetch=None, channel: str | None = None, latest_only: bool = False) -> dict | None:
-    """One incremental pass over one channel (*channel* names one of the creator's several; None = the original).
-    *latest_only*: for a channel where each post replaces the last (a re-posted archive link), sync only the newest
-    post's links, falling back to the next older post only if the newer one can't be read or fails.
-    *fetch* is injectable for tests (defaults to the browser reader)."""
+def read_pending(base_path: str, channel: str | None, interactive: bool, dry_run: bool, fetch=None):
+    """Read the channel's new messages and return (library root, creator key, store key, unprocessed messages), or
+    None when there is no library or the channel could not be read. A dry run stores nothing and returns just the
+    freshly read messages. Shared by every channel method (links, attachments, site links)."""
     creator_key = os.path.basename(os.path.normpath(base_path))
     root = ps.resolve_root(base_path, interactive)
     if root is None:
@@ -62,6 +59,19 @@ def sync_channel(base_path: str, dest: str = DEFAULT_DEST, dry_run: bool = False
             print(f'  [{SCRIPT_ID}] could not read the Discord channel; nothing changed.')
             return None
         pending = store.unprocessed(root, key)
+    return root, creator_key, key, pending
+
+
+def sync_channel(base_path: str, dest: str = DEFAULT_DEST, dry_run: bool = False, interactive: bool = False,
+                 fetch=None, channel: str | None = None, latest_only: bool = False) -> dict | None:
+    """One incremental pass over one channel (*channel* names one of the creator's several; None = the original).
+    *latest_only*: for a channel where each post replaces the last (a re-posted archive link), sync only the newest
+    post's links, falling back to the next older post only if the newer one can't be read or fails.
+    *fetch* is injectable for tests (defaults to the browser reader)."""
+    got = read_pending(base_path, channel, interactive, dry_run, fetch)
+    if got is None:
+        return None
+    root, creator_key, key, pending = got
     urls = links_from_messages(pending)
     print(f'  [{SCRIPT_ID}] {len(pending)} unprocessed message(s), {len(urls)} pixeldrain link(s) found.')
     if not urls:
@@ -96,16 +106,8 @@ def sync_channel(base_path: str, dest: str = DEFAULT_DEST, dry_run: bool = False
     return result
 
 
-def sync_if_enabled(base_path: str, interactive: bool = False, dry_run: bool = False) -> dict | None:
-    """Run sync_channel when this creator's creator_config.json opts in via "discord_pixeldrain_links" (the value is
-    the subfolder to save into; true means the default). Does nothing, and says nothing, for every other creator."""
-    import creator_config
-    flag = creator_config.get(base_path, CONFIG_KEY)
-    if not flag:
-        return None
-    dest = flag if isinstance(flag, str) else DEFAULT_DEST
-    try:
-        return sync_channel(base_path, dest=dest, dry_run=dry_run, interactive=interactive)
-    finally:
-        import discord_browser
-        discord_browser.close()
+def sync_if_enabled(base_path: str, interactive: bool = False, dry_run: bool = False) -> list[dict]:
+    """Run the creator's configured pixeldrain-link channel jobs (creator_config "discord_channels", or the older
+    single "discord_pixeldrain_links" flag). Does nothing, and says nothing, for a creator with none."""
+    import discord_channels
+    return discord_channels.run_jobs(base_path, interactive=interactive, dry_run=dry_run, methods=('pixeldrain_links',))

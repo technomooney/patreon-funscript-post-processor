@@ -256,11 +256,15 @@ def post_folders(base_path: str, lib: str) -> list[str]:
 
 def fetch(base_path: str, cfg: dict, interactive: bool) -> None:
     import creator_profiles
-    import discord_pixeldrain_sync as dps
     import pixeldrain_sync as ps
+    import discord_channels
     creator_key = os.path.basename(os.path.normpath(base_path))
-    dps.sync_channel(base_path, dest=cfg['dir'], dry_run=False, interactive=interactive,
-                     channel=cfg['discord_channel'], latest_only=cfg['latest_only'])
+    configured = [j for j in discord_channels.jobs(base_path) if j['method'] == 'pixeldrain_links']
+    # No channel jobs configured: fall back to the single channel named in this mode's own settings.
+    job_list = configured or [{'channel': cfg['discord_channel'], 'method': 'pixeldrain_links', 'dir': cfg['dir'],
+                               'mode': 'latest' if cfg['latest_only'] else 'every'}]
+    discord_channels.run_jobs(base_path, interactive=interactive, job_list=job_list,
+                              step=lambda title: progress.say(f'  {title}'))
     sources = [s if isinstance(s, dict) else {'url': s, 'dest': ''}
                for s in creator_profiles.get(creator_key).get(ps.SOURCES_KEY) or []]
     if sources:

@@ -104,7 +104,7 @@ def refresh(root: str, creator_key: str, fetch=None, force: bool = False, channe
 
 
 def password_history(creator_key: str, max_messages: int | None = None, force: bool = False,
-                     rescan: bool = False) -> list[str]:
+                     rescan: bool = False, channel: str | None = None) -> list[str]:
     """Every archive password the creator has posted, newest first. Found passwords are recorded in creator_db, so
     they are kept for good; this only decides how much of the chat still has to be read.
 
@@ -113,17 +113,20 @@ def password_history(creator_key: str, max_messages: int | None = None, force: b
     *rescan* ignores that position and reads everything again (use it when no known password worked).
     *max_messages* is only for manual peeks: a capped read never moves the remembered position.
     *force*: re-ask channel setup even if this creator previously declined it.
+    *channel*: one of the creator's named channels (None = the original); each keeps its own read position.
 
     Returns every password on file for the creator afterwards (not just the ones in the newly read messages)."""
     import creator_db
     import discord_parser
-    since = None if rescan or max_messages else creator_db.get_discord_scan(creator_key)
-    rows = fetch_channel_history(creator_key, since_message_id=since, max_messages=max_messages, force=force)
+    scan_key = store.scope(creator_key, channel)
+    since = None if rescan or max_messages else creator_db.get_discord_scan(scan_key)
+    rows = fetch_channel_history(creator_key, since_message_id=since, max_messages=max_messages, force=force,
+                                 **({'channel': channel} if channel else {}))
     if rows is None:
         return _known_passwords(creator_key)       # could not read: fall back to what is already on file
     found = discord_parser.record_passwords(creator_key, rows)
     if rows and not max_messages:
-        creator_db.set_discord_scan(creator_key, str(max(snowflake(r['id']) for r in rows if snowflake(r['id']))))
+        creator_db.set_discord_scan(scan_key, str(max(snowflake(r['id']) for r in rows if snowflake(r['id']))))
     print(f'  [discord] read {len(rows)} message(s)' + (f' newer than {since}' if since else '') +
           f'; {len(found)} password(s) in them.')
     return _known_passwords(creator_key) if since else found
