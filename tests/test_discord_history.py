@@ -317,5 +317,20 @@ class ProgressTests(unittest.TestCase):
         self.assertEqual([pr.size(n) for n in (None, 500, 2048, 5 * 1024 ** 3)], ['? size', '500 B', '2.0 KB', '5.0 GB'])
 
 
+class PluginRenameAliasTests(unittest.TestCase):
+    def test_old_pize_id_still_resolves_and_its_undo_journal_is_found(self):
+        import creator_scripts_menu as csm
+        new = csm.load('pixeldrain_archives')
+        self.assertIsNotNone(new)
+        self.assertIs(csm.load('pize_pixeldrain_archives'), new)             # saved configs keep working
+        self.assertEqual(new.MENU_LABEL, 'Pixeldrain archives as source of truth')
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(csm.journal_id(new, tmp), 'pixeldrain_archives')           # nothing yet: the new name
+            open(os.path.join(tmp, '.last_action.pize_pixeldrain_archives.json'), 'w').close()
+            self.assertEqual(csm.journal_id(new, tmp), 'pize_pixeldrain_archives')      # an old run is still undoable
+            open(os.path.join(tmp, '.last_action.pixeldrain_archives.json'), 'w').close()
+            self.assertEqual(csm.journal_id(new, tmp), 'pixeldrain_archives')           # a newer run wins
+
+
 if __name__ == '__main__':
     unittest.main()

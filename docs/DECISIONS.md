@@ -122,3 +122,8 @@ Each entry: what problem, what was decided, what was rejected, how to verify. Wr
 - **Problem:** BekScript needs separate Discord channels (archive links, secret scripts); a creator profile held exactly one.
 - **Decision:** `profile['discord']` stays the original (password) channel; extra ones live in `profile['discord_channels'][name]` (`creator_profiles.get_discord/set_discord_channel/set_discord_declined` take `channel=`). Each named channel prompts for its own IDs on first use and keeps its own read position and processed flags by storing under the key `creator#channel` (`discord_store.scope`) - no schema change. BekScript's audit syncs `archive` -> `archive/` and `secrets` -> `discord/`. The monthly reward scripts are in the archive, so they need no channel.
 - **Verify:** `tests/test_discord_pixeldrain_sync.py::test_two_channels_keep_separate_positions_and_flags`, `tests/test_app_data.py`.
+
+## 2026-10-18 - "Pixeldrain archives as source of truth" is a generic option
+- **Problem:** the plugin was named, labelled and described as Pize-only (visible in the creator-flags prompt: "pize_pixeldrain_archives recommends..."), although its logic is creator-agnostic.
+- **Decision:** renamed to `creator_scripts/pixeldrain_archives.py`, id `pixeldrain_archives`, label "Pixeldrain archives as source of truth". The old id is kept as `LEGACY_IDS` so Pize's saved `creator_config.json` (`download_script`), unattended configs and the undo journal of earlier runs still resolve (`creator_scripts_menu.load` / `journal_id`). Stored history rows and library tool_data under the old name are left as they are (they describe past runs).
+- **Verify:** `tests/test_discord_history.py::PluginRenameAliasTests`.

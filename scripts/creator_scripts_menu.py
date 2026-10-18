@@ -85,9 +85,26 @@ def discover(quiet: bool = False) -> list[tuple[str, object]]:
 def load(sid: str):
     """The plugin module whose script_id() is *sid*, or None."""
     for _label, module in discover(quiet=True):
-        if script_id(module) == sid:
+        if _is_id(module, sid):
             return module
     return None
+
+
+def _is_id(module, sid) -> bool:
+    """True if *sid* names *module*, under its current id or one of its LEGACY_IDS."""
+    return bool(sid) and (script_id(module) == sid or sid in getattr(module, 'LEGACY_IDS', ()))
+
+
+def journal_id(module, base_path: str) -> str:
+    """The undo journal to use for *module* in *base_path*: its own id, or -- when only a journal written under one
+    of its LEGACY_IDS exists there -- that one, so renaming a plugin never strands the last run's undo."""
+    own = script_id(module)
+    if os.path.isfile(os.path.join(base_path, f'.last_action.{own}.json')):
+        return own
+    for old in getattr(module, 'LEGACY_IDS', ()):
+        if os.path.isfile(os.path.join(base_path, f'.last_action.{old}.json')):
+            return old
+    return own
 
 
 def is_generic(module) -> bool:
@@ -146,9 +163,9 @@ def configure_flags(creator_folder: str) -> None:
     print('  Download-replacement script (runs INSTEAD of the normal download for this creator):')
     print('    0) none — normal download')
     for i, (label, m) in enumerate(candidates, 1):
-        mark = '  <- current' if script_id(m) == current else ''
+        mark = '  <- current' if _is_id(m, current) else ''
         print(f'    {i}) {label} [{script_id(m)}]{mark}')
-    default = next((str(i) for i, (_l, m) in enumerate(candidates, 1) if script_id(m) == current), '0')
+    default = next((str(i) for i, (_l, m) in enumerate(candidates, 1) if _is_id(m, current)), '0')
     choice = input(f'  Choose [{default}]: ').strip() or default
     chosen = None
     if choice.isdigit() and 1 <= int(choice) <= len(candidates):
@@ -217,7 +234,7 @@ def _undo_menu(plugins: list[tuple[str, object]]) -> None:
     if base_path is None:
         return
     import undo_last_action
-    undo_last_action.main(base_path, journal=script_id(module))
+    undo_last_action.main(base_path, journal=journal_id(module, base_path))
 
 
 def main() -> None:

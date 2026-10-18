@@ -1,4 +1,5 @@
-"""Pize: treat the creator's pixeldrain archives as the single source of truth.
+"""Treat a creator's pixeldrain archives as the single source of truth. Works for any creator whose posts link
+password-protected (or plain) pixeldrain archives; Pize was the first.
 
 Why this exists (user decision, 2026-09-22): the general pipeline had grown
 too many layers for Pize (inline extraction into post folders, bulk-
@@ -88,10 +89,13 @@ import extract_variant_archives as eva
 import folder_log
 import funscript_utils
 
-SCRIPT_ID = 'pize_pixeldrain_archives'
-MENU_LABEL = 'Pize: pixeldrain archives as source of truth'
+SCRIPT_ID = 'pixeldrain_archives'
+# The id this plugin had while it was Pize-only. Saved creator_config.json files, unattended-run configs and the
+# undo journal of earlier runs still use it, so it keeps resolving to this plugin (creator_scripts_menu.load).
+LEGACY_IDS = ('pize_pixeldrain_archives',)
+MENU_LABEL = 'Pixeldrain archives as source of truth'
 MENU_DESCRIPTION = (
-    'Downloads every pixeldrain archive linked from Pize posts, extracts each into\n'
+    'Downloads every pixeldrain archive linked from the creator\'s posts, extracts each into\n'
     '_pixeldrain/<archive name>/ (never overwriting), and moves all videos/scripts out\n'
     'of the post folders. Locked archives are reported, not guessed at.'
 )
