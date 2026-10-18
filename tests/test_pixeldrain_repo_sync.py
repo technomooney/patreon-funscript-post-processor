@@ -1,5 +1,4 @@
 """The point of this plugin: a transcoded file must never be re-downloaded. Network is faked; temp dirs only."""
-import importlib.util
 import json
 import os
 import sys
@@ -14,10 +13,7 @@ import folder_log  # noqa: E402
 import library_db  # noqa: E402
 import pixeldrain_util as pdu  # noqa: E402
 
-spec = importlib.util.spec_from_file_location('pixeldrain_repo_sync',
-                                              os.path.join(SCRIPTS, 'creator_scripts', 'pixeldrain_repo_sync.py'))
-prs = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(prs)
+import pixeldrain_sync as prs  # noqa: E402
 
 
 def remote(i, name, size=1000, sha=None):
