@@ -208,6 +208,26 @@ class ResetTests(unittest.TestCase):
         rc, _ = run(folder, '--confirm', token, '--yes')
         self.assertEqual(rc, 0)
 
+    def test_launching_with_no_arguments_walks_through_prompts(self):
+        import io
+        from contextlib import redirect_stdout
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        parent = os.path.realpath(holder.name)
+        os.symlink(self.root, os.path.join(parent, 'lib'))          # a folder holding exactly one library
+        answers = iter([parent, '1', 'WRONG-TOKEN'])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = rs.interactive(ask=lambda _p: next(answers))
+        self.assertIn('holds these libraries', buf.getvalue())
+        self.assertEqual(rc, 2)                                     # bad token refused, nothing removed
+        self.assertTrue(self.exists('Creator/[1] post one'))
+        # Enter at the token prompt just stops
+        answers = iter([self.root, ''])
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(rs.interactive(ask=lambda _p: next(answers)), 0)
+        self.assertTrue(self.exists('Creator/[1] post one'))
+
     def test_marked_root_removes_nothing(self):
         self.w('.manual', '')
         self.assertEqual(rs.build_plan(self.root)['entries'], [])

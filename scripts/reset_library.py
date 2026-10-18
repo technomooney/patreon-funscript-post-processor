@@ -462,13 +462,49 @@ def apply(root: str, token: str, progress=print) -> dict:
 # CLI
 # ---------------------------------------------------------------------------
 
+def interactive(ask=input) -> int:
+    """Launched with no arguments: ask for the folder, show the plan, ask for the token, then the final RESET."""
+    folder = ask('Folder you work in (e.g. ~/funscripts/Patreon) or one library inside it: ').strip().strip('"\'')
+    if not folder:
+        print('Cancelled.')
+        return 1
+    root, scope = resolve_target(folder)
+    target = os.path.join(root, scope)
+    if not os.path.isfile(library_db.db_path(root)):
+        libs = libraries_inside(root)
+        if not libs:
+            print(f'No library database found in or above {folder}. Run migrate.sh on the folder you work in first.')
+            return 2
+        print(f'{root} holds these libraries:')
+        for i, name in enumerate(libs, 1):
+            print(f'  {i}. {name}')
+        pick = ask('Which one do you want to reset? (number or name): ').strip()
+        name = libs[int(pick) - 1] if pick.isdigit() and 1 <= int(pick) <= len(libs) else pick
+        if name not in libs:
+            print('Not one of the libraries. Cancelled.')
+            return 1
+        root, scope = os.path.join(root, name), ''
+        target = root
+    code = main([target])                       # plans (or says a reset is in progress) and prints report + token
+    if code not in (0, 3):
+        return code
+    print()
+    token = ask('Paste the token to continue (just Enter to stop for now; the same token is shown next time): ').strip()
+    if not token:
+        print('Stopped. Nothing was changed.')
+        return 0
+    return main([target, '--confirm', token])
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description='Reset a library (or one folder in it) for a fresh download, keeping a '
                                                  'snapshot and .manual folders')
-    parser.add_argument('folder', help='the library root, or any folder inside it (e.g. one creator)')
+    parser.add_argument('folder', nargs='?', help='the folder you work in, or one library inside it; leave out to be asked')
     parser.add_argument('--confirm', metavar='TOKEN', help='apply the plan that produced this token')
     parser.add_argument('--yes', action='store_true', help='skip the typed confirmation (the token is still required)')
     args = parser.parse_args(argv)
+    if not args.folder:
+        return interactive()
     root, scope = resolve_target(args.folder)
     if not os.path.isfile(library_db.db_path(root)):
         libs = libraries_inside(root)

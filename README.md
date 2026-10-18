@@ -183,6 +183,9 @@ including ones the compressor transcoded.
 To redo a whole library through the regular download process (for example after changing how files are compressed),
 `reset.sh` (`reset.bat`) removes everything **except** folders holding a `.manual` marker, after saving a snapshot:
 
+Easiest: run `./reset.sh` with nothing after it and follow the prompts (folder, which library, paste the token, type RESET).
+Or with arguments:
+
 ```
 ./reset.sh /path/to/library                     # 1. plan: HTML report (what goes, what is kept) + token; changes nothing
 ./reset.sh /path/to/library --confirm TOKEN     # 2. apply (resumable); type RESET to confirm
