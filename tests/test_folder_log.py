@@ -1,0 +1,91 @@
+"""folder_log wrapper: legacy behaviour outside a library root, DB inside, legacy history merged and never lost."""
+import json
+import os
+import sys
+import tempfile
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'scripts'))
+
+import folder_log  # noqa: E402
+import library_db  # noqa: E402
+
+
+class FolderLogTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = os.path.realpath(self._tmp.name)
+        self._old = os.environ.pop('FORCE_RERUN', None)
+        library_db._roots.clear()
+
+    def tearDown(self):
+        if self._old is not None:
+            os.environ['FORCE_RERUN'] = self._old
+        self._tmp.cleanup()
+
+    def test_no_root_uses_legacy_file_and_creates_no_db(self):
+        d = os.path.join(self.base, 'plain')
+        os.makedirs(d)
+        folder_log.append_run(d, 's', n=1)
+        self.assertTrue(folder_log.has_run(d, 's'))
+        self.assertTrue(os.path.isfile(os.path.join(d, '.folder_log.json')))
+        self.assertFalse(os.path.exists(os.path.join(d, '.library-data')))
+
+    def test_declared_root_writes_db_not_files(self):
+        root = library_db.use_root(os.path.join(self.base, 'lib'))
+        d = os.path.join(root, 'creator', 'post')
+        os.makedirs(d)
+        folder_log.append_run(d, 's', n=1)
+        self.assertEqual([r['n'] for r in folder_log.read(d)], [1])
+        self.assertFalse(os.path.exists(os.path.join(d, '.folder_log.json')))
+        self.assertFalse(folder_log.has_run(os.path.join(root, 'creator'), 's'))
+
+    def test_legacy_history_is_merged_not_lost_and_not_duplicated(self):
+        root = library_db.use_root(os.path.join(self.base, 'lib'))
+        d = os.path.join(root, 'post')
+        os.makedirs(d)
+        legacy = [{'timestamp': '2020-01-01T00:00:00', 'script': 'old', 'x': 1}]
+        with open(os.path.join(d, '.folder_log.json'), 'w') as f:
+            json.dump(legacy, f)
+        self.assertTrue(folder_log.has_run(d, 'old'))
+        # the same record imported into the DB must not show twice
+        library_db.add_run(root, 'post', 'old', legacy[0])
+        folder_log.append_run(d, 'new')
+        scripts = [r['script'] for r in folder_log.read(d)]
+        self.assertEqual(sorted(scripts), ['new', 'old'])
+        self.assertTrue(os.path.isfile(os.path.join(d, '.folder_log.json')))   # never deleted
+
+    def test_compressor_log_is_visible(self):
+        root = library_db.use_root(os.path.join(self.base, 'lib'))
+        d = os.path.join(root, 'v')
+        os.makedirs(d)
+        os.makedirs(os.path.join(root, '.av1-compressor'))
+        with open(os.path.join(root, '.av1-compressor', 'library_log.jsonl'), 'w') as f:
+            f.write(json.dumps({'timestamp': 't', 'script': 'compress_library', 'folder': 'v', 'file': 'a.mp4'}) + '\n')
+            f.write(json.dumps({'timestamp': 't', 'script': 'compress_library', 'folder': 'other'}) + '\n')
+        recs = folder_log.read(d)
+        self.assertEqual([r['file'] for r in recs], ['a.mp4'])
+        self.assertTrue(folder_log.has_run(d, 'compress_library'))
+
+    def test_force_rerun(self):
+        root = library_db.use_root(os.path.join(self.base, 'lib'))
+        folder_log.append_run(root, 's')
+        os.environ['FORCE_RERUN'] = 'true'
+        try:
+            self.assertFalse(folder_log.has_run(root, 's'))
+            folder_log.append_run(root, 's2')
+            self.assertTrue([r for r in folder_log.read(root) if r.get('force_rerun')])
+        finally:
+            del os.environ['FORCE_RERUN']
+
+    def test_remove_records(self):
+        root = library_db.use_root(os.path.join(self.base, 'lib'))
+        folder_log.append_run(root, 'a')
+        folder_log.append_run(root, 'b')
+        self.assertEqual(folder_log.remove_records(root, lambda r: r['script'] == 'a'), 1)
+        self.assertEqual([r['script'] for r in folder_log.read(root)], ['b'])
+
+
+if __name__ == '__main__':
+    unittest.main()
