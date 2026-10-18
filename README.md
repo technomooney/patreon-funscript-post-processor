@@ -194,6 +194,22 @@ the report. Replaced files go to `.trash` and can be undone. Limits of this vers
 re-downloaded (other hosts are not), and the fresh copy goes into the same folder as the old one under the source's name;
 run the normal tools afterwards to reorganise.
 
+### Starting a library over ("reset") and comparing with the old layout
+
+To redo a whole library through the regular download process (for example after changing how files are compressed),
+`reset.sh` (`reset.bat`) removes everything **except** folders holding a `.manual` marker, after saving a snapshot:
+
+```
+./reset.sh /path/to/library-root                     # 1. plan: HTML report (what goes, what is kept) + token; changes nothing
+./reset.sh /path/to/library-root --confirm TOKEN     # 2. apply (resumable); type RESET to confirm
+./compare_tree.sh /path/to/library-root              # later: what differs from the old layout (HTML report)
+./compare_tree.sh /path/to/library-root --restore-names [--apply]   # put old post/file names back where they clearly match
+```
+
+The snapshot lives in `<library>/.library-data/previous/vNNN_<time>/` (every path with size and time, a copy of the
+database, the old logs and Pize manifests). The removal itself is **not** undoable and the snapshot holds names and layout
+only; the files come back through the normal download. See `docs/DECISIONS.md` (2026-10-18) for exactly what is kept.
+
 ## Disclaimer
 
 This is a personal project provided **as-is**, without warranty of any kind. The author accepts no responsibility for any data loss, file corruption, or damage that may result from using this software. **Always keep backups of your files before running any automated renaming, deduplication, or download operations.**
