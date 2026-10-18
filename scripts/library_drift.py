@@ -182,15 +182,23 @@ def accept(root: str, drift_id: int) -> str:
 # For tools that are about to act on a file
 # ---------------------------------------------------------------------------
 
+def is_hand_marked(folder: str) -> bool:
+    """True if *folder* holds a `.manual` marker the USER meant. consolidate_packs / extract_variant_archives write
+    `.manual` together with `.consolidated` on folders they emptied themselves; that pair is automation, not a human
+    decision, so it does not count."""
+    return os.path.isfile(os.path.join(folder, '.manual')) and not os.path.isfile(os.path.join(folder, '.consolidated'))
+
+
 def has_manual_marker(root: str, path: str) -> bool:
-    """True if *path* (a file or folder, absolute) sits in or under a folder holding a `.manual` marker. Looks at
-    the filesystem directly, so it is correct even before any scan."""
+    """True if *path* (a file or folder, absolute) sits in or under a folder the user marked `.manual` (see
+    is_hand_marked: a `.manual`+`.consolidated` pair written by the tools does not count). Looks at the filesystem
+    directly, so it is correct even before any scan."""
     root = os.path.abspath(root)
     cur = os.path.abspath(path)
     if os.path.isfile(cur):
         cur = os.path.dirname(cur)
     while True:
-        if os.path.isfile(os.path.join(cur, '.manual')):
+        if is_hand_marked(cur):
             return True
         if cur == root or os.path.dirname(cur) == cur:
             return False

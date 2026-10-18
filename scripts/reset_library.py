@@ -7,7 +7,8 @@ you want the normal download process to rebuild it from scratch. Standalone, not
 Compare afterwards with  ./compare_tree.sh /path/to/library-root   (see compare_tree.py).
 
 What it does:
-  * Every folder holding a `.manual` marker is kept exactly as it is, together with the folders above it.
+  * Every folder you marked `.manual` is kept exactly as it is, together with the folders above it. (`.manual` + `.consolidated` together is
+    written by the tools themselves on folders they emptied, so those are NOT kept.)
   * Everything else (post folders, media, the Pize archives, ...) is REMOVED -- deliberately deleted, not trashed,
     because the point is to free the space and let the regular download recreate it. Not touched: .library-data,
     .trash, .av1-compressor, hidden files/folders and creator_config.json at the top two levels.
@@ -57,11 +58,12 @@ def _now() -> str:
 # ---------------------------------------------------------------------------
 
 def find_manual_folders(root: str) -> list[str]:
-    """Relative paths of every folder directly holding a `.manual` file ('' = the root itself)."""
+    """Relative paths of every folder the USER marked `.manual` ('' = the root itself). A `.manual` that sits next to
+    `.consolidated` was written by consolidate_packs / extract_variant_archives, not by a person, so it is not kept."""
     found = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if d not in KEEP_DIRNAMES)
-        if '.manual' in filenames:
+        if '.manual' in filenames and '.consolidated' not in filenames:
             rel = os.path.relpath(dirpath, root)
             found.append('' if rel == '.' else rel)
     return sorted(found)

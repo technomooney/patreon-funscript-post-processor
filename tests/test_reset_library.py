@@ -137,6 +137,15 @@ class ResetTests(unittest.TestCase):
         self.assertFalse(self.exists('Other/[5] post'))
         self.assertTrue(self.exists('Creator/[2] manual post/keep.mp4'))
 
+    def test_tool_written_manual_plus_consolidated_is_not_a_human_marker(self):
+        self.w('Pize/[9] emptied by tool/.manual', '')
+        self.w('Pize/[9] emptied by tool/.consolidated', '')
+        self.assertNotIn(os.path.join('Pize', '[9] emptied by tool'), rs.find_manual_folders(self.root))
+        _, token = self.plan_and_token()
+        rs.apply(self.root, token, progress=lambda *_: None)
+        self.assertFalse(self.exists('Pize/[9] emptied by tool'))
+        self.assertTrue(self.exists('Creator/[2] manual post/keep.mp4'))
+
     def test_marked_root_removes_nothing(self):
         self.w('.manual', '')
         self.assertEqual(rs.build_plan(self.root)['entries'], [])

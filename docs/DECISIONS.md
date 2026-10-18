@@ -84,3 +84,7 @@ Each entry: what problem, what was decided, what was rejected, how to verify. Wr
 - **User's choices:** media is deleted after the snapshot (not trashed; dead source links are not protected); the snapshot restores names/layout only. Rejected: moving to `.trash` (needs as much free disk as the library).
 - **Kept on purpose:** Discord message history in the DB (expensive to re-scrape). `rebuild_library.py` stays for the narrower job of re-fetching specific pixeldrain files.
 - **Deliberately irreversible step:** the removal. Guards: token tied to the exact tree, typed RESET confirmation, snapshot verified by re-reading it before the first removal, `.manual` roots never touched.
+
+## 2026-10-18 - `.manual` + `.consolidated` is automation, not the user (reset and rebuild)
+- **Problem:** the first real reset plan kept 454 "manual" folders; 440 were Pize post folders where consolidate_packs / extract_variant_archives wrote `.manual` together with `.consolidated` after emptying them. Only 14 (MDemaxis) were hand-marked.
+- **Decision:** a folder counts as the user's only if it has `.manual` and NOT `.consolidated` (`library_drift.is_hand_marked`, used by `has_manual_marker`, `reset_library.find_manual_folders`, and so the rebuild's protection). Drift still lists both marker kinds. `library_drift.py` is synced to the compressor repo (parity test).
