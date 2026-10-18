@@ -321,3 +321,65 @@ def remove_runs(root: str, folder_rel: str, predicate) -> int:
         for rid in doomed:
             con.execute('DELETE FROM runs WHERE id=?', (rid,))
     return len(doomed)
+
+
+# ---------------------------------------------------------------------------
+# files: identity that survives rename / extension change / recompression
+# ---------------------------------------------------------------------------
+
+_FILE_COLS = ('folder', 'orig_name', 'cur_name', 'orig_size', 'cur_size', 'cur_mtime_ns', 'sha256',
+              'pixeldrain_id', 'duration', 'codec', 'state', 'extra_json')
+_LINK_COLS = ('source_url', 'status', 'remote_sha256', 'remote_name', 'remote_size', 'first_attempt',
+              'last_attempt', 'file_id', 'extra_json')
+
+
+def _check_cols(fields: dict, allowed: tuple) -> None:
+    bad = set(fields) - set(allowed)
+    if bad:
+        raise ValueError(f'unknown column(s): {sorted(bad)}')
+
+
+def add_file(root: str, updated_by: str, **fields) -> int:
+    """Insert a files row and return its id. Columns: folder (relative to root), orig_name, cur_name, orig_size,
+    cur_size, cur_mtime_ns, sha256, pixeldrain_id, duration, codec, state, extra_json."""
+    _check_cols(fields, _FILE_COLS)
+    fields.setdefault('folder', '')
+    cols = list(fields) + ['updated_by', 'updated_at']
+    vals = list(fields.values()) + [updated_by, _now()]
+    with db(root, write=True) as con:
+        cur = con.execute(f'INSERT INTO files({",".join(cols)}) VALUES({",".join("?" * len(cols))})', vals)
+        return cur.lastrowid
+
+
+def update_file(root: str, file_id: int, updated_by: str, **fields) -> None:
+    _check_cols(fields, _FILE_COLS)
+    if not fields:
+        return
+    sets = ', '.join(f'{c}=?' for c in fields) + ', updated_by=?, updated_at=?'
+    with db(root, write=True) as con:
+        con.execute(f'UPDATE files SET {sets} WHERE id=?', list(fields.values()) + [updated_by, _now(), file_id])
+
+
+def find_files(root: str, **criteria) -> list[dict]:
+    """files rows whose columns equal every given criterion (e.g. pixeldrain_id='abc', folder='x'), oldest first."""
+    _check_cols(criteria, _FILE_COLS)
+    where = ' AND '.join(f'{c}=?' for c in criteria) or '1=1'
+    with db(root) as con:
+        return [dict(r) for r in con.execute(f'SELECT * FROM files WHERE {where} ORDER BY id', list(criteria.values()))]
+
+
+def get_link(root: str, link_id: str) -> dict | None:
+    with db(root) as con:
+        row = con.execute('SELECT * FROM pixeldrain_links WHERE link_id=?', (link_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def upsert_link(root: str, link_id: str, updated_by: str, **fields) -> None:
+    """Create or update one pixeldrain_links row; only the given columns change on an update."""
+    _check_cols(fields, _LINK_COLS)
+    cols = ['link_id'] + list(fields) + ['updated_by', 'updated_at']
+    vals = [link_id] + list(fields.values()) + [updated_by, _now()]
+    updates = ', '.join(f'{c}=excluded.{c}' for c in cols[1:])
+    with db(root, write=True) as con:
+        con.execute(f'INSERT INTO pixeldrain_links({",".join(cols)}) VALUES({",".join("?" * len(cols))}) '
+                    f'ON CONFLICT(link_id) DO UPDATE SET {updates}', vals)

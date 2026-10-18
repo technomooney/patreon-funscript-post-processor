@@ -93,6 +93,24 @@ class LibraryDbTests(unittest.TestCase):
             self.assertEqual(p.exitcode, 0)
         self.assertEqual(len(library_db.runs_for(self.root, 'f')), 120)
 
+    def test_files_and_links_helpers(self):
+        fid = library_db.add_file(self.root, 't', folder='a', orig_name='x.mkv', cur_name='x.mkv', orig_size=10,
+                                  pixeldrain_id='P1', sha256='h')
+        library_db.update_file(self.root, fid, 't', cur_name='x.mp4', cur_size=4, state='compressed')
+        rows = library_db.find_files(self.root, pixeldrain_id='P1')
+        self.assertEqual([(r['orig_name'], r['cur_name'], r['cur_size'], r['state']) for r in rows],
+                         [('x.mkv', 'x.mp4', 4, 'compressed')])
+        self.assertEqual(library_db.find_files(self.root, orig_name='nope'), [])
+        library_db.upsert_link(self.root, 'P1', 't', status='pending', remote_size=10)
+        library_db.upsert_link(self.root, 'P1', 'u', status='done', file_id=fid)
+        link = library_db.get_link(self.root, 'P1')
+        self.assertEqual((link['status'], link['remote_size'], link['file_id'], link['updated_by']), ('done', 10, fid, 'u'))
+        self.assertIsNone(library_db.get_link(self.root, 'nope'))
+        with self.assertRaises(ValueError):
+            library_db.add_file(self.root, 't', bogus=1)
+        with self.assertRaises(ValueError):
+            library_db.find_files(self.root, **{'x; DROP TABLE files': 1})
+
     def test_all_shared_tables_exist(self):
         with library_db.db(self.root) as con:
             names = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
