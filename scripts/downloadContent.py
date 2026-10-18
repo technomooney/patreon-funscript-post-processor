@@ -31,6 +31,7 @@ import markers
 import creator_config
 import collection_redownload_queue
 import folder_log
+import browser_defaults
 import funscript_utils
 import link_decoder
 
@@ -704,6 +705,7 @@ def setup_driver(initial_download_dir: str):
             'profile.password_manager_enabled': False,
         }
         options.add_experimental_option('prefs', prefs)
+        browser_defaults.apply(options)      # software rendering by default (see browser_defaults.py)
 
         if headless:
             options.add_argument('--headless=new')

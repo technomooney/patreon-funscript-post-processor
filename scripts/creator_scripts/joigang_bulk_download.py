@@ -40,6 +40,7 @@ import time
 from pathlib import Path
 
 import action_log
+import browser_defaults
 import downloadContent as dc
 import legacy_app_data
 
@@ -83,6 +84,7 @@ def _joigang_driver():
     cached_driver = dc._cached_chromedriver(version) if version else None
 
     options = uc.ChromeOptions()
+    browser_defaults.apply(options)      # software rendering by default (see browser_defaults.py)
     kwargs = dict(
         options=options,
         browser_executable_path=launch_browser,

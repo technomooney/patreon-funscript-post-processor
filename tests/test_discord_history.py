@@ -275,5 +275,33 @@ class OpenChannelTests(unittest.TestCase):
         self.assertIsNone(self.run_open(Never(False)))
 
 
+class BrowserDefaultsTests(unittest.TestCase):
+    def test_software_rendering_is_the_default_and_can_be_turned_off(self):
+        import browser_defaults as bd
+        names = ('BROWSER_DISABLE_GPU', 'DISCORD_DISABLE_GPU')
+        saved = {n: os.environ.pop(n, None) for n in names}
+        try:
+            self.assertTrue(bd.gpu_disabled())
+            os.environ['BROWSER_DISABLE_GPU'] = 'false'
+            self.assertFalse(bd.gpu_disabled())
+            self.assertFalse(bd.gpu_disabled('DISCORD_DISABLE_GPU'))
+            os.environ['DISCORD_DISABLE_GPU'] = 'true'              # the specific setting wins for its own browser
+            self.assertTrue(bd.gpu_disabled('DISCORD_DISABLE_GPU'))
+            self.assertFalse(bd.gpu_disabled())
+
+            class Opts:
+                args = []
+
+                def add_argument(self, a):
+                    self.args.append(a)
+            bd.apply(Opts(), 'DISCORD_DISABLE_GPU')
+            self.assertEqual(Opts.args, ['--disable-gpu'])
+        finally:
+            for n, v in saved.items():
+                os.environ.pop(n, None)
+                if v is not None:
+                    os.environ[n] = v
+
+
 if __name__ == '__main__':
     unittest.main()
