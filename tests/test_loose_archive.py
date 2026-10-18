@@ -39,18 +39,26 @@ class LooseArchiveTests(unittest.TestCase):
         blob(os.path.join(self.lib, 'Monthly', 'a.mp4'), self.vid)
         library_db.add_file(self.root, 't', folder=library_db.rel_folder(self.root, os.path.join(self.lib, 'Monthly')),
                             orig_name='a.mp4', cur_name='a.mp4', sha256=la._sha256(os.path.join(self.lib, 'Monthly', 'a.mp4')))
+        # video checks without ffprobe/fpcalc: duration = bytes length, "same content" = same first byte, height = len % 100
+        self._saved = (la._duration, la._similar, la._height, la._max_res, la._closer)
+        la._duration = lambda p: float(os.path.getsize(p))
+        la._similar = lambda a, b: open(a, 'rb').read(1) == open(b, 'rb').read(1)
+        la._height = lambda p: 1080 if b'HI' in open(p, 'rb').read() else 480
+        la._max_res = lambda: 1080
+        la._closer = lambda post_h, arch_h, mx: abs(post_h - mx) < abs(arch_h - mx)
         self.post = os.path.join(self.base, '[1] A post')
         os.makedirs(self.post)
         with open(os.path.join(self.post, 'description.json'), 'w') as f:
             f.write('{}')
 
     def tearDown(self):
+        la._duration, la._similar, la._height, la._max_res, la._closer = self._saved
         self._tmp.cleanup()
 
     def adopt(self):
         action_log.start('t', self.base, journal='t')
         try:
-            idx = la.build_index(self.lib)
+            idx = la.build_index(self.lib, self.root)
             return la.adopt_post(self.base, self.root, self.lib, '[1] A post', idx)
         finally:
             action_log.finish()
@@ -67,6 +75,24 @@ class LooseArchiveTests(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(adopted)), ['New.funscript', 'fresh.mp4'])
         self.assertEqual(os.listdir(self.post), ['description.json'])
         self.assertTrue(os.path.isdir(os.path.join(self.base, '.trash')))               # trashed, not deleted
+
+    def test_a_reencoded_copy_of_the_same_content_is_a_duplicate_not_a_new_file(self):
+        # "archive video bytes" (19 bytes) vs a post copy that is NOT byte-identical but has the same duration/content
+        blob(os.path.join(self.post, 'reencoded.mp4'), b'a' + b'x' * 18)               # same first byte + same length
+        out = self.adopt()
+        self.assertEqual((out['trashed'], out['adopted']), (['reencoded.mp4'], []))
+
+    def test_a_different_video_of_another_length_is_adopted(self):
+        blob(os.path.join(self.post, 'other.mp4'), b'a' + b'x' * 40)                   # same first byte but other duration
+        self.assertEqual(self.adopt()['adopted'], ['other.mp4'])
+
+    def test_a_post_copy_that_fits_max_resolution_better_is_kept_and_flagged_archive_untouched(self):
+        blob(os.path.join(self.post, 'hi.mp4'), b'a' + b'HI' + b'x' * 16)              # same content/length, 1080p vs 480p
+        out = self.adopt()
+        self.assertEqual((out['trashed'], out['adopted']), ([], ['hi.mp4']))
+        self.assertEqual(len(out['better_than_archive']), 1)
+        with open(os.path.join(self.lib, 'Monthly', 'a.mp4'), 'rb') as f:
+            self.assertEqual(f.read(), self.vid)                                      # the archive copy is untouched
 
     def test_an_axis_file_is_not_a_duplicate_of_a_main_script_with_the_same_points(self):
         fs(os.path.join(self.post, 'x.roll.funscript'), [(0, 1), (100, 90)])           # a.funscript's points, but .roll

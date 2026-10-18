@@ -13,7 +13,12 @@ Per run:
              confused with a main script), never by name.
   3. adopt   for each post folder (description.json) its funscripts, videos and archives are checked:
                a script whose data the library has                  -> soft-deleted (a duplicate; undoable)
-               a video/archive whose sha256 the library has recorded -> soft-deleted (a duplicate; undoable)
+               a video with the same CONTENT as an archive video     -> soft-deleted (a duplicate; undoable), unless
+                 (same duration, then audio fingerprint / frame hash)   the post's copy fits MAX_RESOLUTION better
+                                                                        than the archive's: then it is kept (adopted)
+                                                                        and flagged for you; the archive is never
+                                                                        altered or replaced
+               a zip/rar/7z whose sha256 the library has recorded    -> soft-deleted (a duplicate; undoable)
                anything else                                         -> MOVED to <library>/_from_patreon/<post>/ so
                                                                         the library really holds everything
              Post folders keep description.json, images and the tool's own bookkeeping.
@@ -74,22 +79,82 @@ class Index:
     def __init__(self):
         self.scripts: set = set()
         self.sha: set[str] = set()
+        self.videos: list[tuple[str, float | None]] = []      # (path, duration seconds) of every archive video
 
 
-def build_index(lib: str) -> Index:
+# The video checks live in downloadContent (ffprobe / fpcalc / ffmpeg); they are looked up lazily and replaceable so
+# tests need none of those tools.
+def _dc():
+    import downloadContent as dc
+    return dc
+
+
+def _duration(path: str):
+    return _dc()._video_duration(path)
+
+
+def _similar(a: str, b: str) -> bool:
+    return _dc()._videos_are_similar(a, b)
+
+
+def _height(path: str) -> int:
+    return (_dc()._video_quality(path) or {}).get('height', 0)
+
+
+def _max_res() -> int:
+    return _dc()._get_max_resolution()
+
+
+def _closer(post_h: int, archive_h: int, max_res: int) -> bool:
+    return _dc()._closer_to_target_resolution(post_h, archive_h, max_res)
+
+
+_DURATION_TOOL = 'loose_archive'
+
+
+def build_index(lib: str, root: str | None = None) -> Index:
+    """Fingerprint the archive's funscripts and list its videos with their durations. Durations are cached in the
+    library database (by path and size) so a big archive is probed once, not every run."""
     idx = Index()
-    n = 0
+    cache = library_db.tool_data_get(root, _DURATION_TOOL, 'durations', {}) if root else {}
+    dirty = False
+    n = v = 0
     for cur, dirs, files in os.walk(lib):
         dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES]
         for f in files:
-            if f.lower().endswith('.funscript'):
+            path = os.path.join(cur, f)
+            low = f.lower()
+            if low.endswith('.funscript'):
                 n += 1
-                progress.live(f'  indexing the archive\'s funscripts... {n}')
-                key = _key(os.path.join(cur, f))
+                progress.live(f'  indexing the archive... {n} funscript(s), {v} video(s)')
+                key = _key(path)
                 if key is not None:
                     idx.scripts.add(key)
+            elif low.endswith(_VIDEO_EXTS):
+                v += 1
+                progress.live(f'  indexing the archive... {n} funscript(s), {v} video(s)')
+                ck = f'{os.path.relpath(path, lib)}|{os.path.getsize(path)}'
+                if ck not in cache:
+                    cache[ck] = _duration(path)
+                    dirty = True
+                idx.videos.append((path, cache[ck]))
+    if dirty and root:
+        library_db.tool_data_set(root, _DURATION_TOOL, 'durations', cache, _DURATION_TOOL)
     progress.clear()
     return idx
+
+
+def find_same_video(path: str, idx: Index, duration_gate: float = 1.0) -> str | None:
+    """An archive video with the same content as *path*, or None. Candidates are narrowed by duration (the same
+    gate downloadContent uses), same-named ones tried first; only those are compared by audio/frame content."""
+    dur = _duration(path)
+    stem = os.path.splitext(os.path.basename(path))[0].casefold()
+    cands = [p for p, d in idx.videos if dur is None or d is None or abs(d - dur) <= duration_gate]
+    cands.sort(key=lambda p: os.path.splitext(os.path.basename(p))[0].casefold() != stem)
+    for cand in cands:
+        if _similar(path, cand):
+            return cand
+    return None
 
 
 def _soft_delete(base_path: str, path: str) -> None:
@@ -149,12 +214,28 @@ def adopt_post(base_path: str, root: str, lib: str, post_rel: str, idx: Index) -
         elif low.endswith(_VIDEO_EXTS) or low.endswith(_ARCHIVE_EXTS):
             sha = _sha256(path)
             if sha in idx.sha or _library_has(root, lib, sha):
-                _soft_delete(base_path, path)
+                _soft_delete(base_path, path)                      # byte-identical to something already archived
                 out['trashed'].append(f)
-            else:
-                _move(path, os.path.join(adopt_dir, f))
-                idx.sha.add(sha)
-                out['adopted'].append(f)
+                continue
+            match = find_same_video(path, idx) if low.endswith(_VIDEO_EXTS) else None
+            if match is not None:
+                max_res = _max_res()
+                if _closer(_height(path), _height(match), max_res):
+                    # the post's copy fits MAX_RESOLUTION better: keep it, never touch the archive's copy
+                    dst = _move(path, os.path.join(adopt_dir, f))
+                    idx.videos.append((dst, _duration(dst)))
+                    out['adopted'].append(f)
+                    out.setdefault('better_than_archive', []).append(
+                        f'{f} ({_height(dst)}p) vs {os.path.relpath(match, lib)} ({_height(match)}p)')
+                else:
+                    _soft_delete(base_path, path)                  # same content, archive copy is as good or better
+                    out['trashed'].append(f)
+                continue
+            dst = _move(path, os.path.join(adopt_dir, f))
+            idx.sha.add(sha)
+            if low.endswith(_VIDEO_EXTS):
+                idx.videos.append((dst, _duration(dst)))
+            out['adopted'].append(f)
     return out
 
 
@@ -231,11 +312,11 @@ def run(base_path: str, options: dict | None, script_id: str, cfg: dict | None =
                 if 'discord_browser' in __import__('sys').modules:
                     __import__('sys').modules['discord_browser'].close()
         step('Indexing the archive')
-        idx = build_index(lib)
+        idx = build_index(lib, root)
         progress.say(f'  {len(idx.scripts)} distinct funscript(s) in the archive.')
         step('Moving post folders\' scripts/videos into the archive (duplicates are trashed, undoable)')
         posts = post_folders(base_path, lib)
-        totals = {'trashed': 0, 'adopted': 0, 'left': 0}
+        totals = {'trashed': 0, 'adopted': 0, 'left': 0, 'better_than_archive': 0}
         for i, rel in enumerate(posts, 1):
             progress.live(f'  post {i}/{len(posts)}: {rel[:60]}')
             summary = adopt_post(base_path, root, lib, rel, idx)
@@ -248,6 +329,9 @@ def run(base_path: str, options: dict | None, script_id: str, cfg: dict | None =
         csv_path = _write_csv(base_path, rows)
         progress.say(f'  {totals["trashed"]} duplicate(s) trashed, {totals["adopted"]} file(s) moved into '
                      f'{cfg["dir"]}/{ADOPT_DIRNAME}/, {totals["left"]} unreadable script(s) left in place  ->  {csv_path}')
+        if totals['better_than_archive']:
+            progress.say(f'  {totals["better_than_archive"]} video(s) from posts fit MAX_RESOLUTION better than the '
+                         f'archive\'s copy; kept (not trashed) and listed as "better_than_archive" in that report.')
     finally:
         action_log.finish()
     print('\nDone. Undo with the creator-scripts menu (u).')
