@@ -8,7 +8,7 @@ back to the caller to process.
   collect_history()      pure scroll-and-collect loop (injected callables) -- unit tested without a browser
   fetch_channel_history  open the channel, run the loop, return message dicts newest first (None on failure)
   refresh()              read what is new, annotate it (discord_parser), store it; returns the new rows
-  password_history()     the archive passwords in the latest messages (discord_parser -> discord_passwords)
+  password_history()     every archive password (reads the whole chat once, then only newer messages)
 """
 import time
 
@@ -92,26 +92,38 @@ def refresh(root: str, creator_key: str, fetch=None, force: bool = False) -> lis
     return rows
 
 
-def password_history(creator_key: str, max_messages: int = 50, force: bool = False) -> list[str]:
-    """Every distinct archive password in the channel's newest *max_messages* messages, newest first, recorded in
-    creator_db. Reads only; stores nothing and does not move the stored "read up to here" position. Pass
-    max_messages=None for the whole chat.
+def password_history(creator_key: str, max_messages: int | None = None, force: bool = False,
+                     rescan: bool = False) -> list[str]:
+    """Every archive password the creator has posted, newest first. Found passwords are recorded in creator_db, so
+    they are kept for good; this only decides how much of the chat still has to be read.
 
-    *force*: re-ask channel setup even if this creator previously declined it (pass True when a password is
-    genuinely needed, e.g. every known one just failed against a real archive)."""
+    The first call reads the WHOLE chat (no message cap -- an older archive may need an older password). It then
+    remembers the newest message it covered (creator_db.discord_scan), and later calls read only newer messages.
+    *rescan* ignores that position and reads everything again (use it when no known password worked).
+    *max_messages* is only for manual peeks: a capped read never moves the remembered position.
+    *force*: re-ask channel setup even if this creator previously declined it.
+
+    Returns every password on file for the creator afterwards (not just the ones in the newly read messages)."""
+    import creator_db
     import discord_parser
-    rows = fetch_channel_history(creator_key, max_messages=max_messages, force=force)
+    since = None if rescan or max_messages else creator_db.get_discord_scan(creator_key)
+    rows = fetch_channel_history(creator_key, since_message_id=since, max_messages=max_messages, force=force)
     if rows is None:
-        return []
-    passwords = discord_parser.record_passwords(creator_key, rows)
-    if passwords:
-        print(f'  [discord] found {len(passwords)} distinct password(s) for "{creator_key}" in {len(rows)} message(s).')
-    else:
-        print(f'  [discord] no password-looking message in the {len(rows)} message(s) read.')
-    return passwords
+        return _known_passwords(creator_key)       # could not read: fall back to what is already on file
+    found = discord_parser.record_passwords(creator_key, rows)
+    if rows and not max_messages:
+        creator_db.set_discord_scan(creator_key, str(max(snowflake(r['id']) for r in rows if snowflake(r['id']))))
+    print(f'  [discord] read {len(rows)} message(s)' + (f' newer than {since}' if since else '') +
+          f'; {len(found)} password(s) in them.')
+    return _known_passwords(creator_key) if since else found
 
 
-def latest_password(creator_key: str, max_messages: int = 50, force: bool = False) -> str | None:
+def _known_passwords(creator_key: str) -> list[str]:
+    import creator_db
+    return creator_db.get_password_history(creator_key)
+
+
+def latest_password(creator_key: str, max_messages: int | None = None, force: bool = False) -> str | None:
     history = password_history(creator_key, max_messages, force=force)
     return history[0] if history else None
 

@@ -113,8 +113,31 @@ def _connect() -> sqlite3.Connection:
             PRIMARY KEY (creator_key, password, date_label, kind)
         )
     ''')
+    # How far the Discord password scan has read, per creator: the newest message id covered by a COMPLETE read.
+    # Lets the next lookup read only newer messages instead of scrolling the whole chat again.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS discord_scan (
+            creator_key TEXT PRIMARY KEY,
+            newest_id   TEXT NOT NULL,
+            scanned_at  TEXT NOT NULL
+        )
+    ''')
     _import_legacy(conn)
     return conn
+
+
+def get_discord_scan(creator_key: str) -> str | None:
+    with _connect() as conn:
+        row = conn.execute('SELECT newest_id FROM discord_scan WHERE creator_key=?', (creator_key.strip().lower(),)).fetchone()
+    return row[0] if row else None
+
+
+def set_discord_scan(creator_key: str, newest_id: str) -> None:
+    with _connect() as conn:
+        conn.execute('''
+            INSERT INTO discord_scan (creator_key, newest_id, scanned_at) VALUES (?, ?, ?)
+            ON CONFLICT (creator_key) DO UPDATE SET newest_id = excluded.newest_id, scanned_at = excluded.scanned_at
+        ''', (creator_key.strip().lower(), str(newest_id), _now()))
 
 
 def record_password_labels(creator_key: str, entries: list[dict]) -> None:

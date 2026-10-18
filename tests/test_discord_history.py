@@ -136,5 +136,58 @@ class PasswordParsingSeparationTests(unittest.TestCase):
             self.assertEqual(recorded, [('c', ['newpass77', 'oldpass99'])])
 
 
+class PasswordScanTests(unittest.TestCase):
+    """password_history reads the whole chat once, then only what is newer; older passwords stay on file."""
+
+    def setUp(self):
+        import creator_db
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old = (creator_db._DB_OVERRIDE, dh.fetch_channel_history)
+        creator_db._DB_OVERRIDE = os.path.join(self._tmp.name, 'c.db')
+        self.calls = []
+        chat = [msg(i, f'The password is currently set as pass{i:04d}') for i in range(1, 121)]   # 120 passwords
+
+        def fake(creator, since_message_id=None, max_messages=None, force=False):
+            self.calls.append((since_message_id, max_messages))
+            since = int(since_message_id) if since_message_id else 0
+            rows = [m for m in reversed(chat) if int(m['id']) > since]
+            return rows[:max_messages] if max_messages else rows
+        dh.fetch_channel_history = fake
+        self.chat = chat
+
+    def tearDown(self):
+        import creator_db
+        creator_db._DB_OVERRIDE, dh.fetch_channel_history = self._old
+        self._tmp.cleanup()
+
+    def test_no_cap_then_incremental_then_rescan(self):
+        import creator_db
+        got = dh.password_history('c')
+        self.assertEqual(len(got), 120)                       # all 120, not the newest 50
+        self.assertEqual(self.calls[-1], (None, None))
+        self.assertEqual(creator_db.get_discord_scan('c'), '120')
+
+        self.chat.append(msg(121, 'The password is currently set as pass0121'))
+        got = dh.password_history('c')
+        self.assertEqual(self.calls[-1], ('120', None))        # only newer messages were read
+        self.assertEqual(len(got), 121)                        # but older passwords are still on file
+        self.assertEqual(creator_db.get_discord_scan('c'), '121')
+
+        dh.password_history('c', rescan=True)
+        self.assertEqual(self.calls[-1], (None, None))
+
+    def test_capped_peek_never_moves_the_position(self):
+        import creator_db
+        dh.password_history('c', max_messages=5)
+        self.assertIsNone(creator_db.get_discord_scan('c'))
+
+    def test_unreadable_channel_keeps_what_is_on_file_and_position(self):
+        import creator_db
+        dh.password_history('c')
+        dh.fetch_channel_history = lambda *a, **k: None
+        self.assertEqual(len(dh.password_history('c')), 120)
+        self.assertEqual(creator_db.get_discord_scan('c'), '120')
+
+
 if __name__ == '__main__':
     unittest.main()

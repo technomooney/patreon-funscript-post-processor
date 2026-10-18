@@ -159,7 +159,7 @@ def _fetch_discord_history_cached(creator_key: str) -> list[str]:
     Discord setup as part of some earlier, merely speculative lookup."""
     if creator_key not in _discord_history_cache:
         import discord_history
-        _discord_history_cache[creator_key] = discord_history.password_history(creator_key, force=True)
+        _discord_history_cache[creator_key] = discord_history.password_history(creator_key, force=True, rescan=True)
     return _discord_history_cache[creator_key]
 
 
