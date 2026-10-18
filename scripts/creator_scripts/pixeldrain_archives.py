@@ -88,6 +88,7 @@ import downloadContent as dc
 import extract_variant_archives as eva
 import folder_log
 import funscript_utils
+import loose_archive
 
 SCRIPT_ID = 'pixeldrain_archives'
 # The id this plugin had while it was Pize-only. Saved creator_config.json files, unattended-run configs and the
@@ -95,6 +96,8 @@ SCRIPT_ID = 'pixeldrain_archives'
 LEGACY_IDS = ('pize_pixeldrain_archives',)
 MENU_LABEL = 'Pixeldrain archives as source of truth'
 MENU_DESCRIPTION = (
+    '(A creator with "pixeldrain_archive" in creator_config.json instead keeps a downloaded share of loose\n'
+    'files, e.g. "!archive", and has its post folders emptied into it.)\n'
     'Downloads every pixeldrain archive linked from the creator\'s posts, extracts each into\n'
     '_pixeldrain/<archive name>/ (never overwriting), and moves all videos/scripts out\n'
     'of the post folders. Locked archives are reported, not guessed at.'
@@ -1406,6 +1409,9 @@ def run(base_path: str, options: dict | None = None) -> None:
     interactive = options is None
     options = options or {}
     base_path = os.path.abspath(base_path)
+    loose = loose_archive.settings(base_path)
+    if loose:       # this creator's archive is a share of loose files (e.g. BekScript), not archives to unpack
+        return loose_archive.run(base_path, None if interactive else options, SCRIPT_ID, loose)
     creator_key = os.path.basename(os.path.normpath(base_path)).strip().lower()
     lib = os.path.join(base_path, LIB_DIRNAME)
     os.makedirs(lib, exist_ok=True)

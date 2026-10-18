@@ -127,3 +127,9 @@ Each entry: what problem, what was decided, what was rejected, how to verify. Wr
 - **Problem:** the plugin was named, labelled and described as Pize-only (visible in the creator-flags prompt: "pize_pixeldrain_archives recommends..."), although its logic is creator-agnostic.
 - **Decision:** renamed to `creator_scripts/pixeldrain_archives.py`, id `pixeldrain_archives`, label "Pixeldrain archives as source of truth". The old id is kept as `LEGACY_IDS` so Pize's saved `creator_config.json` (`download_script`), unattended configs and the undo journal of earlier runs still resolve (`creator_scripts_menu.load` / `journal_id`). Stored history rows and library tool_data under the old name are left as they are (they describe past runs).
 - **Verify:** `tests/test_discord_history.py::PluginRenameAliasTests`.
+
+## 2026-10-18 - Loose-file archives as source of truth (BekScript)
+- **Problem:** BekScript's archive is a pixeldrain /d/ folder share of loose files whose link comes from Discord; the source-of-truth plugin only knew password-protected archives found in post descriptions.
+- **Decision:** creators opt in with `"pixeldrain_archive": {...}` in creator_config.json; the plugin then delegates to `loose_archive.py`: sync the newest share into `<dir>` (e.g. `!archive`), index its funscripts by (axis, point data), then per post folder trash scripts/videos the archive already has and MOVE the rest into `<dir>/_from_patreon/<post>/`, so post folders keep only description/images/bookkeeping. A video counts as already archived only if a file that still exists inside the library is recorded with the same sha256 (a post's own record can never make its only copy a duplicate). Everything is soft-deleted or renamed through the plugin's undo journal.
+- **Rejected:** matching videos by similarity (slow, risky on a share of thousands); deleting duplicates outright; turning the mode on automatically.
+- **Verify:** `tests/test_loose_archive.py`.

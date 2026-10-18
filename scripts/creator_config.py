@@ -20,6 +20,10 @@ Keys:
   sync_exclude           kinds ("video", "funscript", "archive") and/or
                          extensions (".mp4", ...) sync_new_folders must never
                          copy into this creator's folders.
+  pixeldrain_archive     {"dir": "!archive", "discord_channel": "archive", "latest_only": true}: this creator's
+                         pixeldrain archive is a share of loose files downloaded in full into <dir>, and the
+                         "Pixeldrain archives as source of truth" plugin empties post folders into it
+                         (loose_archive.py). Use with download_script "pixeldrain_archives".
   discord_pixeldrain_links
                          subfolder name (or true for 'discord'): this creator's
                          pixeldrain links live in a Discord channel, so its
