@@ -150,11 +150,15 @@ def save_messages(root: str, creator: str, rows: list[dict]) -> int:
     added = 0
     with library_db.db(root, write=True) as con:
         for m in rows:
+            # Hidden (base64) links are decoded NOW, from the full text including spoilers, because only the
+            # visible text is stored -- later runs read them back from decoded_links_json.
+            hidden = [f['href'] for f in decode_links(m)]
             cur = con.execute(
                 'INSERT OR IGNORE INTO discord_messages(creator, message_id, ts, author, text, hrefs_json, '
-                'processed, updated_by, updated_at) VALUES(?,?,?,?,?,?,0,?,?)',
+                'processed, decoded_links_json, updated_by, updated_at) VALUES(?,?,?,?,?,?,0,?,?,?)',
                 (creator, str(m['id']), m.get('ts', ''), m.get('author', ''), m.get('text', ''),
-                 json.dumps(m.get('hrefs', []), ensure_ascii=False), _UPDATED_BY, now))
+                 json.dumps(m.get('hrefs', []), ensure_ascii=False), json.dumps(hidden, ensure_ascii=False),
+                 _UPDATED_BY, now))
             added += cur.rowcount
     return added
 
@@ -168,20 +172,19 @@ def newest_stored_id(root: str, creator: str):
     return str(max(nums)) if nums else None
 
 
-def mark_processed(root: str, creator: str, message_id, decoded_links: list[str] | None = None) -> None:
+def mark_processed(root: str, creator: str, message_id) -> None:
     with library_db.db(root, write=True) as con:
         con.execute(
-            'UPDATE discord_messages SET processed=1, decoded_links_json=?, updated_by=?, updated_at=? '
-            'WHERE creator=? AND message_id=?',
-            (json.dumps(decoded_links or [], ensure_ascii=False), _UPDATED_BY,
-             time.strftime('%Y-%m-%dT%H:%M:%S'), creator, str(message_id)))
+            'UPDATE discord_messages SET processed=1, updated_by=?, updated_at=? WHERE creator=? AND message_id=?',
+            (_UPDATED_BY, time.strftime('%Y-%m-%dT%H:%M:%S'), creator, str(message_id)))
 
 
 def unprocessed(root: str, creator: str) -> list[dict]:
     """Stored messages not yet marked processed, oldest first."""
     with library_db.db(root) as con:
         rows = con.execute('SELECT * FROM discord_messages WHERE creator=? AND processed=0', (creator,)).fetchall()
-    out = [dict(r, hrefs=json.loads(r['hrefs_json'] or '[]')) for r in rows]
+    out = [dict(r, hrefs=json.loads(r['hrefs_json'] or '[]'), decoded=json.loads(r['decoded_links_json'] or '[]'))
+           for r in rows]
     out.sort(key=lambda m: _snowflake(m['message_id']) or 0)
     return out
 

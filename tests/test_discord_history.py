@@ -82,13 +82,19 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(dh.save_messages(self.root, 'c', [msg(10, 'a'), msg(30, 'b'), msg(20, 'c')]), 3)
         self.assertEqual(dh.newest_stored_id(self.root, 'c'), '30')
         self.assertEqual([m['message_id'] for m in dh.unprocessed(self.root, 'c')], ['10', '20', '30'])
-        dh.mark_processed(self.root, 'c', 20, ['https://pixeldrain.com/l/x'])
+        dh.mark_processed(self.root, 'c', 20)
         self.assertEqual([m['message_id'] for m in dh.unprocessed(self.root, 'c')], ['10', '30'])
         # re-saving keeps the processed flag and adds only genuinely new messages
         self.assertEqual(dh.save_messages(self.root, 'c', [msg(20, 'c'), msg(40, 'd')]), 1)
         self.assertEqual([m['message_id'] for m in dh.unprocessed(self.root, 'c')], ['10', '30', '40'])
         # creators are separate
         self.assertIsNone(dh.newest_stored_id(self.root, 'other'))
+
+    def test_hidden_links_are_decoded_at_save_time_from_spoiler_text(self):
+        url = 'https://pixeldrain.com/l/AbCd1234'
+        enc = base64.b64encode(url.encode()).decode()
+        dh.save_messages(self.root, 'c', [msg(1, text='click to reveal', raw='click to reveal ' + enc)])
+        self.assertEqual(dh.unprocessed(self.root, 'c')[0]['decoded'], [url])
 
     def test_decode_links_reads_spoiler_text_too(self):
         url = 'https://pixeldrain.com/l/AbCd1234'
