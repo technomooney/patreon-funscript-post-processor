@@ -147,6 +147,32 @@ def _ask_list(label: str, current: list) -> list:
     return [p.strip() for p in raw.split(',') if p.strip()]
 
 
+def _ask_channel_ids(creator_folder: str, label: str) -> None:
+    """Make sure the creator has real Discord IDs saved under the channel *label*; ask for them now if not (Enter
+    skips -- they are asked again the first time the channel is actually used)."""
+    import creator_profiles
+    creator_key = os.path.basename(os.path.normpath(creator_folder))
+    have = creator_profiles.get_discord(creator_key, label)
+    if have and have.get('guild_id') and have.get('channel_id'):
+        print(f'  Discord "{label}" channel already saved: server {have["guild_id"]}, channel {have["channel_id"]}.')
+        return
+    print(f'  The Discord "{label}" channel has no IDs saved yet. (Discord: turn on Developer Mode in User Settings >')
+    print('  Advanced, then right-click the server icon / the channel > Copy Server ID / Copy Channel ID.)')
+
+    def ask(what):
+        while True:
+            value = input(f'  {what} ID (Enter to skip, asked later instead): ').strip()
+            if not value or (value.isdigit() and 15 <= len(value) <= 21):
+                return value
+            print('  that should be a plain number of about 17-20 digits -- try again, or Enter to skip.')
+
+    guild = ask('server (guild)')
+    channel_id = ask('channel') if guild else ''
+    if guild and channel_id:
+        creator_profiles.set_discord_channel(creator_key, guild, channel_id, f'{label} channel', channel=label)
+        print(f'  saved the "{label}" channel.')
+
+
 def configure_flags(creator_folder: str) -> None:
     """Interactively edit *creator_folder*/creator_config.json. Every answer
     defaults to what's already there (Enter keeps); nothing is written
@@ -190,8 +216,9 @@ def configure_flags(creator_folder: str) -> None:
         if ans == 'y':
             cur = cur if isinstance(cur, dict) else {}
             folder = input(f'  folder it is downloaded into [{cur.get("dir", "!archive")}]: ').strip() or cur.get('dir', '!archive')
-            channel = input(f'  Discord channel name that carries its link [{cur.get("discord_channel", "archive")}]: ').strip() \
-                or cur.get('discord_channel', 'archive')
+            channel = input(f'  label for the Discord channel that carries its link (just our nickname for it) '
+                            f'[{cur.get("discord_channel", "archive")}]: ').strip() or cur.get('discord_channel', 'archive')
+            _ask_channel_ids(creator_folder, channel)
             latest = input(f'  only the newest link in that channel counts? (y/n) '
                            f'[{"y" if cur.get("latest_only", True) else "n"}]: ').strip().lower()
             cfg['pixeldrain_archive'] = {'dir': folder, 'discord_channel': channel,
