@@ -1,15 +1,15 @@
 """Convert existing libraries to the shared library database (<library root>/.library-data/library.db).
 
 Run it by hand, outside the menu:
-    ./migrate.sh /path/to/Patreon --children            (dry run: prints a report, writes NOTHING)
-    ./migrate.sh /path/to/Patreon --children --apply    (imports; one database per creator folder)
-    ./migrate.sh /path/to/Patreon/Pize --apply          (just one library)
-    migrate.bat D:\\Patreon --children [--apply]
+    ./migrate.sh /path/to/Patreon            (dry run: prints a report, writes NOTHING)
+    ./migrate.sh /path/to/Patreon --apply    (imports; one database per creator folder inside it)
+    ./migrate.sh /path/to/Patreon/Pize --self --apply   (just that one folder as a library)
+    migrate.bat D:\\Patreon [--apply]
 
 A LIBRARY is the folder the tools are run on -- for the downloader one creator's folder (Pize, MDemaxis, ...), for the
 compressor its library folder. Each library has its OWN database, `<library>/.library-data/library.db`, never one
-shared by a parent folder. Give it library folder(s), or use --children on a folder that holds several libraries
-(e.g. ~/funscripts/Patreon --children): every folder directly inside becomes its own library. It imports:
+shared by a parent folder. Give it the folder you work in (e.g. ~/funscripts/Patreon): every folder directly inside it becomes its own library.
+`--self` treats the given folder itself as one library instead. It imports:
   * every per-folder .folder_log.json                                -> runs
   * the AV1 compressor's .av1-compressor/library_log.jsonl            -> runs
   * logs an older compressor parked in .av1-compressor/legacy_folder_logs/  -> runs (history that would otherwise
@@ -320,9 +320,9 @@ def format_report(plan: dict, applied: dict | None, moved: list | None = None) -
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description='Convert libraries to the shared library database '
                                                  '(dry run unless --apply)')
-    parser.add_argument('roots', nargs='+', help='library folder(s) (with --children: folder(s) holding libraries)')
-    parser.add_argument('--children', action='store_true',
-                        help='treat every folder directly inside each given folder as its own library')
+    parser.add_argument('roots', nargs='+', help='the folder(s) you work in; every folder directly inside is its own library')
+    parser.add_argument('--self', dest='self_only', action='store_true',
+                        help='treat each given folder itself as ONE library (a folder that already has .library-data always is)')
     parser.add_argument('--apply', action='store_true', help='actually import (default: dry run, writes nothing)')
     parser.add_argument('--report', help='also write the full plan and problems to this JSON file')
     args = parser.parse_args(argv)
@@ -334,7 +334,7 @@ def main(argv=None) -> int:
         if not os.path.isdir(given):
             print(f'Not a folder: {given}')
             return 2
-        if args.children:
+        if not args.self_only and not os.path.isdir(os.path.join(given, library_db.DATA_DIRNAME)):
             roots += [os.path.join(given, d) for d in sorted(os.listdir(given))
                       if not d.startswith('.') and d not in library_db.SKIP_DIRNAMES and os.path.isdir(os.path.join(given, d))]
         else:

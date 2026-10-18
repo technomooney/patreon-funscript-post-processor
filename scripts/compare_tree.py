@@ -182,6 +182,16 @@ def main(argv=None) -> int:
     parser.add_argument('--apply', action='store_true', help='with --restore-names: actually rename')
     args = parser.parse_args(argv)
     root, wanted = rs.resolve_target(args.root)
+    if not os.path.isfile(library_db.db_path(root)):
+        libs = rs.libraries_inside(root)
+        if not libs:
+            print(f'No library database found in or above {args.root}.')
+            return 2
+        code = 0
+        for name in libs:                                  # a folder holding libraries: compare each one
+            print(f'\n== {name} ==')
+            code = max(code, main([os.path.join(root, name), *[a for a in (argv if argv is not None else sys.argv[1:]) if a != args.root]]))
+        return code
     versions = list_versions(root)
     if not versions:
         print(f'No snapshot in {root}/.library-data/{rs.PREVIOUS}. Run reset.sh first.')

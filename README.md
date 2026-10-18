@@ -169,12 +169,12 @@ To convert an existing library, run the migration **outside the menu**. It is a 
 moves or deletes anything, and is safe to repeat:
 
 ```
-./migrate.sh /path/to/Patreon --children            # report only; every creator folder becomes its own library
-./migrate.sh /path/to/Patreon --children --apply
-./migrate.sh /path/to/Patreon/Pize --apply           # or just one library
+./migrate.sh /path/to/Patreon            # report only; every folder inside it becomes its own library
+./migrate.sh /path/to/Patreon --apply
+./migrate.sh /path/to/Patreon/Pize --self --apply   # or one folder as a single library
 ```
 
-A **library** is the folder a tool is run on: one creator's folder for the downloader (Pize, Uberdude430, ...), its library folder for the compressor. Every library has its own `.library-data` and no parent folder shares one. Creator-specific
+You give the tools the folder you work in (e.g. `Patreon`); **each folder directly inside it (Pize, Uberdude430, ...) is its own library** with its own `.library-data`, and the folder you gave holds none. Creator-specific
 "Pixeldrain repo sync" and "Discord channel" plugins (menu `s`) then download only files you do not already own,
 including ones the compressor transcoded.
 

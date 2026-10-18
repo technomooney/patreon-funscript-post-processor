@@ -105,6 +105,14 @@ def resolve_target(path: str) -> tuple[str, str]:
         cur = parent
 
 
+def libraries_inside(folder: str) -> list[str]:
+    """Names of the folders directly inside *folder* that are libraries (have their own database)."""
+    try:
+        return sorted(d for d in os.listdir(folder) if os.path.isfile(library_db.db_path(os.path.join(folder, d))))
+    except OSError:
+        return []
+
+
 def find_manual_folders(root: str, scope: str = '') -> list[str]:
     """Relative paths of every folder the USER marked `.manual` ('' = the root itself). A `.manual` that sits next to
     `.consolidated` was written by consolidate_packs / extract_variant_archives, not by a person, so it is not kept."""
@@ -463,7 +471,11 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     root, scope = resolve_target(args.folder)
     if not os.path.isfile(library_db.db_path(root)):
-        print(f'No library database found in or above {args.folder}. Run migrate.sh on the library first.')
+        libs = libraries_inside(root)
+        if libs:
+            print(f'{root} holds {len(libs)} libraries ({", ".join(libs)}). Reset one at a time, e.g.:\n  ./reset.sh "{os.path.join(root, libs[0])}"')
+        else:
+            print(f'No library database found in or above {args.folder}. Run migrate.sh on the folder you work in first.')
         return 2
     target = os.path.join(root, scope)
     if not os.path.isdir(target):
