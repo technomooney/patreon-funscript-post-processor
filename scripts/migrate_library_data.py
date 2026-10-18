@@ -16,19 +16,30 @@ Give it a LIBRARY ROOT -- the folder above all the creator folders you want in o
     name/size), so a transcoded file is recognised as already owned
   * the library is registered in the machine-local app database
 
-Safe by design: dry run by default; COPY, never move or delete (every legacy file stays exactly where it is);
-idempotent (running twice adds nothing); one transaction per library (an interrupt leaves it untouched); anything
-odd is listed in the report instead of guessed at. Ctrl+C prints "Cancelled.".
+After a successful import the legacy files that were fully imported are MOVED (never deleted) into
+<root>/.library-data/legacy/ so the library has no loose log files left:
+    .folder_log.json in <folder>              -> legacy/folder_logs/<folder>/.folder_log.json
+    .av1-compressor/library_log.jsonl         -> legacy/av1-compressor/library_log.jsonl
+    .av1-compressor/legacy_folder_logs/...    -> legacy/av1-compressor/legacy_folder_logs/...
+    legacy/moved.json lists every old path -> new path, so a move can be reversed by hand.
+Files that could not be read are NOT moved. Pize's _pixeldrain/.manifest.json stays where it is: that plugin still
+reads it directly (it is also copied into the database).
+
+Safe by design: dry run by default; nothing is deleted; the move happens only after the import transaction has
+committed; idempotent (running twice adds and moves nothing new); one transaction per library (an interrupt leaves
+it untouched); anything odd is listed in the report instead of guessed at. Ctrl+C prints "Cancelled.".
 """
 import argparse
 import json
 import os
+import shutil
 import sys
 import time
 
 import app_db
 import library_db
 
+LEGACY_DIRNAME = 'legacy'
 LEGACY_LOG = '.folder_log.json'
 COMPRESSOR_DIR = '.av1-compressor'
 COMPRESSOR_LOG = 'library_log.jsonl'
@@ -67,6 +78,7 @@ def scan(root: str) -> dict:
     sources = {'folder_logs': 0, 'compressor_log_records': 0, 'parked_logs': 0, 'pize_manifests': 0}
     pize: list[tuple[str, dict]] = []                       # (creator folder rel, manifest dict)
     nested: list[str] = []
+    movable: list[str] = []                                 # fully read legacy files, safe to move once imported
 
     for dirpath, dirnames, filenames in os.walk(root):
         if os.path.normpath(dirpath) != os.path.normpath(root) and library_db.DATA_DIRNAME in dirnames:
@@ -76,6 +88,7 @@ def scan(root: str) -> dict:
             data = _read_json(os.path.join(dirpath, LEGACY_LOG), problems)
             if isinstance(data, list):
                 sources['folder_logs'] += 1
+                movable.append(os.path.join(dirpath, LEGACY_LOG))
                 runs += [(_rel(root, dirpath), r) for r in data if isinstance(r, dict)]
         if os.path.basename(dirpath) == PIZE_DIR and PIZE_MANIFEST in filenames:
             data = _read_json(os.path.join(dirpath, PIZE_MANIFEST), problems)
@@ -96,6 +109,7 @@ def scan(root: str) -> dict:
                     if isinstance(r, dict):
                         sources['compressor_log_records'] += 1
                         runs.append((r.get('folder', ''), {k: v for k, v in r.items() if k != 'folder'}))
+            movable.append(jsonl)
         except OSError as e:
             problems.append({'kind': 'unreadable', 'path': jsonl, 'detail': str(e)})
     parked_root = os.path.join(cdir, PARKED_DIR)
@@ -104,13 +118,14 @@ def scan(root: str) -> dict:
             data = _read_json(os.path.join(dirpath, LEGACY_LOG), problems)
             if isinstance(data, list):
                 sources['parked_logs'] += 1
+                movable.append(os.path.join(dirpath, LEGACY_LOG))
                 runs += [(_rel(parked_root, dirpath), r) for r in data if isinstance(r, dict)]
 
     for path in nested:
         problems.append({'kind': 'nested_library_data', 'path': path,
                          'detail': 'a second .library-data inside the library would shadow this root for everything '
                                    'below it; decide which one to keep before relying on either'})
-    return {'runs': runs, 'pize': pize, 'sources': sources, 'problems': problems}
+    return {'runs': runs, 'pize': pize, 'sources': sources, 'problems': problems, 'movable': movable}
 
 
 def build_plan(root: str) -> dict:
@@ -175,7 +190,7 @@ def build_plan(root: str) -> dict:
     extras = [(creator_rel, {'packages': m.get('packages') or {}, 'posts': m.get('posts') or {}})
               for creator_rel, m in found['pize']]
     return {'root': root, 'runs': runs_new, 'links': links_new, 'files': files_new, 'pize_extra': extras,
-            'sources': found['sources'], 'problems': problems}
+            'sources': found['sources'], 'problems': problems, 'movable': found['movable']}
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +230,53 @@ def apply_plan(plan: dict) -> dict:
     return {'runs': len(plan['runs']), 'links': len(plan['links']), 'files': len(plan['files'])}
 
 
-def format_report(plan: dict, applied: dict | None) -> str:
+def _legacy_destination(root: str, path: str) -> str:
+    rel = os.path.relpath(path, root)
+    parts = rel.split(os.sep)
+    if parts[0] == COMPRESSOR_DIR:
+        return os.path.join(library_db.data_dir(root), LEGACY_DIRNAME, rel)
+    return os.path.join(library_db.data_dir(root), LEGACY_DIRNAME, 'folder_logs', rel)
+
+
+def move_legacy(plan: dict) -> list[tuple[str, str]]:
+    """Move the fully imported legacy files under .library-data/legacy/ (same filesystem, mtime kept). Call only
+    after apply_plan() committed. Nothing is deleted; an existing destination gets a numbered name. Returns
+    [(old, new)] and records them in legacy/moved.json."""
+    root = plan['root']
+    moved: list[tuple[str, str]] = []
+    for src in plan.get('movable', []):
+        if not os.path.isfile(src):
+            continue
+        dest = _legacy_destination(root, src)
+        base, n = dest, 1
+        while os.path.exists(dest):
+            n += 1
+            dest = f'{base}.{n}'
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        try:
+            os.replace(src, dest)
+        except OSError:
+            shutil.copy2(src, dest)             # different filesystem: copy, verify size, then remove the original
+            if os.path.getsize(dest) != os.path.getsize(src):
+                os.remove(dest)
+                continue
+            os.remove(src)
+        moved.append((src, dest))
+    if moved:
+        index = os.path.join(library_db.data_dir(root), LEGACY_DIRNAME, 'moved.json')
+        try:
+            with open(index, 'r', encoding='utf-8') as f:
+                history = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            history = []
+        stamp = time.strftime('%Y-%m-%dT%H:%M:%S')
+        history += [{'ts': stamp, 'from': a, 'to': b} for a, b in moved]
+        with open(index, 'w', encoding='utf-8') as f:
+            json.dump(history, f, indent=1, ensure_ascii=False)
+    return moved
+
+
+def format_report(plan: dict, applied: dict | None, moved: list | None = None) -> str:
     s = plan['sources']
     lines = [
         f'Library: {plan["root"]}',
@@ -235,7 +296,12 @@ def format_report(plan: dict, applied: dict | None) -> str:
             lines.append(f'      {p["path"]}  ({p["detail"]})')
         if len(items) > 10:
             lines.append(f'      ... and {len(items) - 10} more (see --report)')
-    lines.append('  Legacy files were left exactly where they are.')
+    n = len(plan.get('movable', []))
+    if moved:
+        lines.append(f'  moved {len(moved)} legacy file(s) into {library_db.DATA_DIRNAME}/{LEGACY_DIRNAME}/ '
+                     '(nothing deleted; index in moved.json)')
+    elif n:
+        lines.append(f'  would move {n} legacy file(s) into {library_db.DATA_DIRNAME}/{LEGACY_DIRNAME}/ after the import')
     return '\n'.join(lines)
 
 
@@ -255,7 +321,8 @@ def main(argv=None) -> int:
             return 2
         plan = build_plan(root)
         applied = apply_plan(plan) if args.apply else None
-        print(format_report(plan, applied))
+        moved = move_legacy(plan) if applied else None
+        print(format_report(plan, applied, moved))
         full.append({'root': root, 'applied': bool(applied), 'plan': {k: v for k, v in plan.items() if k != 'root'}})
     if not args.apply:
         print('\nDry run: nothing was written. Re-run with --apply to import.')

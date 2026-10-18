@@ -10,7 +10,7 @@ declare one with library_db.use_root(). A folder under NO declared root keeps th
 Records still sitting in legacy files are merged into read(): the folder's .folder_log.json and, for libraries the
 AV1 compressor already used, its .av1-compressor/library_log.jsonl and the per-folder logs an earlier
 compressor parked under .av1-compressor/legacy_folder_logs/<folder>/. Legacy files are never moved or deleted here
-(migrate_library_data.py imports them); duplicates already imported into the DB are ignored.
+(migrate_library_data.py imports them and then files them under .library-data/legacy/); duplicates already imported into the DB are ignored.
 """
 import json
 import os

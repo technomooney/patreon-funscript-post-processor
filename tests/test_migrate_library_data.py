@@ -1,4 +1,4 @@
-"""Migration: dry run writes nothing, apply is all-or-nothing and idempotent, legacy files are never touched."""
+"""Migration: dry run writes nothing, apply is all-or-nothing and idempotent, legacy files are moved (never deleted) into .library-data/legacy."""
 import hashlib
 import io
 import json
@@ -17,11 +17,12 @@ import library_db  # noqa: E402
 import migrate_library_data as mig  # noqa: E402
 
 
-def snapshot(root):
-    """path -> sha256 of every file outside .library-data, to prove nothing legacy changed."""
+def snapshot(root, include_data=False):
+    """path -> sha256 of every file outside .library-data (or inside it too), to prove nothing was lost."""
     out = {}
     for dp, dn, fn in os.walk(root):
-        dn[:] = [d for d in dn if d != '.library-data']
+        if not include_data:
+            dn[:] = [d for d in dn if d != '.library-data']
         for f in fn:
             p = os.path.join(dp, f)
             with open(p, 'rb') as fh:
@@ -89,11 +90,28 @@ class MigrateTests(unittest.TestCase):
         self.assertEqual(before, snapshot(self.root))
         self.assertFalse(os.path.exists(os.path.join(os.environ['LIBRARY_TOOLS_HOME'], 'app.db')))
 
-    def test_apply_imports_everything_and_leaves_legacy_untouched(self):
+    def test_apply_imports_everything_and_moves_legacy_files_into_the_data_dir(self):
         before = snapshot(self.root)
         code, out = self.run_main('--apply')
         self.assertEqual(code, 0)
-        self.assertEqual(before, snapshot(self.root))           # every legacy file byte-identical, none moved
+        self.assertIn('moved 3 legacy file(s)', out)
+        after = snapshot(self.root)
+        legacy = os.path.join(self.root, '.library-data', 'legacy')
+        moved = {
+            os.path.join(self.root, 'creator/post1/.folder_log.json'): os.path.join(legacy, 'folder_logs/creator/post1/.folder_log.json'),
+            os.path.join(self.root, '.av1-compressor/library_log.jsonl'): os.path.join(legacy, '.av1-compressor/library_log.jsonl'),
+            os.path.join(self.root, '.av1-compressor/legacy_folder_logs/creator/post2/.folder_log.json'):
+                os.path.join(legacy, '.av1-compressor/legacy_folder_logs/creator/post2/.folder_log.json'),
+        }
+        everything = snapshot(self.root, include_data=True)
+        for old, new in moved.items():
+            self.assertNotIn(old, after)                         # no loose log file left behind
+            self.assertEqual(everything[new], before[old])       # byte-identical, just relocated
+        for path in before:                                      # everything else (media, Pize manifest) untouched
+            if path not in moved:
+                self.assertEqual(after[path], before[path])
+        with open(os.path.join(legacy, 'moved.json'), encoding='utf-8') as f:
+            self.assertEqual({e['from'] for e in json.load(f)}, set(moved))
         root = self.root
         self.assertEqual(len(library_db.runs_for(root, 'creator/post1')), 1)
         self.assertEqual(len(library_db.runs_for(root, 'creator/post2')), 1)       # recovered from parked logs
@@ -113,6 +131,7 @@ class MigrateTests(unittest.TestCase):
             counts = [con.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0] for t in ('runs', 'files', 'pixeldrain_links')]
         _, out = self.run_main('--apply')
         self.assertIn('nothing new to import', out)
+        self.assertNotIn('moved', out)
         with library_db.db(self.root) as con:
             self.assertEqual(counts, [con.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
                                       for t in ('runs', 'files', 'pixeldrain_links')])
@@ -131,6 +150,8 @@ class MigrateTests(unittest.TestCase):
         _, out = self.run_main()
         self.assertIn('nested_library_data', out)
         self.assertIn('unreadable', out)
+        self.run_main('--apply')
+        self.assertTrue(os.path.isfile(os.path.join(self.root, 'broken', '.folder_log.json')))   # unread -> not moved
 
     def test_interrupted_apply_leaves_the_database_untouched(self):
         plan = mig.build_plan(self.root)
