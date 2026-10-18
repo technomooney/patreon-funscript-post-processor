@@ -42,6 +42,8 @@ ARCHIVE_DEST = 'archive'
 # BekScript's Discord channels (named in the creator profile; each asks for its IDs on first use): the archive's
 # links (monthly reward scripts are in that archive too) and the secret scripts' links. channel name -> folder.
 DISCORD_CHANNELS = {'archive': ARCHIVE_DEST, 'secrets': DISCORD_DEST}
+# Bek re-posts the archive link now and then and the newest one holds everything, so only that one is used.
+LATEST_ONLY_CHANNELS = {'archive'}
 _LEDGER_KEY = 'secret_post_ledger'
 _TOOL = SCRIPT_ID
 _MEDIA = {'.mp4', '.mkv', '.webm', '.avi', '.mov', '.m4v', '.wmv', '.zip', '.rar', '.7z'}
@@ -207,7 +209,8 @@ def fetch_archive(base_path: str, interactive: bool) -> None:
     import discord_pixeldrain_sync as dps
     creator_key = os.path.basename(os.path.normpath(base_path))
     for channel, dest in DISCORD_CHANNELS.items():
-        dps.sync_channel(base_path, dest=dest, dry_run=False, interactive=interactive, channel=channel)
+        dps.sync_channel(base_path, dest=dest, dry_run=False, interactive=interactive, channel=channel,
+                         latest_only=channel in LATEST_ONLY_CHANNELS)
     sources = [s if isinstance(s, dict) else {'url': s, 'dest': ''}
                for s in creator_profiles.get(creator_key).get(ps.SOURCES_KEY) or []]
     if sources:

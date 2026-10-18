@@ -33,13 +33,13 @@ class DiscordPluginTests(unittest.TestCase):
         self.base = os.path.join(self.lib, 'creator')
         os.makedirs(self.base)
         self.calls = []
-        self.fail = False
+        self.failing = False
         self._old = (ps.sync_urls, pdu.list_entries, pdu.download_file)
 
         def fake_sync(base_path, urls, dest='', dry_run=False, interactive=False):
             self.calls.append((list(urls), dest, dry_run))
             r = {'new': len(urls), 'have': 0, 'ambiguous': 0, 'unreadable': 0, 'adopted': 0,
-                 'downloaded': 0 if self.fail else len(urls), 'failed': len(urls) if self.fail else 0}
+                 'downloaded': 0 if self.failing else len(urls), 'failed': len(urls) if self.failing else 0}
             return r
         ps.sync_urls = fake_sync
 
@@ -76,10 +76,10 @@ class DiscordPluginTests(unittest.TestCase):
         self.assertEqual(out['links'], 0)
 
     def test_failed_links_keep_messages_unprocessed_for_retry(self):
-        self.fail = True
+        self.failing = True
         self.run_pass([msg(10, hrefs=['https://pixeldrain.com/u/Fail0001'])])
         self.assertEqual(len(store.unprocessed(self.lib, 'creator')), 1)
-        self.fail = False
+        self.failing = False
         self.calls.clear()
         self.run_pass([])                                               # nothing new, but the old message is retried
         self.assertEqual(self.calls[0][0], ['https://pixeldrain.com/u/Fail0001'])
@@ -111,6 +111,25 @@ class DiscordPluginTests(unittest.TestCase):
         self.assertEqual(seen['second'], '500')
         self.assertIsNone(store.newest_stored_id(self.lib, 'creator'))   # the original channel is untouched
         self.assertEqual(store.newest_stored_id(self.lib, 'creator#secrets'), '7')
+
+    def test_latest_only_uses_the_newest_post_and_falls_back_when_it_is_unreadable(self):
+        rows = [msg(10, hrefs=['https://pixeldrain.com/d/Old00001']), msg(20, hrefs=['https://pixeldrain.com/d/New00001'])]
+        out, _ = self.run_pass(rows, latest_only=True)
+        self.assertEqual([c[0] for c in self.calls], [['https://pixeldrain.com/d/New00001']])   # old one never touched
+        self.assertEqual(store.unprocessed(self.lib, 'creator'), [])                          # both marked done
+
+        self.calls.clear()
+        self.failing = True                                    # every sync of the newest fails ...
+        results = iter([True, False])
+        real = ps.sync_urls
+
+        def flaky(base_path, urls, **kw):
+            self.failing = next(results)
+            return real(base_path, urls, **kw)
+        ps.sync_urls = flaky
+        self.run_pass([msg(30, hrefs=['https://pixeldrain.com/d/Old00002']),
+                       msg(40, hrefs=['https://pixeldrain.com/d/Bad00002'])], latest_only=True)
+        self.assertEqual([c[0][0] for c in self.calls], ['https://pixeldrain.com/d/Bad00002', 'https://pixeldrain.com/d/Old00002'])
 
     def test_only_pixeldrain_lists_files_and_folder_shares_are_synced(self):
         self.run_pass([msg(10, hrefs=['https://example.com/a', 'https://pixeldrain.com/d/Share001',

@@ -40,8 +40,10 @@ def links_from_messages(messages: list[dict]) -> list[str]:
 
 
 def sync_channel(base_path: str, dest: str = DEFAULT_DEST, dry_run: bool = False, interactive: bool = False,
-                 fetch=None, channel: str | None = None) -> dict | None:
+                 fetch=None, channel: str | None = None, latest_only: bool = False) -> dict | None:
     """One incremental pass over one channel (*channel* names one of the creator's several; None = the original).
+    *latest_only*: for a channel where each post replaces the last (a re-posted archive link), sync only the newest
+    post's links, falling back to the next older post only if the newer one can't be read or fails.
     *fetch* is injectable for tests (defaults to the browser reader)."""
     creator_key = os.path.basename(os.path.normpath(base_path))
     root = ps.resolve_root(base_path, interactive)
@@ -67,7 +69,20 @@ def sync_channel(base_path: str, dest: str = DEFAULT_DEST, dry_run: bool = False
             for m in pending:
                 store.mark_processed(root, key, m['message_id'])
         return {'messages': len(pending), 'links': 0}
-    result = ps.sync_urls(base_path, urls, dest=dest, dry_run=dry_run, interactive=interactive)
+    if latest_only:
+        groups = [g for g in (links_from_messages([m]) for m in reversed(pending)) if g]     # newest post first
+        if not dry_run:
+            print(f'  [{SCRIPT_ID}] latest-only channel: using the newest post\'s link(s) '
+                  f'({len(groups)} post(s) had links).')
+    else:
+        groups = [urls]
+    result = None
+    for group in groups:
+        result = ps.sync_urls(base_path, group, dest=dest, dry_run=dry_run, interactive=interactive)
+        if result is None or dry_run or (result['failed'] == 0 and result['unreadable'] == 0):
+            break
+        if latest_only:
+            print(f'  [{SCRIPT_ID}] that post\'s link could not be fully read -- trying the next older post.')
     if result is None or dry_run:
         return result
     if result['failed'] == 0 and result['unreadable'] == 0:
