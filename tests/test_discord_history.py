@@ -243,7 +243,8 @@ class OpenChannelTests(unittest.TestCase):
     def run_open(self, driver):
         import discord_browser as db
         import creator_profiles
-        saved = (db._discord_driver, db.ensure_login, db.settle, creator_profiles.get_discord, db.time.sleep, db.time.time)
+        saved = (db._discord_driver, db.ensure_login, db.settle, creator_profiles.get_discord, db.time.sleep, db.time.time,
+                 db.capture_debug)
         clock = iter(range(0, 10000, 5))
         db._discord_driver = lambda: driver
         db.ensure_login = lambda d: True
@@ -251,11 +252,12 @@ class OpenChannelTests(unittest.TestCase):
         creator_profiles.get_discord = lambda c, ch=None: {'guild_id': '1', 'channel_id': '2'}
         db.time.sleep = lambda s: None
         db.time.time = lambda: next(clock)          # fake clock so the 20 s waits finish instantly
+        db.capture_debug = lambda d, label: None    # never write debug files into the real app-data folder
         try:
             return db.open_channel('c')
         finally:
             (db._discord_driver, db.ensure_login, db.settle, creator_profiles.get_discord,
-             db.time.sleep, db.time.time) = saved
+             db.time.sleep, db.time.time, db.capture_debug) = saved
 
     def test_loads_first_time(self):
         d = self.Driver(shows_after_home=False)
