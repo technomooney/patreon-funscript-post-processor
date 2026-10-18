@@ -136,11 +136,11 @@ class AppPathsTests(unittest.TestCase):
 
 
 class SiblingParityTests(unittest.TestCase):
-    """library_db.py / app_paths.py are shared verbatim with the AV1 compressor repo."""
+    """library_db.py / app_paths.py / library_drift.py are shared verbatim with the AV1 compressor repo."""
 
     def test_identical_to_compressor_copy_when_present(self):
         sibling = os.path.join(os.path.dirname(os.path.dirname(HERE)), 'Av1LibraryCompression', 'scripts')
-        for name in ('library_db.py', 'app_paths.py'):
+        for name in ('library_db.py', 'app_paths.py', 'library_drift.py'):
             other = os.path.join(sibling, name)
             if not os.path.isfile(other):
                 self.skipTest(f'{name} not present in sibling repo (yet)')
