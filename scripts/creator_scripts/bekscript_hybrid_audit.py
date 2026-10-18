@@ -221,8 +221,8 @@ def run(base_path: str, options: dict | None = None) -> None:
         try:
             fetch_archive(base_path, interactive)
         finally:
-            import discord_passwords
-            discord_passwords.close()
+            import discord_browser
+            discord_browser.close()
     r = audit(base_path, root)
     print(f'  archive funscripts: {r["archive_scripts"]}   Patreon funscripts: {r["patreon_scripts"]}')
     print(f'  Patreon scripts missing from the archive: {len(r["missing"])}  ->  {r["gap_csv"]}')

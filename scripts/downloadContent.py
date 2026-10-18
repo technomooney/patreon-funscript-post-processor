@@ -6629,8 +6629,8 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
         # Close the Discord browser too, if _fetch_discord_password_cached ever
         # opened one this run — checked via sys.modules rather than a top-level
         # import so runs that never needed a Discord password don't pay for it.
-        if 'discord_passwords' in sys.modules:
-            sys.modules['discord_passwords'].close()
+        if 'discord_browser' in sys.modules:
+            sys.modules['discord_browser'].close()
         if completed_cleanly:
             _failure_folders = {f.get('save_directory') for f in failures}
             _uncertain_folders = {u.get('save_directory') for u in uncertain}

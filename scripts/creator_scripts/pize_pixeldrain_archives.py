@@ -1560,9 +1560,9 @@ def run(base_path: str, options: dict | None = None) -> None:
             os.remove(undo_snapshot)
         action_log.finish()
         shutil.rmtree(os.path.join(lib, _SCRATCH), ignore_errors=True)
-        if 'discord_passwords' in __import__('sys').modules:
+        if 'discord_browser' in __import__('sys').modules:
             try:
-                __import__('sys').modules['discord_passwords'].close()
+                __import__('sys').modules['discord_browser'].close()
             except Exception:
                 pass
     print(f'\nDone. Undo with the creator-scripts menu (u) -> {MENU_LABEL}.')

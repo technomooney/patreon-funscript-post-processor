@@ -1,6 +1,6 @@
 """Read a creator's WHOLE Discord channel history (not just the latest messages), browser-only.
 
-Same deliberate constraint as discord_passwords.py: a persistent logged-in browser profile, no bot and no user
+Same deliberate constraint as discord_browser.py: a persistent logged-in browser profile, no bot and no user
 token. The login is manual, once.
 
 Why: the recent-messages reader only sees what Discord has rendered (a few dozen messages), so an older archive's
@@ -12,9 +12,9 @@ Pieces:
   collect_history()      pure scroll-and-collect loop (injected callables) -- unit tested without a browser
   fetch_channel_history  the browser glue: open channel, scroll, return message dicts newest first
   save_messages / newest_stored_id / mark_processed   incremental bookkeeping in the library database
-  fetch_password_history_full   scan the whole chat for archive passwords (records them in creator_db)
+  stored_messages        the stored rows, oldest first (what discord_passwords parses passwords from)
   decode_links           base64-hidden and plain links in a message, via the shared link_decoder
-Standard library only apart from the browser helpers imported lazily from discord_passwords.
+Standard library only apart from the browser helpers imported lazily from discord_browser.
 """
 import json
 import time
@@ -108,9 +108,9 @@ def fetch_channel_history(creator_key: str, since_message_id=None, max_messages=
     """Open *creator_key*'s configured channel and return its history, newest first, or None on any failure.
 
     Each message: {'id', 'ts', 'author', 'text', 'raw', 'hrefs'}. See collect_history for since/max semantics."""
-    import discord_passwords as dp
+    import discord_browser as db
 
-    opened = dp.open_channel(creator_key, force=force)
+    opened = db.open_channel(creator_key, force=force)
     if opened is None:
         return None
     driver, discord_cfg = opened
@@ -126,7 +126,7 @@ def fetch_channel_history(creator_key: str, since_message_id=None, max_messages=
     try:
         rows = collect_history(read_rows, scroll_up, since_id=since_message_id, max_messages=max_messages,
                                wait=lambda: time.sleep(settle_seconds))
-    except dp.WebDriverException:
+    except db.WebDriverException:
         print('  [discord] browser window was closed while reading the channel.')
         return None
     print(f'  [discord] read {len(rows)} message(s) from channel {discord_cfg["channel_id"]}.')
@@ -163,6 +163,15 @@ def save_messages(root: str, creator: str, rows: list[dict]) -> int:
     return added
 
 
+def stored_messages(root: str, creator: str) -> list[dict]:
+    """Every stored message for *creator*, oldest first, regardless of processed state."""
+    with library_db.db(root) as con:
+        rows = con.execute('SELECT * FROM discord_messages WHERE creator=?', (creator,)).fetchall()
+    out = [dict(r) for r in rows]
+    out.sort(key=lambda m: _snowflake(m['message_id']) or 0)
+    return out
+
+
 def newest_stored_id(root: str, creator: str):
     """Highest message id already stored for *creator* (resume point for incremental scans), or None."""
     with library_db.db(root) as con:
@@ -189,35 +198,11 @@ def unprocessed(root: str, creator: str) -> list[dict]:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Passwords from the whole chat
-# ---------------------------------------------------------------------------
-
-def fetch_password_history_full(creator_key: str, force: bool = False, max_messages=None) -> list[str]:
-    """Every archive password anywhere in the creator's channel, newest first (recorded in creator_db).
-
-    For when the latest passwords failed against an older archive: scans the entire chat, not just the last 50."""
-    import creator_db
-    import discord_passwords as dp
-
-    rows = fetch_channel_history(creator_key, max_messages=max_messages, force=force)
-    if rows is None:
-        return []
-    passwords, labeled = dp.passwords_from_texts([r.get('text', '') for r in rows])
-    if passwords:
-        print(f'  [discord] found {len(passwords)} distinct password(s) for "{creator_key}" in the full history.')
-        creator_db.record_passwords(creator_key, passwords)
-        if labeled:
-            creator_db.record_password_labels(creator_key, labeled)
-    else:
-        print(f'  [discord] no password-looking message anywhere in the {len(rows)} messages read.')
-    return passwords
-
-
 def _main() -> None:
     """Dry run: read a creator's channel history and print what would be found. Downloads nothing, writes nothing
     (unless --save, which stores the messages in the library database given with --library)."""
     import argparse
+    import discord_browser
     import discord_passwords as dp
     import downloadContent as dc
 
@@ -248,7 +233,7 @@ def _main() -> None:
     if args.save and args.library:
         root = library_db.use_root(args.library)
         print(f'  saved {save_messages(root, args.creator, rows)} new message(s) to {library_db.db_path(root)}')
-    dp.close()
+    discord_browser.close()
 
 
 if __name__ == '__main__':

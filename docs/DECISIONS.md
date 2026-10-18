@@ -111,3 +111,8 @@ Each entry: what problem, what was decided, what was rejected, how to verify. Wr
 - **Rejected:** moving repo sync out of the plugin system (would break saved unattended configs and its undo journal).
 - **Not wired:** Pize does not call `sync_if_enabled` yet; its links come from post descriptions and a Discord destination folder there needs a decision.
 - **Verify:** `tests/test_discord_pixeldrain_sync.py` (renamed from test_discord_pixeldrain_links.py).
+
+## 2026-10-18 - Discord split: browser / history / passwords
+- **Problem:** `discord_passwords.py` mixed the Selenium channel access with password parsing, so Pize's password lookups dragged in the whole browser stack and the message history could not be parsed for passwords without re-fetching.
+- **Decision:** `discord_browser.py` = login + open channel + close. `discord_history.py` = read/store messages. `discord_passwords.py` = parsing/recording only (no selenium import); `record_from_stored(root, creator)` parses passwords from messages already in the library DB. `discord_pixeldrain_links` is back as a thin `GENERIC_TOOL` in the 't' menu over the core `discord_pixeldrain_sync.py`.
+- **Verify:** `tests/test_discord_history.py` (PasswordParsingSeparationTests).

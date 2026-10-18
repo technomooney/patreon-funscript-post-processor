@@ -94,5 +94,5 @@ def sync_if_enabled(base_path: str, interactive: bool = False, dry_run: bool = F
     try:
         return sync_channel(base_path, dest=dest, dry_run=dry_run, interactive=interactive)
     finally:
-        import discord_passwords
-        discord_passwords.close()
+        import discord_browser
+        discord_browser.close()

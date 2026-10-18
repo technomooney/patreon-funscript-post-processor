@@ -105,3 +105,28 @@ class StorageTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PasswordParsingSeparationTests(unittest.TestCase):
+    def test_passwords_parse_without_a_browser_and_from_stored_messages(self):
+        import tempfile
+        import sys
+        import creator_db
+        import discord_passwords as dpw
+        self.assertNotIn('selenium', sys.modules.get('discord_passwords').__dict__)
+        self.assertEqual(dpw.passwords_from_texts(['The password is currently set as pize2026080101.'])[0],
+                         ['pize2026080101'])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = library_db.use_root(os.path.join(os.path.realpath(tmp), 'lib'))
+            dh.save_messages(root, 'c', [
+                {'id': '1', 'ts': '', 'author': 'a', 'text': 'pw: oldpass99', 'raw': '', 'hrefs': []},
+                {'id': '2', 'ts': '', 'author': 'a', 'text': 'The password is currently set as newpass77', 'raw': '', 'hrefs': []}])
+            recorded = []
+            old = creator_db.record_passwords
+            creator_db.record_passwords = lambda k, p: recorded.append((k, list(p)))
+            try:
+                got = dpw.record_from_stored(root, 'c')
+            finally:
+                creator_db.record_passwords = old
+            self.assertEqual(got, ['newpass77', 'oldpass99'])
+            self.assertEqual(recorded, [('c', ['newpass77', 'oldpass99'])])
