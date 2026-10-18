@@ -31,7 +31,7 @@ import library_db
 import pixeldrain_sync as ps
 
 SCRIPT_ID = 'bekscript_hybrid_audit'
-MENU_LABEL = 'Hybrid audit: Patreon vs pixeldrain archive + Discord secret ledger'
+MENU_LABEL = 'BekScript: audit Patreon vs pixeldrain archive + Discord secret ledger'
 MENU_DESCRIPTION = (
     'Checks, by funscript point data (not names), that the pixeldrain archive has every script the Patreon downloads\n'
     'got; lists posts whose script the archive lacks; tracks title-only "secret" posts against the Discord downloads.'
