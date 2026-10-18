@@ -189,6 +189,32 @@ def _prompt_setup(creator_key: str, channel: str | None = None) -> dict | None:
     return creator_profiles.get_discord(creator_key, channel)
 
 
+_AGE_MARKERS = ('age-restricted', 'age restricted', 'nsfw', 'over 18', '18+')
+_CONTINUE_XPATH = ("//button[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+                   "'abcdefghijklmnopqrstuvwxyz'), 'continue')]")
+
+
+def dismiss_age_gate(driver) -> bool:
+    """If the page is Discord's age-restricted-channel prompt, press its Continue button. True if it clicked.
+
+    Only acts when the page text says the channel is age-restricted, so an unrelated "Continue" button elsewhere
+    is never pressed. Discord remembers the choice on the account, so this normally happens once per channel."""
+    try:
+        text = (driver.execute_script('return document.body ? document.body.innerText : ""') or '').lower()
+        if not any(marker in text for marker in _AGE_MARKERS):
+            return False
+        for button in driver.find_elements(By.XPATH, _CONTINUE_XPATH):
+            if button.is_displayed():
+                driver.execute_script('arguments[0].click();', button)     # a JS click ignores overlays
+                print('  [discord] age-restricted channel: pressed Continue.')
+                return True
+    except WebDriverException:
+        raise
+    except Exception:
+        pass        # a stale element mid-navigation: the caller simply tries again
+    return False
+
+
 def open_channel(creator_key: str, force: bool = False, channel: str | None = None):
     """Log in (once, by hand) and open *creator_key*'s configured Discord channel.
 
@@ -231,9 +257,13 @@ def open_channel(creator_key: str, force: bool = False, channel: str | None = No
         # timing (caught live: identical code returned 8 messages one run and
         # 0 the next). Wait for at least one message element specifically,
         # then let the count settle before trusting it's the full batch.
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.XPATH, message_xpath))
-        )
+        # An age-restricted channel shows a "Continue" prompt instead of messages; dismiss it while waiting.
+        deadline = time.time() + 20
+        while not driver.find_elements(By.XPATH, message_xpath):
+            if time.time() > deadline:
+                raise TimeoutError('no messages rendered')
+            dismiss_age_gate(driver)
+            time.sleep(1)
         stable_checks = 0
         last_count = -1
         for _ in range(20):  # ~6s max

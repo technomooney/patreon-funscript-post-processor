@@ -189,5 +189,39 @@ class PasswordScanTests(unittest.TestCase):
         self.assertEqual(creator_db.get_discord_scan('c'), '120')
 
 
+class AgeGateTests(unittest.TestCase):
+    class Button:
+        def __init__(self, shown=True):
+            self.shown, self.clicked = shown, False
+
+        def is_displayed(self):
+            return self.shown
+
+    class Driver:
+        def __init__(self, text, buttons):
+            self.text, self.buttons, self.clicked = text, buttons, []
+
+        def execute_script(self, script, *args):
+            if args:
+                args[0].clicked = True
+                return None
+            return self.text
+
+        def find_elements(self, by, xpath):
+            return self.buttons
+
+    def test_clicks_continue_only_on_the_age_restricted_prompt(self):
+        import discord_browser
+        btn = self.Button()
+        self.assertTrue(discord_browser.dismiss_age_gate(self.Driver('This channel is age-restricted. Continue', [btn])))
+        self.assertTrue(btn.clicked)
+        other = self.Button()
+        self.assertFalse(discord_browser.dismiss_age_gate(self.Driver('Welcome back! Continue', [other])))
+        self.assertFalse(other.clicked)
+        hidden = self.Button(shown=False)
+        self.assertFalse(discord_browser.dismiss_age_gate(self.Driver('NSFW channel', [hidden])))
+        self.assertFalse(hidden.clicked)
+
+
 if __name__ == '__main__':
     unittest.main()
