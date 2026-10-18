@@ -45,6 +45,15 @@ class AppDataTests(unittest.TestCase):
                 os.environ[k] = v
         self._tmp.cleanup()
 
+    def test_named_discord_channels_are_separate_from_the_original(self):
+        creator_profiles.set_discord_channel('bek', '1', '2')
+        creator_profiles.set_discord_channel('bek', '3', '4', 'links', channel='archive')
+        creator_profiles.set_discord_declined('bek', channel='secrets')
+        self.assertEqual(creator_profiles.get_discord('bek')['channel_id'], '2')
+        self.assertEqual(creator_profiles.get_discord('bek', 'archive')['channel_id'], '4')
+        self.assertTrue(creator_profiles.get_discord('bek', 'secrets')['declined'])
+        self.assertIsNone(creator_profiles.get_discord('bek', 'other'))
+
     def test_profiles_import_legacy_once_and_leave_file(self):
         path = os.path.join(self.repo, '.creators.json')
         with open(path, 'w') as f:

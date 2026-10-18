@@ -13,6 +13,12 @@ import library_db
 UPDATED_BY = 'discord_store'
 
 
+def scope(creator: str, channel: str | None = None) -> str:
+    """The key rows are stored under: the creator alone for its original channel, 'creator#channel' for a named
+    one, so each channel keeps its own "read up to here" position and processed flags."""
+    return creator if not channel else f'{creator}#{channel}'
+
+
 def snowflake(value) -> int | None:
     """Discord ids are time-ordered numeric snowflakes; None for anything else."""
     s = str(value or '')

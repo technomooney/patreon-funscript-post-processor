@@ -40,36 +40,39 @@ def links_from_messages(messages: list[dict]) -> list[str]:
 
 
 def sync_channel(base_path: str, dest: str = DEFAULT_DEST, dry_run: bool = False, interactive: bool = False,
-                 fetch=None) -> dict | None:
-    """One incremental pass. *fetch* is injectable for tests (defaults to the browser reader)."""
+                 fetch=None, channel: str | None = None) -> dict | None:
+    """One incremental pass over one channel (*channel* names one of the creator's several; None = the original).
+    *fetch* is injectable for tests (defaults to the browser reader)."""
     creator_key = os.path.basename(os.path.normpath(base_path))
     root = ps.resolve_root(base_path, interactive)
     if root is None:
         return None
+    key = store.scope(creator_key, channel)
+    extra = {'channel': channel} if channel else {}
     if dry_run:     # a dry run stores nothing: look at the fresh rows only
-        rows = (fetch or dh.fetch_channel_history)(creator_key, since_message_id=store.newest_stored_id(root, creator_key))
+        rows = (fetch or dh.fetch_channel_history)(creator_key, since_message_id=store.newest_stored_id(root, key), **extra)
         if rows is None:
             print(f'  [{SCRIPT_ID}] could not read the Discord channel; nothing changed.')
             return None
         pending = discord_parser.annotate(list(reversed(rows)))
     else:
-        if dh.refresh(root, creator_key, fetch=fetch) is None:
+        if dh.refresh(root, creator_key, fetch=fetch, channel=channel) is None:
             print(f'  [{SCRIPT_ID}] could not read the Discord channel; nothing changed.')
             return None
-        pending = store.unprocessed(root, creator_key)
+        pending = store.unprocessed(root, key)
     urls = links_from_messages(pending)
     print(f'  [{SCRIPT_ID}] {len(pending)} unprocessed message(s), {len(urls)} pixeldrain link(s) found.')
     if not urls:
         if not dry_run:
             for m in pending:
-                store.mark_processed(root, creator_key, m['message_id'])
+                store.mark_processed(root, key, m['message_id'])
         return {'messages': len(pending), 'links': 0}
     result = ps.sync_urls(base_path, urls, dest=dest, dry_run=dry_run, interactive=interactive)
     if result is None or dry_run:
         return result
     if result['failed'] == 0 and result['unreadable'] == 0:
         for m in pending:
-            store.mark_processed(root, creator_key, m['message_id'])
+            store.mark_processed(root, key, m['message_id'])
     else:
         print(f'  [{SCRIPT_ID}] some links failed or could not be read -- those messages stay unprocessed '
               f'and are retried next run.')

@@ -54,13 +54,13 @@ def collect_history(read_rows, scroll_up, since_id=None, max_messages=None, stal
 
 
 def fetch_channel_history(creator_key: str, since_message_id=None, max_messages=None, force: bool = False,
-                          settle_seconds: float = 1.2):
+                          settle_seconds: float = 1.2, channel: str | None = None):
     """Open *creator_key*'s configured channel and return its history, newest first, or None on any failure.
 
     Each message: {'id', 'ts', 'author', 'text', 'raw', 'hrefs'}. See collect_history for since/max semantics."""
     import discord_browser as db
 
-    opened = db.open_channel(creator_key, force=force)
+    opened = db.open_channel(creator_key, force=force, channel=channel)
     if opened is None:
         return None
     driver, discord_cfg = opened
@@ -77,18 +77,21 @@ def fetch_channel_history(creator_key: str, since_message_id=None, max_messages=
     return rows
 
 
-def refresh(root: str, creator_key: str, fetch=None, force: bool = False) -> list[dict] | None:
+def refresh(root: str, creator_key: str, fetch=None, force: bool = False, channel: str | None = None) -> list[dict] | None:
     """Read the messages newer than the last stored one (the whole channel the first time), annotate and store
     them. Returns the freshly read rows (newest first), or None when the channel could not be read.
-    *fetch* is injectable for tests (defaults to fetch_channel_history)."""
+    *channel* names one of the creator's several channels (each keeps its own position). *fetch* is injectable
+    for tests (defaults to fetch_channel_history)."""
     import discord_parser
     fetch = fetch or fetch_channel_history
-    since = store.newest_stored_id(root, creator_key)
-    print(f'  [discord] reading {"messages newer than " + since if since else "the whole channel history"}...')
-    rows = fetch(creator_key, since_message_id=since)
+    key = store.scope(creator_key, channel)
+    since = store.newest_stored_id(root, key)
+    print(f'  [discord] reading {"messages newer than " + since if since else "the whole channel history"}'
+          f'{" of the " + channel + " channel" if channel else ""}...')
+    rows = fetch(creator_key, since_message_id=since, **({'channel': channel} if channel else {}))
     if rows is None:
         return None
-    store.save_messages(root, creator_key, discord_parser.annotate(rows))
+    store.save_messages(root, key, discord_parser.annotate(rows))
     return rows
 
 

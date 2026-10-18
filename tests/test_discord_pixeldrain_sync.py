@@ -95,6 +95,23 @@ class DiscordPluginTests(unittest.TestCase):
         self.assertIsNone(plug.sync_channel(self.base, fetch=lambda c, since_message_id=None: None))
         self.assertEqual(self.calls, [])
 
+    def test_two_channels_keep_separate_positions_and_flags(self):
+        seen = {}
+
+        def fetch(creator, since_message_id=None, channel=None):
+            seen[channel] = since_message_id
+            return {'archive': [msg(500, hrefs=['https://pixeldrain.com/l/Arch0001'])],
+                    'secrets': [msg(7, hrefs=['https://pixeldrain.com/u/Secret01'])]}[channel]
+        plug.sync_channel(self.base, dest='archive', fetch=fetch, channel='archive')
+        plug.sync_channel(self.base, dest='discord', fetch=fetch, channel='secrets')
+        self.assertEqual(seen, {'archive': None, 'secrets': None})       # secrets did not inherit archive's id 500
+        self.assertEqual([c[1] for c in self.calls], ['archive', 'discord'])
+        plug.sync_channel(self.base, dest='archive', fetch=lambda c, since_message_id=None, channel=None: seen.update(
+            second=since_message_id) or [], channel='archive')
+        self.assertEqual(seen['second'], '500')
+        self.assertIsNone(store.newest_stored_id(self.lib, 'creator'))   # the original channel is untouched
+        self.assertEqual(store.newest_stored_id(self.lib, 'creator#secrets'), '7')
+
     def test_non_pixeldrain_links_are_ignored(self):
         self.run_pass([msg(10, hrefs=['https://example.com/a', 'https://pixeldrain.com/d/xyz/file'])])
         self.assertEqual(self.calls, [])

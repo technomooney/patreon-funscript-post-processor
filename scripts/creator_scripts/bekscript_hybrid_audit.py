@@ -4,8 +4,8 @@ For a creator whose scripts come from three places -- the Patreon downloader, on
 files, and a Discord channel that shares "secret" scripts the other two never carry -- this answers:
 
   1. Does the pixeldrain archive hold every funscript the Patreon downloads got? The archive is downloaded IN FULL
-     into the creator's 'archive' subfolder (its links come from the creator's Discord channel and/or saved
-     pixeldrain lists); the Patreon downloads are only the checklist. Matching is by the script's POINT DATA
+     into the creator's 'archive' subfolder (its links come from the creator's Discord 'archive' channel and/or
+     saved pixeldrain lists; the monthly reward scripts are in that archive too); the Patreon downloads are only the checklist. Matching is by the script's POINT DATA
      (funscript_utils.funscript_data), never by name, so a renamed or re-saved script still matches.
   2. Which Patreon posts carry a script the archive lacks? Those are listed with the post's own (non-pixeldrain)
      links, so the normal download (menu 5) can fetch their media. Nothing is downloaded or moved here.
@@ -39,6 +39,9 @@ MENU_DESCRIPTION = (
 REPLACES_DOWNLOAD = False
 DISCORD_DEST = 'discord'
 ARCHIVE_DEST = 'archive'
+# BekScript's Discord channels (named in the creator profile; each asks for its IDs on first use): the archive's
+# links (monthly reward scripts are in that archive too) and the secret scripts' links. channel name -> folder.
+DISCORD_CHANNELS = {'archive': ARCHIVE_DEST, 'secrets': DISCORD_DEST}
 _LEDGER_KEY = 'secret_post_ledger'
 _TOOL = SCRIPT_ID
 _MEDIA = {'.mp4', '.mkv', '.webm', '.avi', '.mov', '.m4v', '.wmv', '.zip', '.rar', '.7z'}
@@ -198,11 +201,13 @@ def audit(base_path: str, root: str) -> dict:
 
 
 def fetch_archive(base_path: str, interactive: bool) -> None:
-    """Download whatever the archive is still missing: links from the Discord channel (whole history the first time,
-    then only newer messages) and any saved pixeldrain lists, all into the 'archive' folder."""
+    """Download whatever is still missing: the 'archive' Discord channel's links into the archive folder and the
+    'secrets' channel's links into the discord folder (whole history the first time, then only newer messages),
+    plus any saved pixeldrain lists into the archive folder."""
     import discord_pixeldrain_sync as dps
     creator_key = os.path.basename(os.path.normpath(base_path))
-    dps.sync_channel(base_path, dest=ARCHIVE_DEST, dry_run=False, interactive=interactive)
+    for channel, dest in DISCORD_CHANNELS.items():
+        dps.sync_channel(base_path, dest=dest, dry_run=False, interactive=interactive, channel=channel)
     sources = [s if isinstance(s, dict) else {'url': s, 'dest': ''}
                for s in creator_profiles.get(creator_key).get(ps.SOURCES_KEY) or []]
     if sources:

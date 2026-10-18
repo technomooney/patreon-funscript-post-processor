@@ -140,7 +140,7 @@ def _looks_like_snowflake(value: str) -> bool:
     return value.isdigit() and 15 <= len(value) <= 21
 
 
-def _prompt_setup(creator_key: str) -> dict | None:
+def _prompt_setup(creator_key: str, channel: str | None = None) -> dict | None:
     """Ask, right here, for *creator_key*'s Discord password channel and save
     it -- there's no separate global setup step for this, since it's a
     per-creator thing that's only ever needed the first time a password
@@ -152,9 +152,10 @@ def _prompt_setup(creator_key: str) -> dict | None:
     """
     if not sys.stdin.isatty():
         return None
-    print(f'  [discord] no Discord channel configured yet for "{creator_key}".')
+    label = f'Discord "{channel}" channel' if channel else 'Discord channel'
+    print(f'  [discord] no {label} configured yet for "{creator_key}".')
     if input('  [discord] set one up now? (y/n): ').strip().lower() != 'y':
-        creator_profiles.set_discord_declined(creator_key)
+        creator_profiles.set_discord_declined(creator_key, channel)
         print('  [discord] won\'t ask again for this creator unless a password is actually needed.')
         return None
 
@@ -173,27 +174,30 @@ def _prompt_setup(creator_key: str) -> dict | None:
 
     guild_id = _ask_id('server (guild) ID')
     if not guild_id:
-        creator_profiles.set_discord_declined(creator_key)
+        creator_profiles.set_discord_declined(creator_key, channel)
         print('  [discord] skipped — won\'t ask again unless a password is actually needed.')
         return None
     channel_id = _ask_id('channel ID')
     if not channel_id:
-        creator_profiles.set_discord_declined(creator_key)
+        creator_profiles.set_discord_declined(creator_key, channel)
         print('  [discord] skipped — won\'t ask again unless a password is actually needed.')
         return None
     note = input('  [discord] note (optional, e.g. "mega password channel"): ').strip()
 
-    creator_profiles.set_discord_channel(creator_key, guild_id, channel_id, note)
+    creator_profiles.set_discord_channel(creator_key, guild_id, channel_id, note, channel=channel)
     print(f'  [discord] saved — "{creator_key}" now points at that channel.')
-    return creator_profiles.get(creator_key).get('discord')
+    return creator_profiles.get_discord(creator_key, channel)
 
 
-def open_channel(creator_key: str, force: bool = False):
+def open_channel(creator_key: str, force: bool = False, channel: str | None = None):
     """Log in (once, by hand) and open *creator_key*'s configured Discord channel.
 
     Returns (driver, discord_cfg) with the channel's first batch of messages rendered, or None on any failure
     (no channel configured and not set up when asked, login declined/timed out, channel didn't load).
     Shared by the recent-messages reader here and the full-history reader (discord_history.py).
+
+    *channel*: None = the creator's original (password) channel; otherwise a named channel ('archive',
+    'secrets', ...) from the creator profile -- a creator can have several.
 
     *force*: re-prompt even if this creator previously declined setup
     (set_discord_declined). Speculative callers (e.g. "no inline password
@@ -202,12 +206,11 @@ def open_channel(creator_key: str, force: bool = False):
     again; a caller that already knows a password is genuinely needed (every
     known password failed against an actual archive) should pass True.
     """
-    profile = creator_profiles.get(creator_key)
-    discord_cfg = profile.get('discord')
+    discord_cfg = creator_profiles.get_discord(creator_key, channel)
     if not discord_cfg or not discord_cfg.get('guild_id') or not discord_cfg.get('channel_id'):
         if discord_cfg and discord_cfg.get('declined') and not force:
             return None
-        discord_cfg = _prompt_setup(creator_key)
+        discord_cfg = _prompt_setup(creator_key, channel)
         if not discord_cfg:
             print(f'  [discord] no Discord channel configured for "{creator_key}" '
                   f'— run: python scripts/discord_browser.py set-channel {creator_key} <guild_id> <channel_id>')

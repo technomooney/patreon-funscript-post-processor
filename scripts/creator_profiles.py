@@ -71,19 +71,37 @@ def get(creator_key: str) -> dict:
     return load().get(creator_key, {})
 
 
-def set_discord_channel(creator_key: str, guild_id: str, channel_id: str, note: str = '') -> None:
-    """Record where *creator_key*'s mega passwords get posted in Discord."""
+def get_discord(creator_key: str, channel: str | None = None) -> dict | None:
+    """The Discord channel config for *creator_key*: the original single channel (the password channel) when
+    *channel* is None, else the named one in profile['discord_channels'] (e.g. 'archive', 'secrets')."""
+    profile = get(creator_key)
+    if channel is None:
+        return profile.get('discord')
+    return (profile.get('discord_channels') or {}).get(channel)
+
+
+def _put_discord(creator_key: str, channel: str | None, cfg: dict) -> None:
     profiles = load()
     entry = profiles.setdefault(creator_key, {})
-    discord_cfg = {'guild_id': guild_id, 'channel_id': channel_id}
-    if note:
-        discord_cfg['note'] = note
-    entry['discord'] = discord_cfg
+    if channel is None:
+        entry['discord'] = cfg
+    else:
+        entry.setdefault('discord_channels', {})[channel] = cfg
     save(profiles)
 
 
-def set_discord_declined(creator_key: str) -> None:
-    """Record that *creator_key* was offered Discord password setup and declined it.
+def set_discord_channel(creator_key: str, guild_id: str, channel_id: str, note: str = '',
+                        channel: str | None = None) -> None:
+    """Record a Discord channel for *creator_key*: where its mega passwords get posted (channel=None), or one of
+    its named channels (a creator can have several: one for an archive, one for secret posts, ...)."""
+    cfg = {'guild_id': guild_id, 'channel_id': channel_id}
+    if note:
+        cfg['note'] = note
+    _put_discord(creator_key, channel, cfg)
+
+
+def set_discord_declined(creator_key: str, channel: str | None = None) -> None:
+    """Record that *creator_key* (or one of its named channels) was offered Discord setup and declined it.
 
     Lets discord_browser.open_channel stop asking on every
     speculative lookup (e.g. every mega link with no inline password) for a
@@ -91,10 +109,7 @@ def set_discord_declined(creator_key: str) -> None:
     genuinely confirmed need (an archive that actually turns out to require a
     password) to ask again via its own `force` path.
     """
-    profiles = load()
-    entry = profiles.setdefault(creator_key, {})
-    entry['discord'] = {'declined': True}
-    save(profiles)
+    _put_discord(creator_key, channel, {'declined': True})
 
 
 def get_unattended_config(creator_key: str) -> dict | None:
