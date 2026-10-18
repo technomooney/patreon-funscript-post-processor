@@ -3,10 +3,10 @@
 For a creator whose scripts come from three places -- the Patreon downloader, one big pixeldrain /l/ list of loose
 files, and a Discord channel that shares "secret" scripts the other two never carry -- this answers:
 
-  1. Does the pixeldrain archive hold every funscript the Patreon downloads got? Matching is by the script's
-     POINT DATA (funscript_utils.funscript_data), never by name, so a renamed or re-saved script still matches.
-     The archive's funscripts are downloaded once into a scratch folder, fingerprinted, and the fingerprints are
-     cached in the library database (a pixeldrain file id never changes content), so reruns are cheap.
+  1. Does the pixeldrain archive hold every funscript the Patreon downloads got? The archive is downloaded IN FULL
+     into the creator's 'archive' subfolder (its links come from the creator's Discord channel and/or saved
+     pixeldrain lists); the Patreon downloads are only the checklist. Matching is by the script's POINT DATA
+     (funscript_utils.funscript_data), never by name, so a renamed or re-saved script still matches.
   2. Which Patreon posts carry a script the archive lacks? Those are listed with the post's own (non-pixeldrain)
      links, so the normal download (menu 5) can fetch their media. Nothing is downloaded or moved here.
   3. Which Patreon posts are "secret" posts -- a title but no links, no scripts, no media? Those are tracked in a
@@ -14,17 +14,14 @@ files, and a Discord channel that shares "secret" scripts the other two never ca
      existing "Discord channel: download new pixeldrain links" plugin (default subfolder 'discord'), by
      funscript name; the ledger records what each secret post resolved to, or that it is still unresolved.
 
-Read-only on the library: it writes only reports under _reports/ and rows in the library database, so there is
-nothing to undo. Archive sources are the creator's saved pixeldrain /l/ lists (the same ones the "Pixeldrain repo
-sync" plugin uses).
+The fetching steps reuse the existing Discord and pixeldrain sync plugins (only-what-is-new, journaled for undo
+by them). The audit itself is read-only: it writes only reports under _reports/ and rows in the library database.
 """
 import csv
 import hashlib
 import json
 import os
 import re
-import shutil
-import tempfile
 
 import action_log
 import creator_config
@@ -32,7 +29,6 @@ import creator_profiles
 import funscript_utils as fu
 import library_db
 import pixeldrain_sync as ps
-import pixeldrain_util as pdu
 
 SCRIPT_ID = 'bekscript_hybrid_audit'
 MENU_LABEL = 'Hybrid audit: Patreon vs pixeldrain archive + Discord secret ledger'
@@ -42,7 +38,7 @@ MENU_DESCRIPTION = (
 )
 REPLACES_DOWNLOAD = False
 DISCORD_DEST = 'discord'
-_CACHE_KEY = 'archive_script_fingerprints'
+ARCHIVE_DEST = 'archive'
 _LEDGER_KEY = 'secret_post_ledger'
 _TOOL = SCRIPT_ID
 _MEDIA = {'.mp4', '.mkv', '.webm', '.avi', '.mov', '.m4v', '.wmv', '.zip', '.rar', '.7z'}
@@ -65,41 +61,18 @@ def norm(name: str) -> str:
 # archive side
 # ---------------------------------------------------------------------------
 
-def archive_scripts(root: str, sources: list[dict], download=None) -> tuple[dict[str, list[dict]], list[str]]:
-    """({fingerprint: [{'id','name'}]}, problems) for every .funscript in the saved pixeldrain sources.
-
-    Fingerprints come from the cache when the file id was seen before; otherwise the file is downloaded to a
-    scratch folder, fingerprinted, and deleted. *download* is injectable for tests (entry, dest, scratch)."""
-    download = download or pdu.download_file
-    cache = library_db.tool_data_get(root, _TOOL, _CACHE_KEY, {})
-    found: dict[str, list[dict]] = {}
-    problems: list[str] = []
-    dirty = False
-    for src in sources:
-        entries = pdu.list_entries(src['url'])
-        if entries is None:
-            problems.append(f'could not read {src["url"]}')
-            continue
-        for e in entries:
-            if os.path.splitext(e['name'] or '')[1].lower() != '.funscript':
-                continue
-            fp = cache.get(e['id'])
-            if fp is None:
-                scratch = tempfile.mkdtemp(prefix='hybrid_', dir=root)
-                try:
-                    path, why = download(e, scratch, root)
-                    fp = fingerprint(path) if path else None
-                finally:
-                    shutil.rmtree(scratch, ignore_errors=True)
-                if fp is None:
-                    problems.append(f'{e["name"]}: {why if not path else "not a readable funscript"}')
-                    continue
-                cache[e['id']] = fp
-                dirty = True
-            found.setdefault(fp, []).append({'id': e['id'], 'name': e['name']})
-    if dirty:
-        library_db.tool_data_set(root, _TOOL, _CACHE_KEY, cache, _TOOL)
-    return found, problems
+def archive_scripts(base_path: str) -> dict[str, list[str]]:
+    """{fingerprint: [paths relative to base_path]} for every funscript in the downloaded archive folder."""
+    top = os.path.join(base_path, ARCHIVE_DEST)
+    found: dict[str, list[str]] = {}
+    for cur, dirs, files in os.walk(top):
+        dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES]
+        for f in sorted(files):
+            if f.lower().endswith('.funscript'):
+                p = os.path.join(cur, f)
+                found.setdefault(fingerprint(p), []).append(os.path.relpath(p, base_path))
+    found.pop(None, None)       # unparseable files can never prove a match
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -108,13 +81,13 @@ def archive_scripts(root: str, sources: list[dict], download=None) -> tuple[dict
 
 def scan_posts(base_path: str) -> dict[str, dict]:
     """{post folder (relative): {'scripts': [(rel path, fingerprint)], 'has_media': bool, 'links': [...]}} for
-    every folder holding a description.json. Folders under the Discord destination are not posts."""
+    every folder holding a description.json. The archive and Discord folders are not posts."""
     import downloadContent as dc
     posts: dict[str, dict] = {}
     protected = creator_config.protected_paths(base_path)
     for cur, dirs, files in os.walk(base_path):
         dirs.sort()
-        dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES and not d.startswith('_') and d != DISCORD_DEST]
+        dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES and not d.startswith('_') and d not in (DISCORD_DEST, ARCHIVE_DEST)]
         creator_config.prune(protected, cur, dirs)
         if 'description.json' not in files:
             continue
@@ -208,8 +181,10 @@ def _csv(base_path: str, name: str, header: list[str], rows: list[list]) -> str:
     return path
 
 
-def audit(base_path: str, sources: list[dict], root: str, download=None) -> dict:
-    archive, problems = archive_scripts(root, sources, download=download)
+def audit(base_path: str, root: str) -> dict:
+    archive = archive_scripts(base_path)
+    problems = [] if os.path.isdir(os.path.join(base_path, ARCHIVE_DEST)) else \
+        [f'no "{ARCHIVE_DEST}" folder yet -- fetch the archive first, or every Patreon script will look missing']
     posts = scan_posts(base_path)
     missing = gaps(posts, archive)
     ledger = update_ledger(root, base_path, secret_posts(posts), discord_files(base_path))
@@ -217,30 +192,38 @@ def audit(base_path: str, sources: list[dict], root: str, download=None) -> dict
                    [[g['post'], g['script'], g['reason'], ' '.join(g['links'])] for g in missing])
     secret_csv = _csv(base_path, 'hybrid_secret_ledger.csv', ['post', 'status', 'discord files'],
                       [[p, e['status'], ' | '.join(e['files'])] for p, e in sorted(ledger.items())])
-    return {'archive_scripts': sum(len(v) for v in archive.values()), 'patreon_scripts': sum(len(p['scripts']) for p in posts.values()),
+    return {'archive_scripts': sum(len(v) for v in archive.values()),
+            'patreon_scripts': sum(len(p['scripts']) for p in posts.values()),
             'missing': missing, 'problems': problems, 'ledger': ledger, 'gap_csv': gap_csv, 'secret_csv': secret_csv}
+
+
+def fetch_archive(base_path: str, interactive: bool) -> None:
+    """Download whatever the archive is still missing: links from the Discord channel (whole history the first time,
+    then only newer messages) and any saved pixeldrain lists, all into the 'archive' folder."""
+    import discord_pixeldrain_links as dpl
+    creator_key = os.path.basename(os.path.normpath(base_path))
+    dpl.sync_channel(base_path, dest=ARCHIVE_DEST, dry_run=False, interactive=interactive)
+    sources = [s if isinstance(s, dict) else {'url': s, 'dest': ''}
+               for s in creator_profiles.get(creator_key).get(ps.SOURCES_KEY) or []]
+    if sources:
+        ps.sync_urls(base_path, [s['url'] for s in sources], dest=ARCHIVE_DEST, interactive=interactive)
 
 
 def run(base_path: str, options: dict | None = None) -> None:
     interactive = options is None
-    creator_key = os.path.basename(os.path.normpath(base_path))
     root = ps.resolve_root(base_path, interactive)
     if root is None:
         return
-    sources = [s if isinstance(s, dict) else {'url': s, 'dest': ''}
-               for s in creator_profiles.get(creator_key).get(ps.SOURCES_KEY) or []]
-    if interactive and not sources:
-        url = input('  pixeldrain archive /l/ list URL (blank = skip the archive comparison): ').strip()
-        if url and pdu.kind(url) in ('list', 'file'):
-            sources = [{'url': url, 'dest': ''}]
-            profile = creator_profiles.load()
-            profile.setdefault(creator_key, {})[ps.SOURCES_KEY] = sources
-            creator_profiles.save(profile)
-    if interactive and input('  First fetch new Discord links into the "discord" folder (opens the browser)? (y/N): '
-                             ).strip().lower() == 'y':
-        import discord_pixeldrain_links as dpl
-        dpl.run(base_path)
-    r = audit(base_path, sources, root)
+    fetch = (options or {}).get('fetch', True) if not interactive else input(
+        f'  First fetch new archive links from the Discord channel into "{ARCHIVE_DEST}" (opens the browser)? (Y/n): '
+    ).strip().lower() != 'n'
+    if fetch:
+        try:
+            fetch_archive(base_path, interactive)
+        finally:
+            import discord_passwords
+            discord_passwords.close()
+    r = audit(base_path, root)
     print(f'  archive funscripts: {r["archive_scripts"]}   Patreon funscripts: {r["patreon_scripts"]}')
     print(f'  Patreon scripts missing from the archive: {len(r["missing"])}  ->  {r["gap_csv"]}')
     if r['missing']:
@@ -252,4 +235,5 @@ def run(base_path: str, options: dict | None = None) -> None:
 
 
 def setup_unattended(current: dict) -> dict:
-    return current
+    a = input(f'  fetch new archive links from Discord each run? (Enter keeps {current.get("fetch", True)}) y/n: ').strip().lower()
+    return {**current, 'fetch': current.get('fetch', True) if not a else a == 'y'}
