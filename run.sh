@@ -104,6 +104,10 @@ print_help() {
     echo "     scripts/creator_scripts/ to add one without editing this menu —"
     echo "     see scripts/creator_scripts/README.md for the contract."
     echo ""
+    echo "  t) Tools                  — creator-agnostic utilities, e.g. pixeldrain repo"
+    echo "     sync (download only the files you don't already have, incl. ones the AV1"
+    echo "     compressor transcoded). Works on any creator's folder."
+    echo ""
     echo "  p) Consolidate packs      — for creators (e.g. Pize) who repost"
     echo "     already-released videos+scripts inside a later collection post:"
     echo "     finds a video sitting with no local funscript next to it whose"
@@ -163,6 +167,7 @@ while true; do
     echo "  10) Audit report             — build _reports/audit_report.html from folder logs"
     echo ""
     echo "  n)  Creator naming scripts   — one-creator naming-quirk fixes (drop-in plugins)"
+    echo "  t)  Tools                    — generic utilities (pixeldrain repo sync, ...)"
     echo "  p)  Consolidate packs        — fix videos whose script only lives in a repost/pack folder"
     echo "  sa) Set up unattended run    — configure a creator's steps/order/answers"
     echo "  sc) Update credentials       — re-enter a service login/API key"
@@ -176,7 +181,7 @@ while true; do
     echo ""
 
     while true; do
-        read -rp "Choose a program to run (1-10, n, p, sa, sc, ru, rz, ra, h=help, q=exit): " choice
+        read -rp "Choose a program to run (1-10, n, t, p, sa, sc, ru, rz, ra, h=help, q=exit): " choice
         case "$choice" in
             q|Q)
                 echo ""
@@ -207,6 +212,11 @@ while true; do
             n|N)
                 echo ""
                 .venv/bin/python scripts/creator_scripts_menu.py
+                break
+                ;;
+            t|T)
+                echo ""
+                .venv/bin/python scripts/tools_menu.py
                 break
                 ;;
             p|P)
@@ -275,7 +285,7 @@ while true; do
                 break
                 ;;
             *)
-                echo "Invalid choice. Please enter 1-10, n, p, sa, sc, ru, rz, ra, h, or q to exit."
+                echo "Invalid choice. Please enter 1-10, n, t, p, sa, sc, ru, rz, ra, h, or q to exit."
                 ;;
         esac
     done

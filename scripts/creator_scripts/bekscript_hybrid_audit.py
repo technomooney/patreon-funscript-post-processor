@@ -11,7 +11,7 @@ files, and a Discord channel that shares "secret" scripts the other two never ca
      links, so the normal download (menu 5) can fetch their media. Nothing is downloaded or moved here.
   3. Which Patreon posts are "secret" posts -- a title but no links, no scripts, no media? Those are tracked in a
      ledger (library database) and matched against files fetched from the creator's Discord channel by the
-     existing "Discord channel: download new pixeldrain links" plugin (default subfolder 'discord'), by
+     core Discord link sync (discord_pixeldrain_sync.py) (default subfolder 'discord'), by
      funscript name; the ledger records what each secret post resolved to, or that it is still unresolved.
 
 The fetching steps reuse the existing Discord and pixeldrain sync plugins (only-what-is-new, journaled for undo
@@ -200,9 +200,9 @@ def audit(base_path: str, root: str) -> dict:
 def fetch_archive(base_path: str, interactive: bool) -> None:
     """Download whatever the archive is still missing: links from the Discord channel (whole history the first time,
     then only newer messages) and any saved pixeldrain lists, all into the 'archive' folder."""
-    import discord_pixeldrain_links as dpl
+    import discord_pixeldrain_sync as dps
     creator_key = os.path.basename(os.path.normpath(base_path))
-    dpl.sync_channel(base_path, dest=ARCHIVE_DEST, dry_run=False, interactive=interactive)
+    dps.sync_channel(base_path, dest=ARCHIVE_DEST, dry_run=False, interactive=interactive)
     sources = [s if isinstance(s, dict) else {'url': s, 'dest': ''}
                for s in creator_profiles.get(creator_key).get(ps.SOURCES_KEY) or []]
     if sources:

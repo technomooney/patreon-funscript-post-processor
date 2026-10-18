@@ -14,10 +14,7 @@ import library_db  # noqa: E402
 import pixeldrain_sync as ps  # noqa: E402
 import pixeldrain_util as pdu  # noqa: E402
 
-spec = importlib.util.spec_from_file_location('discord_pixeldrain_links',
-                                              os.path.join(SCRIPTS, 'creator_scripts', 'discord_pixeldrain_links.py'))
-plug = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(plug)
+import discord_pixeldrain_sync as plug  # noqa: E402
 
 
 def b64(s):

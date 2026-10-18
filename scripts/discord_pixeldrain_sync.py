@@ -1,4 +1,8 @@
-"""Discord channel -> pixeldrain links -> download only what is new.
+"""Core: Discord channel -> pixeldrain links -> download only what is new.
+
+Not a menu option. Creator pipelines call sync_channel() when a creator's content links live in a Discord channel
+(BekScript's hybrid audit does; any other creator opts in with "discord_pixeldrain_links": "<subfolder>" in
+creator_config.json and a pipeline that calls sync_if_enabled()).
 
 For creators who share their content as pixeldrain links in a Discord channel, often hidden as base64 text.
 Reads the channel's WHOLE history the first time (then only newer messages), decodes base64-hidden links with the
@@ -20,13 +24,7 @@ import pixeldrain_sync as ps
 import pixeldrain_util as pdu
 
 SCRIPT_ID = 'discord_pixeldrain_links'
-MENU_LABEL = 'Discord channel: download new pixeldrain links (incl. base64)'
-MENU_DESCRIPTION = (
-    'Reads the creator\'s Discord channel (whole history the first time), decodes base64-hidden pixeldrain links,\n'
-    'and downloads only what you do not already have. Browser login is manual, once; no token is used.'
-)
-REPLACES_DOWNLOAD = False
-DEST_KEY = 'discord_dest'
+CONFIG_KEY = 'discord_pixeldrain_links'
 DEFAULT_DEST = 'discord'
 
 
@@ -85,26 +83,16 @@ def sync_channel(base_path: str, dest: str = DEFAULT_DEST, dry_run: bool = False
     return result
 
 
-def run(base_path: str, options: dict | None = None) -> None:
-    interactive = options is None
-    creator_key = os.path.basename(os.path.normpath(base_path))
-    dest = (options or {}).get('dest') or creator_profiles.get(creator_key).get(DEST_KEY) or DEFAULT_DEST
-    dry = (options or {}).get('dry_run', False)
-    if interactive:
-        answer = input(f'  Save into which subfolder of this creator folder? (Enter = "{dest}"): ').strip()
-        if answer and answer != dest:
-            dest = answer
-            profiles = creator_profiles.load()
-            profiles.setdefault(creator_key, {})[DEST_KEY] = dest
-            creator_profiles.save(profiles)
-        dry = input('  Dry run first (print what would be downloaded, change nothing)? (Y/n): ').strip().lower() != 'n'
+def sync_if_enabled(base_path: str, interactive: bool = False, dry_run: bool = False) -> dict | None:
+    """Run sync_channel when this creator's creator_config.json opts in via "discord_pixeldrain_links" (the value is
+    the subfolder to save into; true means the default). Does nothing, and says nothing, for every other creator."""
+    import creator_config
+    flag = creator_config.get(base_path, CONFIG_KEY)
+    if not flag:
+        return None
+    dest = flag if isinstance(flag, str) else DEFAULT_DEST
     try:
-        sync_channel(base_path, dest=dest, dry_run=dry, interactive=interactive)
+        return sync_channel(base_path, dest=dest, dry_run=dry_run, interactive=interactive)
     finally:
         import discord_passwords
         discord_passwords.close()
-
-
-def setup_unattended(current: dict) -> dict:
-    dest = input(f'  subfolder to save into (Enter keeps "{current.get("dest", DEFAULT_DEST)}"): ').strip()
-    return {**current, 'dest': dest or current.get('dest', DEFAULT_DEST)}

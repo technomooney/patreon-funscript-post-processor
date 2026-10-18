@@ -90,6 +90,12 @@ def load(sid: str):
     return None
 
 
+def is_generic(module) -> bool:
+    """True for a plugin that is a creator-agnostic tool (GENERIC_TOOL = True): it lives in the 't' tools menu,
+    not here, but is still a plugin so unattended runs and undo keep working."""
+    return bool(getattr(module, 'GENERIC_TOOL', False))
+
+
 def download_replacements() -> list[tuple[str, object]]:
     """Plugins declaring REPLACES_DOWNLOAD = True -- the only ones eligible
     for a creator_config.json download_script."""
@@ -215,7 +221,7 @@ def _undo_menu(plugins: list[tuple[str, object]]) -> None:
 
 
 def main() -> None:
-    plugins = discover()
+    plugins = [(l, m) for l, m in discover() if not is_generic(m)]
 
     print()
     print('========================================')

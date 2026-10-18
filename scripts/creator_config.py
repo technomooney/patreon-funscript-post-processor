@@ -20,6 +20,10 @@ Keys:
   sync_exclude           kinds ("video", "funscript", "archive") and/or
                          extensions (".mp4", ...) sync_new_folders must never
                          copy into this creator's folders.
+  discord_pixeldrain_links
+                         subfolder name (or true for 'discord'): this creator's
+                         pixeldrain links live in a Discord channel, so its
+                         pipeline fetches them (discord_pixeldrain_sync.py).
   protected_dirs         subfolders (relative to the creator folder) every
                          core tree-walking script must skip entirely, e.g.
                          ["_pixeldrain"] -- owned by a creator script, never

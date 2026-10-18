@@ -47,6 +47,7 @@ echo   9^) Generate HTML             -- build description.html in each post fold
 echo   10^) Audit report             -- build _reports\audit_report.html from folder logs
 echo.
 echo   n^)  Creator naming scripts   -- one-creator naming-quirk fixes (drop-in plugins)
+echo   t^)  Tools                    -- generic utilities (pixeldrain repo sync, ...)
 echo   p^)  Consolidate packs        -- fix videos whose script only lives in a repost/pack folder
 echo   sa^) Set up unattended run    -- configure a creator's steps/order/answers
 echo   sc^) Update credentials       -- re-enter a service login/API key
@@ -60,7 +61,7 @@ echo   q^) Exit
 echo.
 
 :ask
-set /p "choice=Choose a program to run (1-10, n, p, sa, sc, ru, rz, ra, h=help, q=exit): "
+set /p "choice=Choose a program to run (1-10, n, t, p, sa, sc, ru, rz, ra, h=help, q=exit): "
 
 if /i "%choice%"=="q" goto done
 if /i "%choice%"=="h" (
@@ -88,6 +89,13 @@ if /i "%choice%"=="sc" (
 if /i "%choice%"=="sa" (
     echo.
     .venv\Scripts\python.exe scripts\setup_unattended.py
+    echo.
+    pause
+    goto menu
+)
+if /i "%choice%"=="t" (
+    echo.
+    .venv\Scripts\python.exe scripts\tools_menu.py
     echo.
     pause
     goto menu
@@ -191,7 +199,7 @@ if "%choice%"=="10" (
     goto menu
 )
 
-echo Invalid choice. Please enter 1-10, n, p, sa, sc, ru, rz, ra, h, or q to exit.
+echo Invalid choice. Please enter 1-10, n, t, p, sa, sc, ru, rz, ra, h, or q to exit.
 goto ask
 
 :print_help
@@ -254,6 +262,8 @@ echo   n^) Creator naming scripts -- submenu of one-creator naming-quirk fixes
 echo      (e.g. MDemaxis's SMOOTH-prefix rename). Drop your own .py file into
 echo      scripts\creator_scripts\ to add one without editing this menu --
 echo      see scripts\creator_scripts\README.md for the contract.
+echo.
+echo   t^) Tools -- creator-agnostic utilities, e.g. pixeldrain repo sync (download only what you don't have)
 echo.
 echo   p^) Consolidate packs      -- for creators (e.g. Pize) who repost
 echo      already-released videos+scripts inside a later collection post:

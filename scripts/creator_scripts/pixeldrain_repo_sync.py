@@ -26,6 +26,7 @@ MENU_DESCRIPTION = (
     'compressor transcoded), and downloads only the new ones. Never re-fetches or overwrites transcoded files.'
 )
 REPLACES_DOWNLOAD = False
+GENERIC_TOOL = True      # shown in the 't' tools menu, not the creator-specific one
 
 
 def _sources(creator_key: str, options: dict | None) -> list[dict]:
