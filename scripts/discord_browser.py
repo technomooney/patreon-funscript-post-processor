@@ -21,7 +21,6 @@ import undetected_chromedriver as uc
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 
 # Separate from the main automation profile (used for Mega/Iwara/SpankBang) because it needs to *keep* its login
 # between runs. Lives in the machine-local app data directory (app_paths); a profile that still sits at the old
@@ -93,7 +92,7 @@ def _is_logged_in(driver) -> bool:
     return any(driver.find_elements(By.XPATH, xpath) for xpath in _LOGGED_IN_XPATHS)
 
 
-def ensure_login(driver, timeout_minutes: int = 20) -> bool:
+def _ensure_login(driver, timeout_minutes: int = 20) -> bool:
     """Navigate to Discord; if not already logged in, wait for the user to log in by hand.
 
     Returns True once logged in (immediately, or after the user finishes),
@@ -104,7 +103,7 @@ def ensure_login(driver, timeout_minutes: int = 20) -> bool:
     it. No credentials or 2FA codes should ever be typed in by this script;
     login is the one part of this flow that stays entirely manual.
     """
-    driver.get('https://discord.com/channels/@me')
+    driver.get(_HOME_URL)
     # Give the SPA a moment to hydrate and settle on either the login form
     # or the app UI before checking — see _is_logged_in for why this matters.
     try:
@@ -133,6 +132,31 @@ def ensure_login(driver, timeout_minutes: int = 20) -> bool:
         time.sleep(2)
     print('  [discord] timed out waiting for login.')
     return False
+
+
+SETTLE_SECONDS = float(os.getenv('DISCORD_SETTLE_SECONDS', '4'))
+_HOME_URL = 'https://discord.com/channels/@me'
+
+
+def settle(driver, seconds: float | None = None) -> None:
+    """Give the Discord app time to finish loading after a navigation: the page itself, then a fixed pause.
+
+    Discord's single-page app shows its sidebar well before it is ready to switch channels; jumping to a channel
+    straight away is what makes the channel come up empty. Override the pause with DISCORD_SETTLE_SECONDS."""
+    try:
+        WebDriverWait(driver, 15).until(lambda d: d.execute_script('return document.readyState') == 'complete')
+    except Exception:
+        pass
+    time.sleep(SETTLE_SECONDS if seconds is None else seconds)
+
+
+def ensure_login(driver, timeout_minutes: int = 20) -> bool:
+    """Start at Discord's home (@me), log in by hand if needed (see _ensure_login), then let the app settle there
+    before anything navigates to a channel."""
+    if not _ensure_login(driver, timeout_minutes):
+        return False
+    settle(driver)
+    return True
 
 
 def _looks_like_snowflake(value: str) -> bool:
@@ -249,21 +273,30 @@ def open_channel(creator_key: str, force: bool = False, channel: str | None = No
     message_xpath = '//*[@data-list-id="chat-messages"]//*[@id and contains(@id, "message-content-")]'
     url = f"https://discord.com/channels/{discord_cfg['guild_id']}/{discord_cfg['channel_id']}"
     try:
-        driver.get(url)
-        # Waiting for the chat-messages *container* alone isn't enough — it
-        # mounts before Discord's virtualized list has actually rendered any
-        # message children into it, so a find_elements() run right after can
-        # legitimately see zero (or a partial batch of) messages depending on
-        # timing (caught live: identical code returned 8 messages one run and
-        # 0 the next). Wait for at least one message element specifically,
-        # then let the count settle before trusting it's the full batch.
-        # An age-restricted channel shows a "Continue" prompt instead of messages; dismiss it while waiting.
-        deadline = time.time() + 20
-        while not driver.find_elements(By.XPATH, message_xpath):
-            if time.time() > deadline:
-                raise TimeoutError('no messages rendered')
-            dismiss_age_gate(driver)
-            time.sleep(1)
+        for attempt in (1, 2):
+            driver.get(url)
+            # Waiting for the chat-messages *container* alone isn't enough — it
+            # mounts before Discord's virtualized list has actually rendered any
+            # message children into it, so a find_elements() run right after can
+            # legitimately see zero (or a partial batch of) messages depending on
+            # timing (caught live: identical code returned 8 messages one run and
+            # 0 the next). Wait for at least one message element specifically,
+            # then let the count settle before trusting it's the full batch.
+            # An age-restricted channel shows a "Continue" prompt instead of messages; dismiss it while waiting.
+            deadline = time.time() + 20
+            while not driver.find_elements(By.XPATH, message_xpath):
+                if time.time() > deadline:
+                    break
+                dismiss_age_gate(driver)
+                time.sleep(1)
+            if driver.find_elements(By.XPATH, message_xpath):
+                break
+            if attempt == 1:
+                print('  [discord] channel did not come up -- going back to the home page and trying once more...')
+                driver.get(_HOME_URL)
+                settle(driver, SETTLE_SECONDS + 3)
+        else:
+            raise TimeoutError('no messages rendered')
         stable_checks = 0
         last_count = -1
         for _ in range(20):  # ~6s max

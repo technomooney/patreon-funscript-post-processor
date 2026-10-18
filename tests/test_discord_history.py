@@ -223,5 +223,57 @@ class AgeGateTests(unittest.TestCase):
         self.assertFalse(hidden.clicked)
 
 
+class OpenChannelTests(unittest.TestCase):
+    """The channel is retried once through the Discord home page when it comes up empty."""
+
+    class Driver:
+        def __init__(self, shows_after_home):
+            self.visits, self.shows_after_home = [], shows_after_home
+
+        def get(self, url):
+            self.visits.append(url)
+
+        def execute_script(self, *a, **k):
+            return ''
+
+        def find_elements(self, by, xpath):
+            ready = (not self.shows_after_home) or any('@me' in v for v in self.visits)
+            return [object()] if ready else []
+
+    def run_open(self, driver):
+        import discord_browser as db
+        import creator_profiles
+        saved = (db._discord_driver, db.ensure_login, db.settle, creator_profiles.get_discord, db.time.sleep, db.time.time)
+        clock = iter(range(0, 10000, 5))
+        db._discord_driver = lambda: driver
+        db.ensure_login = lambda d: True
+        db.settle = lambda d, s=None: driver.visits.append('settled')
+        creator_profiles.get_discord = lambda c, ch=None: {'guild_id': '1', 'channel_id': '2'}
+        db.time.sleep = lambda s: None
+        db.time.time = lambda: next(clock)          # fake clock so the 20 s waits finish instantly
+        try:
+            return db.open_channel('c')
+        finally:
+            (db._discord_driver, db.ensure_login, db.settle, creator_profiles.get_discord,
+             db.time.sleep, db.time.time) = saved
+
+    def test_loads_first_time(self):
+        d = self.Driver(shows_after_home=False)
+        self.assertIsNotNone(self.run_open(d))
+        self.assertEqual(d.visits, ['https://discord.com/channels/1/2'])
+
+    def test_retries_once_via_home_page_when_the_channel_comes_up_empty(self):
+        d = self.Driver(shows_after_home=True)
+        self.assertIsNotNone(self.run_open(d))
+        self.assertEqual(d.visits, ['https://discord.com/channels/1/2', 'https://discord.com/channels/@me', 'settled',
+                                    'https://discord.com/channels/1/2'])
+
+    def test_gives_up_after_the_retry(self):
+        class Never(self.Driver):
+            def find_elements(self, by, xpath):
+                return []
+        self.assertIsNone(self.run_open(Never(False)))
+
+
 if __name__ == '__main__':
     unittest.main()
