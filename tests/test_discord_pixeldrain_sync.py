@@ -10,6 +10,7 @@ SCRIPTS = os.path.join(os.path.dirname(HERE), 'scripts')
 sys.path.insert(0, SCRIPTS)
 
 import discord_history as dh  # noqa: E402
+import discord_store as store  # noqa: E402
 import library_db  # noqa: E402
 import pixeldrain_sync as ps  # noqa: E402
 import pixeldrain_util as pdu  # noqa: E402
@@ -64,7 +65,7 @@ class DiscordPluginTests(unittest.TestCase):
         self.assertEqual(self.calls[0][0], [hidden, visible])           # oldest message first
         self.assertEqual(self.calls[0][1], 'discord')
         self.assertEqual(out['failed'], 0)
-        self.assertEqual(dh.unprocessed(self.lib, 'creator'), [])
+        self.assertEqual(store.unprocessed(self.lib, 'creator'), [])
 
     def test_second_pass_is_incremental_and_does_not_resync_old_links(self):
         self.run_pass([msg(10, hrefs=['https://pixeldrain.com/u/Old00001'])])
@@ -77,18 +78,18 @@ class DiscordPluginTests(unittest.TestCase):
     def test_failed_links_keep_messages_unprocessed_for_retry(self):
         self.fail = True
         self.run_pass([msg(10, hrefs=['https://pixeldrain.com/u/Fail0001'])])
-        self.assertEqual(len(dh.unprocessed(self.lib, 'creator')), 1)
+        self.assertEqual(len(store.unprocessed(self.lib, 'creator')), 1)
         self.fail = False
         self.calls.clear()
         self.run_pass([])                                               # nothing new, but the old message is retried
         self.assertEqual(self.calls[0][0], ['https://pixeldrain.com/u/Fail0001'])
-        self.assertEqual(dh.unprocessed(self.lib, 'creator'), [])
+        self.assertEqual(store.unprocessed(self.lib, 'creator'), [])
 
     def test_dry_run_stores_and_downloads_nothing(self):
         rows = [msg(10, text=b64('https://pixeldrain.com/l/Hidden01'))]
         out, _ = self.run_pass(rows, dry_run=True)
         self.assertEqual(self.calls[0][2], True)
-        self.assertIsNone(dh.newest_stored_id(self.lib, 'creator'))
+        self.assertIsNone(store.newest_stored_id(self.lib, 'creator'))
 
     def test_unreadable_channel_changes_nothing(self):
         self.assertIsNone(plug.sync_channel(self.base, fetch=lambda c, since_message_id=None: None))

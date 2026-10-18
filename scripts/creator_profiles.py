@@ -85,7 +85,7 @@ def set_discord_channel(creator_key: str, guild_id: str, channel_id: str, note: 
 def set_discord_declined(creator_key: str) -> None:
     """Record that *creator_key* was offered Discord password setup and declined it.
 
-    Lets discord_passwords._load_channel_messages stop asking on every
+    Lets discord_browser.open_channel stop asking on every
     speculative lookup (e.g. every mega link with no inline password) for a
     creator who doesn't use Discord for this at all, while still allowing a
     genuinely confirmed need (an archive that actually turns out to require a

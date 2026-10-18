@@ -4,9 +4,9 @@ No bot account, no self-bot/user token -- the user does not want their Discord a
 those forms. This drives the same kind of Selenium session used elsewhere in this project to a page the user is
 (or logs into, once, by hand) already logged into, and reads messages off the rendered page.
 
-This module only gets you INTO a channel. What is done with the messages is elsewhere: discord_history.py reads
-and stores the whole history, discord_pixeldrain_sync.py turns its links into downloads, discord_passwords.py
-parses archive passwords out of message text. Per-creator guild/channel IDs live in creator_profiles.py.
+Everything that touches the browser lives here (login, opening a channel, reading/scrolling it). What is done
+with the messages is elsewhere: discord_history.py drives the reading and tracks how far it got, discord_store.py
+stores, discord_parser.py extracts links/passwords, discord_passwords.py parses archive passwords. Per-creator guild/channel IDs live in creator_profiles.py.
 """
 import os
 import sys
@@ -147,7 +147,7 @@ def _prompt_setup(creator_key: str) -> dict | None:
     lookup for that creator actually falls through to Discord. Returns the
     saved discord config, or None if declined, not answerable (no TTY), or
     left incomplete -- every decline path also records set_discord_declined
-    so _load_channel_messages stops asking on future speculative lookups
+    so open_channel stops asking on future speculative lookups
     (see its own docstring for the `force` escape hatch).
     """
     if not sys.stdin.isatty():
@@ -253,21 +253,56 @@ def open_channel(creator_key: str, force: bool = False):
     return driver, discord_cfg
 
 
-def _load_channel_messages(creator_key: str, max_messages: int, force: bool = False) -> tuple[list[str], dict] | None:
-    """Return *creator_key*'s configured Discord channel's recent message texts (newest first) alongside the
-    channel config, or None on any failure (see open_channel).
+# ---------------------------------------------------------------------------
+# Reading the open channel (primitives; the loop that uses them is discord_history.collect_history)
+# ---------------------------------------------------------------------------
 
-    *force*: see open_channel's callers -- re-prompt even if this creator previously declined setup.
-    """
-    opened = open_channel(creator_key, force)
-    if opened is None:
-        return None
-    driver, discord_cfg = opened
-    message_xpath = '//*[@data-list-id="chat-messages"]//*[@id and contains(@id, "message-content-")]'
-    # Messages render newest-at-bottom; callers want newest-first.
-    messages = driver.find_elements(By.XPATH, message_xpath)
-    texts = [(el.text or '') for el in reversed(messages[-max_messages:])]
-    return texts, discord_cfg
+# Read every message currently rendered in the channel. Discord's list is virtualized (messages far off-screen
+# are dropped from the DOM), so this is called repeatedly while scrolling and the results merged by id.
+READ_JS = r"""
+const root = document.querySelector('[data-list-id="chat-messages"]');
+if (!root) return [];
+const rows = [];
+let lastAuthor = '';
+root.querySelectorAll('li[id^="chat-messages-"]').forEach(li => {
+  const m = li.id.match(/^chat-messages-(?:\d+-)?(\d+)$/);
+  if (!m) return;
+  const content = li.querySelector('[id^="message-content-"]');
+  const author = li.querySelector('[id^="message-username-"]');
+  if (author) lastAuthor = author.innerText;      // grouped messages inherit the previous header's author
+  const t = li.querySelector('time[datetime]');
+  rows.push({
+    id: m[1],
+    ts: t ? t.getAttribute('datetime') : '',
+    author: lastAuthor,
+    text: content ? content.innerText : '',
+    raw: content ? content.textContent : '',       // includes spoilered text innerText may hide
+    hrefs: Array.from(li.querySelectorAll('a[href]')).map(a => a.href),
+  });
+});
+return rows;
+"""
+
+# Scroll the message list's scroller (the nearest scrollable ancestor) to the top, which makes Discord load older
+# messages. Returns false if there is nothing scrollable.
+SCROLL_UP_JS = r"""
+let el = document.querySelector('[data-list-id="chat-messages"]');
+while (el && el.scrollHeight <= el.clientHeight + 1) el = el.parentElement;
+if (!el) return false;
+el.scrollTop = 0;
+return true;
+"""
+
+
+
+def read_rows(driver) -> list[dict]:
+    """Every message currently rendered in the open channel: {'id','ts','author','text','raw','hrefs'}."""
+    return driver.execute_script(READ_JS) or []
+
+
+def scroll_up(driver) -> None:
+    """Ask the open channel to load older messages."""
+    driver.execute_script(SCROLL_UP_JS)
 
 
 def close() -> None:

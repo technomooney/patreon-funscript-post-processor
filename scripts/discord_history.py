@@ -1,69 +1,19 @@
-"""Read a creator's WHOLE Discord channel history (not just the latest messages), browser-only.
+"""Channel history: drive the browser through a creator's whole Discord channel and keep track of where we got to.
 
-Same deliberate constraint as discord_browser.py: a persistent logged-in browser profile, no bot and no user
-token. The login is manual, once.
+This module owns the *reading strategy*, not the browser (discord_browser.py has every browser call) and not the
+meaning of the messages (discord_parser.py). It decides how far back to read (up to the newest message already
+stored, so repeat runs only read what is new) and hands the result on: to discord_store.py to keep, or straight
+back to the caller to process.
 
-Why: the recent-messages reader only sees what Discord has rendered (a few dozen messages), so an older archive's
-password -- or a base64-encoded pixeldrain link posted months ago -- was unreachable. This scrolls the channel
-upwards, collecting every message it passes, until it reaches the start of the channel, a message it has
-already processed, or a requested cap.
-
-Pieces:
   collect_history()      pure scroll-and-collect loop (injected callables) -- unit tested without a browser
-  fetch_channel_history  the browser glue: open channel, scroll, return message dicts newest first
-  save_messages / newest_stored_id / mark_processed   incremental bookkeeping in the library database
-  stored_messages        the stored rows, oldest first (what discord_passwords parses passwords from)
-  decode_links           base64-hidden and plain links in a message, via the shared link_decoder
-Standard library only apart from the browser helpers imported lazily from discord_browser.
+  fetch_channel_history  open the channel, run the loop, return message dicts newest first (None on failure)
+  refresh()              read what is new, annotate it (discord_parser), store it; returns the new rows
+  password_history()     the archive passwords in the latest messages (discord_parser -> discord_passwords)
 """
-import json
 import time
 
-import library_db
-import link_decoder
-
-_UPDATED_BY = 'discord_history'
-
-# Read every message currently rendered in the channel. Discord's list is virtualized (messages far off-screen
-# are dropped from the DOM), so this is called repeatedly while scrolling and the results merged by id.
-_READ_JS = r"""
-const root = document.querySelector('[data-list-id="chat-messages"]');
-if (!root) return [];
-const rows = [];
-let lastAuthor = '';
-root.querySelectorAll('li[id^="chat-messages-"]').forEach(li => {
-  const m = li.id.match(/^chat-messages-(?:\d+-)?(\d+)$/);
-  if (!m) return;
-  const content = li.querySelector('[id^="message-content-"]');
-  const author = li.querySelector('[id^="message-username-"]');
-  if (author) lastAuthor = author.innerText;      // grouped messages inherit the previous header's author
-  const t = li.querySelector('time[datetime]');
-  rows.push({
-    id: m[1],
-    ts: t ? t.getAttribute('datetime') : '',
-    author: lastAuthor,
-    text: content ? content.innerText : '',
-    raw: content ? content.textContent : '',       // includes spoilered text innerText may hide
-    hrefs: Array.from(li.querySelectorAll('a[href]')).map(a => a.href),
-  });
-});
-return rows;
-"""
-
-# Scroll the message list's scroller (the nearest scrollable ancestor) to the top, which makes Discord load older
-# messages. Returns false if there is nothing scrollable.
-_SCROLL_UP_JS = r"""
-let el = document.querySelector('[data-list-id="chat-messages"]');
-while (el && el.scrollHeight <= el.clientHeight + 1) el = el.parentElement;
-if (!el) return false;
-el.scrollTop = 0;
-return true;
-"""
-
-
-def _snowflake(value) -> int | None:
-    s = str(value or '')
-    return int(s) if s.isdigit() else None
+import discord_store as store
+from discord_store import snowflake
 
 
 def collect_history(read_rows, scroll_up, since_id=None, max_messages=None, stall_limit=6, wait=lambda: None) -> list[dict]:
@@ -77,12 +27,12 @@ def collect_history(read_rows, scroll_up, since_id=None, max_messages=None, stal
     Returns message dicts newest first (Discord ids are time-ordered snowflakes).
     """
     seen: dict[int, dict] = {}
-    since = _snowflake(since_id)
+    since = snowflake(since_id)
     stalls = 0
     while True:
         new = 0
         for row in read_rows():
-            sid = _snowflake(row.get('id'))
+            sid = snowflake(row.get('id'))
             if sid is not None and sid not in seen:
                 seen[sid] = row
                 new += 1
@@ -117,14 +67,8 @@ def fetch_channel_history(creator_key: str, since_message_id=None, max_messages=
     print(f'  [discord] reading channel history for "{creator_key}" '
           f'(this scrolls back through the chat, so it can take a while)...')
 
-    def read_rows():
-        return driver.execute_script(_READ_JS) or []
-
-    def scroll_up():
-        driver.execute_script(_SCROLL_UP_JS)
-
     try:
-        rows = collect_history(read_rows, scroll_up, since_id=since_message_id, max_messages=max_messages,
+        rows = collect_history(lambda: db.read_rows(driver), lambda: db.scroll_up(driver), since_id=since_message_id, max_messages=max_messages,
                                wait=lambda: time.sleep(settle_seconds))
     except db.WebDriverException:
         print('  [discord] browser window was closed while reading the channel.')
@@ -133,69 +77,43 @@ def fetch_channel_history(creator_key: str, since_message_id=None, max_messages=
     return rows
 
 
-# ---------------------------------------------------------------------------
-# Incremental bookkeeping (library database, table discord_messages)
-# ---------------------------------------------------------------------------
-
-def decode_links(message: dict, accept=None) -> list[dict]:
-    """Links in one message: base64-hidden ones via link_decoder, tagged. Visible hrefs are returned by the
-    caller's normal link handling; only HIDDEN links need decoding here."""
-    text = ' '.join(filter(None, [message.get('text'), message.get('raw')]))
-    return link_decoder.find_encoded_urls(text, accept=accept)
-
-
-def save_messages(root: str, creator: str, rows: list[dict]) -> int:
-    """Store messages (new ones only; existing rows and their processed flag are kept). Returns how many were new."""
-    now = time.strftime('%Y-%m-%dT%H:%M:%S')
-    added = 0
-    with library_db.db(root, write=True) as con:
-        for m in rows:
-            # Hidden (base64) links are decoded NOW, from the full text including spoilers, because only the
-            # visible text is stored -- later runs read them back from decoded_links_json.
-            hidden = [f['href'] for f in decode_links(m)]
-            cur = con.execute(
-                'INSERT OR IGNORE INTO discord_messages(creator, message_id, ts, author, text, hrefs_json, '
-                'processed, decoded_links_json, updated_by, updated_at) VALUES(?,?,?,?,?,?,0,?,?,?)',
-                (creator, str(m['id']), m.get('ts', ''), m.get('author', ''), m.get('text', ''),
-                 json.dumps(m.get('hrefs', []), ensure_ascii=False), json.dumps(hidden, ensure_ascii=False),
-                 _UPDATED_BY, now))
-            added += cur.rowcount
-    return added
+def refresh(root: str, creator_key: str, fetch=None, force: bool = False) -> list[dict] | None:
+    """Read the messages newer than the last stored one (the whole channel the first time), annotate and store
+    them. Returns the freshly read rows (newest first), or None when the channel could not be read.
+    *fetch* is injectable for tests (defaults to fetch_channel_history)."""
+    import discord_parser
+    fetch = fetch or fetch_channel_history
+    since = store.newest_stored_id(root, creator_key)
+    print(f'  [discord] reading {"messages newer than " + since if since else "the whole channel history"}...')
+    rows = fetch(creator_key, since_message_id=since)
+    if rows is None:
+        return None
+    store.save_messages(root, creator_key, discord_parser.annotate(rows))
+    return rows
 
 
-def stored_messages(root: str, creator: str) -> list[dict]:
-    """Every stored message for *creator*, oldest first, regardless of processed state."""
-    with library_db.db(root) as con:
-        rows = con.execute('SELECT * FROM discord_messages WHERE creator=?', (creator,)).fetchall()
-    out = [dict(r) for r in rows]
-    out.sort(key=lambda m: _snowflake(m['message_id']) or 0)
-    return out
+def password_history(creator_key: str, max_messages: int = 50, force: bool = False) -> list[str]:
+    """Every distinct archive password in the channel's newest *max_messages* messages, newest first, recorded in
+    creator_db. Reads only; stores nothing and does not move the stored "read up to here" position. Pass
+    max_messages=None for the whole chat.
+
+    *force*: re-ask channel setup even if this creator previously declined it (pass True when a password is
+    genuinely needed, e.g. every known one just failed against a real archive)."""
+    import discord_parser
+    rows = fetch_channel_history(creator_key, max_messages=max_messages, force=force)
+    if rows is None:
+        return []
+    passwords = discord_parser.record_passwords(creator_key, rows)
+    if passwords:
+        print(f'  [discord] found {len(passwords)} distinct password(s) for "{creator_key}" in {len(rows)} message(s).')
+    else:
+        print(f'  [discord] no password-looking message in the {len(rows)} message(s) read.')
+    return passwords
 
 
-def newest_stored_id(root: str, creator: str):
-    """Highest message id already stored for *creator* (resume point for incremental scans), or None."""
-    with library_db.db(root) as con:
-        ids = [r['message_id'] for r in con.execute(
-            'SELECT message_id FROM discord_messages WHERE creator=?', (creator,))]
-    nums = [i for i in map(_snowflake, ids) if i is not None]
-    return str(max(nums)) if nums else None
-
-
-def mark_processed(root: str, creator: str, message_id) -> None:
-    with library_db.db(root, write=True) as con:
-        con.execute(
-            'UPDATE discord_messages SET processed=1, updated_by=?, updated_at=? WHERE creator=? AND message_id=?',
-            (_UPDATED_BY, time.strftime('%Y-%m-%dT%H:%M:%S'), creator, str(message_id)))
-
-
-def unprocessed(root: str, creator: str) -> list[dict]:
-    """Stored messages not yet marked processed, oldest first."""
-    with library_db.db(root) as con:
-        rows = con.execute('SELECT * FROM discord_messages WHERE creator=? AND processed=0', (creator,)).fetchall()
-    out = [dict(r, hrefs=json.loads(r['hrefs_json'] or '[]'), decoded=json.loads(r['decoded_links_json'] or '[]'))
-           for r in rows]
-    out.sort(key=lambda m: _snowflake(m['message_id']) or 0)
-    return out
+def latest_password(creator_key: str, max_messages: int = 50, force: bool = False) -> str | None:
+    history = password_history(creator_key, max_messages, force=force)
+    return history[0] if history else None
 
 
 def _main() -> None:
@@ -203,8 +121,8 @@ def _main() -> None:
     (unless --save, which stores the messages in the library database given with --library)."""
     import argparse
     import discord_browser
-    import discord_passwords as dp
-    import downloadContent as dc
+    import discord_parser
+    import library_db
 
     parser = argparse.ArgumentParser(description='Read a creator\'s full Discord history (dry run)')
     parser.add_argument('creator')
@@ -216,23 +134,11 @@ def _main() -> None:
     rows = fetch_channel_history(args.creator, max_messages=args.max, force=True)
     if rows is None:
         return
-    supported = dc._is_supported_domain
-    hidden_total = 0
-    for m in rows:
-        hidden = decode_links(m, accept=supported)
-        visible = [h for h in m.get('hrefs', []) if supported(h)]
-        hidden_total += len(hidden)
-        if hidden or visible:
-            print(f'  {m["id"]} {m["ts"][:10]} {m["author"]}:')
-            for h in hidden:
-                print(f'      base64 -> {h["href"]}')
-            for h in visible:
-                print(f'      link   -> {h}')
-    passwords, _ = dp.passwords_from_texts([m.get('text', '') for m in rows])
-    print(f'  {len(rows)} message(s), {hidden_total} base64-hidden link(s), {len(passwords)} password-looking value(s).')
+    rows = discord_parser.annotate(rows)
+    discord_parser.print_summary(rows)
     if args.save and args.library:
         root = library_db.use_root(args.library)
-        print(f'  saved {save_messages(root, args.creator, rows)} new message(s) to {library_db.db_path(root)}')
+        print(f'  saved {store.save_messages(root, args.creator, rows)} new message(s) to {library_db.db_path(root)}')
     discord_browser.close()
 
 

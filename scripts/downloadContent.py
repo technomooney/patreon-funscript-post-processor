@@ -3865,8 +3865,8 @@ def _fetch_discord_password_cached(creator_key: str) -> str | None:
         return None
 
     try:
-        import discord_passwords
-        password = discord_passwords.fetch_latest_password(creator_key)
+        import discord_history
+        password = discord_history.latest_password(creator_key)
     except Exception as e:
         print(f'  [discord] password lookup failed for "{creator_key}": {e}')
         password = None

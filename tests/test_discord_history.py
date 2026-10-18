@@ -5,9 +5,12 @@ import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'scripts'))
+SCRIPTS = os.path.join(os.path.dirname(HERE), 'scripts')
+sys.path.insert(0, SCRIPTS)
 
 import discord_history as dh  # noqa: E402
+import discord_parser  # noqa: E402
+import discord_store as store  # noqa: E402
 import library_db  # noqa: E402
 
 
@@ -78,33 +81,29 @@ class StorageTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_incremental_bookkeeping(self):
-        self.assertIsNone(dh.newest_stored_id(self.root, 'c'))
-        self.assertEqual(dh.save_messages(self.root, 'c', [msg(10, 'a'), msg(30, 'b'), msg(20, 'c')]), 3)
-        self.assertEqual(dh.newest_stored_id(self.root, 'c'), '30')
-        self.assertEqual([m['message_id'] for m in dh.unprocessed(self.root, 'c')], ['10', '20', '30'])
-        dh.mark_processed(self.root, 'c', 20)
-        self.assertEqual([m['message_id'] for m in dh.unprocessed(self.root, 'c')], ['10', '30'])
+        self.assertIsNone(store.newest_stored_id(self.root, 'c'))
+        self.assertEqual(store.save_messages(self.root, 'c', [msg(10, 'a'), msg(30, 'b'), msg(20, 'c')]), 3)
+        self.assertEqual(store.newest_stored_id(self.root, 'c'), '30')
+        self.assertEqual([m['message_id'] for m in store.unprocessed(self.root, 'c')], ['10', '20', '30'])
+        store.mark_processed(self.root, 'c', 20)
+        self.assertEqual([m['message_id'] for m in store.unprocessed(self.root, 'c')], ['10', '30'])
         # re-saving keeps the processed flag and adds only genuinely new messages
-        self.assertEqual(dh.save_messages(self.root, 'c', [msg(20, 'c'), msg(40, 'd')]), 1)
-        self.assertEqual([m['message_id'] for m in dh.unprocessed(self.root, 'c')], ['10', '30', '40'])
+        self.assertEqual(store.save_messages(self.root, 'c', [msg(20, 'c'), msg(40, 'd')]), 1)
+        self.assertEqual([m['message_id'] for m in store.unprocessed(self.root, 'c')], ['10', '30', '40'])
         # creators are separate
-        self.assertIsNone(dh.newest_stored_id(self.root, 'other'))
+        self.assertIsNone(store.newest_stored_id(self.root, 'other'))
 
-    def test_hidden_links_are_decoded_at_save_time_from_spoiler_text(self):
+    def test_annotated_hidden_links_survive_storage(self):
         url = 'https://pixeldrain.com/l/AbCd1234'
         enc = base64.b64encode(url.encode()).decode()
-        dh.save_messages(self.root, 'c', [msg(1, text='click to reveal', raw='click to reveal ' + enc)])
-        self.assertEqual(dh.unprocessed(self.root, 'c')[0]['decoded'], [url])
+        store.save_messages(self.root, 'c', discord_parser.annotate([msg(1, text='click to reveal', raw='click to reveal ' + enc)]))
+        self.assertEqual(store.unprocessed(self.root, 'c')[0]['decoded'], [url])
 
     def test_decode_links_reads_spoiler_text_too(self):
         url = 'https://pixeldrain.com/l/AbCd1234'
         enc = base64.b64encode(url.encode()).decode()
         m = msg(1, text='click to reveal', raw='click to reveal ' + enc)
-        self.assertEqual([f['href'] for f in dh.decode_links(m)], [url])
-
-
-if __name__ == '__main__':
-    unittest.main()
+        self.assertEqual([f['href'] for f in discord_parser.decode_links(m)], [url])
 
 
 class PasswordParsingSeparationTests(unittest.TestCase):
@@ -113,20 +112,29 @@ class PasswordParsingSeparationTests(unittest.TestCase):
         import sys
         import creator_db
         import discord_passwords as dpw
-        self.assertNotIn('selenium', sys.modules.get('discord_passwords').__dict__)
+        import subprocess
+        out = subprocess.run([sys.executable, '-I', '-c',
+                              'import sys; sys.path.insert(0, %r); import discord_passwords, discord_parser, '
+                              'discord_store, discord_history; print("selenium" in sys.modules)' % SCRIPTS],
+                             capture_output=True, text=True)
+        self.assertEqual(out.stdout.strip(), 'False', out.stderr)
         self.assertEqual(dpw.passwords_from_texts(['The password is currently set as pize2026080101.'])[0],
                          ['pize2026080101'])
         with tempfile.TemporaryDirectory() as tmp:
             root = library_db.use_root(os.path.join(os.path.realpath(tmp), 'lib'))
-            dh.save_messages(root, 'c', [
+            store.save_messages(root, 'c', [
                 {'id': '1', 'ts': '', 'author': 'a', 'text': 'pw: oldpass99', 'raw': '', 'hrefs': []},
                 {'id': '2', 'ts': '', 'author': 'a', 'text': 'The password is currently set as newpass77', 'raw': '', 'hrefs': []}])
             recorded = []
             old = creator_db.record_passwords
             creator_db.record_passwords = lambda k, p: recorded.append((k, list(p)))
             try:
-                got = dpw.record_from_stored(root, 'c')
+                got = discord_parser.record_passwords_from_stored(root, 'c')
             finally:
                 creator_db.record_passwords = old
             self.assertEqual(got, ['newpass77', 'oldpass99'])
             self.assertEqual(recorded, [('c', ['newpass77', 'oldpass99'])])
+
+
+if __name__ == '__main__':
+    unittest.main()

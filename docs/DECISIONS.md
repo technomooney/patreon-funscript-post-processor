@@ -112,7 +112,8 @@ Each entry: what problem, what was decided, what was rejected, how to verify. Wr
 - **Not wired:** Pize does not call `sync_if_enabled` yet; its links come from post descriptions and a Discord destination folder there needs a decision.
 - **Verify:** `tests/test_discord_pixeldrain_sync.py` (renamed from test_discord_pixeldrain_links.py).
 
-## 2026-10-18 - Discord split: browser / history / passwords
-- **Problem:** `discord_passwords.py` mixed the Selenium channel access with password parsing, so Pize's password lookups dragged in the whole browser stack and the message history could not be parsed for passwords without re-fetching.
-- **Decision:** `discord_browser.py` = login + open channel + close. `discord_history.py` = read/store messages. `discord_passwords.py` = parsing/recording only (no selenium import); `record_from_stored(root, creator)` parses passwords from messages already in the library DB. The Discord link sync stays core-only (`discord_pixeldrain_sync.py`), with no menu entry, by the user's explicit choice.
-- **Verify:** `tests/test_discord_history.py` (PasswordParsingSeparationTests).
+## 2026-10-18 - Discord code in layers: browser / history / store / parser / passwords
+- **Problem:** `discord_passwords.py` mixed Selenium channel access, reading, and password parsing; history reading, storage and link decoding were tangled in `discord_history.py`.
+- **Decision:** `discord_browser.py` = EVERYTHING that touches the browser (login, open channel, read/scroll primitives). `discord_history.py` = reading strategy and position (collect loop, `refresh` reads only what is newer than the newest stored id, then annotates and stores; `password_history` for a no-store read). `discord_store.py` = the discord_messages table only. `discord_parser.py` = extract links (visible + base64) and passwords from message dicts; it calls `discord_passwords.py` (regexes only) when looking for archive passwords. The Discord link sync stays core-only (`discord_pixeldrain_sync.py`), no menu entry, by the user's explicit choice.
+- **Behavior change:** the live password lookup now reads the newest 50 messages through the same history reader instead of a separate "rendered messages" reader (which is removed). It stores nothing and does not move the stored read position.
+- **Verify:** `tests/test_discord_history.py` (includes a subprocess check that the non-browser modules import without selenium), `tests/test_discord_pixeldrain_sync.py`.

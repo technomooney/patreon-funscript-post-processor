@@ -91,7 +91,7 @@ Passwords are resolved from creator_db.py's SQLite history first (fastest,
 no browser, tried in most-likely-current order — see creator_db.
 get_password_history, which also tries a password whose Discord label
 matches this archive's own post date/type first when one is known), falling
-back to a live Discord fetch via discord_passwords.py only when every known
+back to a live Discord fetch via discord_history.py only when every known
 password fails — a creator can (and Pize has) re-encrypt archives under a
 new password without warning, so this doesn't assume "first thing that ever
 worked" stays valid forever. That Discord fetch happens at most once per run
@@ -158,8 +158,8 @@ def _fetch_discord_history_cached(creator_key: str) -> list[str]:
     passes force=True to ask again even for a creator who previously declined
     Discord setup as part of some earlier, merely speculative lookup."""
     if creator_key not in _discord_history_cache:
-        import discord_passwords
-        _discord_history_cache[creator_key] = discord_passwords.fetch_password_history(creator_key, force=True)
+        import discord_history
+        _discord_history_cache[creator_key] = discord_history.password_history(creator_key, force=True)
     return _discord_history_cache[creator_key]
 
 
@@ -844,8 +844,8 @@ def _main() -> None:
         scan_and_extract(path, creator_key, ignore_manual=ignore_manual, interactive=True)
     finally:
         try:
-            import discord_passwords
-            discord_passwords.close()
+            import discord_browser
+            discord_browser.close()
         except Exception:
             pass
 

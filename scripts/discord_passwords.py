@@ -1,16 +1,13 @@
-"""Archive/mega passwords posted in a creator's Discord: PARSING and recording only.
+"""Archive/mega password patterns: text in, passwords out. Pure parsing, no browser, no storage, no fetching.
 
-Getting the messages is a separate concern (discord_browser.py opens the channel, discord_history.py reads and
-stores the whole history). This module turns message text into passwords and records them in creator_db, either
-from messages fetched on demand (fetch_password_history*) or from messages already stored in the library
-database (record_from_stored) -- the latter needs no browser at all.
-
-Importing this module does not need selenium; the browser is imported lazily by the fetch_* functions only.
+discord_parser.py calls this when it is looking for archive passwords; discord_history.password_history() is the
+convenience that reads the newest messages and records what it finds.
 
 Standalone usage:
     python scripts/discord_passwords.py fetch <creator>
     python scripts/discord_passwords.py list
-    (set a channel with: python scripts/discord_browser.py <creator> <guild_id> <channel_id>)
+    (set a channel with: python scripts/discord_browser.py <creator> <guild_id> <channel_id>;
+     read the chat with: python scripts/discord_history.py <creator>)
 """
 import os
 import re
@@ -107,90 +104,12 @@ def passwords_from_texts(texts: list[str]) -> tuple[list[str], list[dict]]:
     return passwords, labeled
 
 
-def fetch_password_history(creator_key: str, max_messages: int = 50, force: bool = False) -> list[str]:
-    """Return every distinct password-looking value posted in *creator_key*'s
-    channel within the last *max_messages* messages, most recent first.
-
-    Unlike fetch_latest_password, this doesn't stop at the first match — some
-    creators (confirmed: Pize) rotate the archive password over time, and an
-    older archive isn't always re-encrypted under the newest one, so a caller
-    that fails to extract with the latest password may still need to fall
-    back through history. Results are persisted to creator_db so later runs
-    (or extraction retries) have them without re-scanning Discord.
-
-    *force*: see discord_browser._load_channel_messages -- pass True when the caller already
-    knows a password is genuinely needed (e.g. every known password just
-    failed against a real archive), so a previously-declined creator still
-    gets asked in that specific situation.
-    """
-    import discord_browser
-    loaded = discord_browser._load_channel_messages(creator_key, max_messages, force=force)
-    if loaded is None:
-        return []
-    texts, discord_cfg = loaded
-
-    passwords, labeled = passwords_from_texts(texts)
-
-    if passwords:
-        print(f'  [discord] found {len(passwords)} distinct password(s) for "{creator_key}" '
-              f'in channel {discord_cfg["channel_id"]}')
-        creator_db.record_passwords(creator_key, passwords)
+def record(creator_key: str, found: list[str], labeled: list[dict]) -> None:
+    """Persist parsed passwords (and their date labels) to creator_db."""
+    if found:
+        creator_db.record_passwords(creator_key, found)
         if labeled:
             creator_db.record_password_labels(creator_key, labeled)
-    else:
-        print(f'  [discord] no password-looking message found in the last {max_messages} '
-              f'messages of channel {discord_cfg["channel_id"]}')
-    return passwords
-
-
-def fetch_latest_password(creator_key: str, max_messages: int = 50, force: bool = False) -> str | None:
-    """Return the most recent password posted in *creator_key*'s configured Discord channel, or None."""
-    history = fetch_password_history(creator_key, max_messages, force=force)
-    return history[0] if history else None
-
-
-def record_passwords(creator_key: str, texts: list[str]) -> list[str]:
-    """Parse *texts* (newest first) and persist what was found to creator_db. Returns the passwords."""
-    passwords, labeled = passwords_from_texts(texts)
-    if passwords:
-        creator_db.record_passwords(creator_key, passwords)
-        if labeled:
-            creator_db.record_password_labels(creator_key, labeled)
-    return passwords
-
-
-def record_from_stored(root: str, creator_key: str) -> list[str]:
-    """Passwords from the messages already stored in the library database (no browser, no fetching). Newest first.
-
-    The store is filled by discord_history / the Discord link sync; run those first to refresh it."""
-    import discord_history as dh
-    texts = [m['text'] or '' for m in reversed(dh.stored_messages(root, creator_key))]
-    passwords = record_passwords(creator_key, texts)
-    print(f'  [discord] {len(passwords)} password(s) for "{creator_key}" from {len(texts)} stored message(s).')
-    return passwords
-
-
-def fetch_password_history_full(creator_key: str, force: bool = False, max_messages=None) -> list[str]:
-    """Every archive password anywhere in the creator's channel, newest first (recorded in creator_db).
-
-    For when the latest passwords failed against an older archive: reads the entire chat, not just the last 50."""
-    import discord_history as dh
-    rows = dh.fetch_channel_history(creator_key, max_messages=max_messages, force=force)
-    if rows is None:
-        return []
-    passwords = record_passwords(creator_key, [r.get('text', '') for r in rows])
-    if passwords:
-        print(f'  [discord] found {len(passwords)} distinct password(s) for "{creator_key}" in the full history.')
-    else:
-        print(f'  [discord] no password-looking message anywhere in the {len(rows)} messages read.')
-    return passwords
-
-
-def close() -> None:
-    """Quit the shared Discord browser, if one was launched (kept so existing callers still work)."""
-    import sys as _sys
-    if 'discord_browser' in _sys.modules:
-        _sys.modules['discord_browser'].close()
 
 
 def _main() -> None:
@@ -206,11 +125,13 @@ def _main() -> None:
 
     args = parser.parse_args()
     if args.cmd == 'fetch':
+        import discord_browser
+        import discord_history
         try:
-            password = fetch_latest_password(args.creator)
+            password = discord_history.latest_password(args.creator)
             print(f'Password: {password}' if password else 'No password found.')
         finally:
-            close()
+            discord_browser.close()
     elif args.cmd == 'list':
         profiles = creator_profiles.load()
         if not profiles:
@@ -224,4 +145,3 @@ if __name__ == '__main__':
         _main()
     except KeyboardInterrupt:
         print('\n\nCancelled.')
-        close()

@@ -19,6 +19,8 @@ import os
 
 import creator_profiles
 import discord_history as dh
+import discord_parser
+import discord_store as store
 import folder_log
 import pixeldrain_sync as ps
 import pixeldrain_util as pdu
@@ -33,14 +35,8 @@ def _is_pixeldrain(url: str) -> bool:
 
 
 def links_from_messages(messages: list[dict]) -> list[str]:
-    """Distinct pixeldrain list/file URLs across stored messages, oldest message first: base64-hidden ones
-    (decoded when the message was saved) plus ordinary hyperlinks."""
-    urls: list[str] = []
-    for m in messages:
-        for u in list(m.get('decoded', [])) + list(m.get('hrefs', [])):
-            if _is_pixeldrain(u) and u not in urls:
-                urls.append(u)
-    return urls
+    """Distinct pixeldrain list/file URLs across messages, oldest message first."""
+    return discord_parser.links(messages, accept=_is_pixeldrain)
 
 
 def sync_channel(base_path: str, dest: str = DEFAULT_DEST, dry_run: bool = False, interactive: bool = False,
@@ -50,31 +46,30 @@ def sync_channel(base_path: str, dest: str = DEFAULT_DEST, dry_run: bool = False
     root = ps.resolve_root(base_path, interactive)
     if root is None:
         return None
-    fetch = fetch or dh.fetch_channel_history
-    since = dh.newest_stored_id(root, creator_key)
-    print(f'  [{SCRIPT_ID}] reading {"messages newer than " + since if since else "the whole channel history"}...')
-    rows = fetch(creator_key, since_message_id=since)
-    if rows is None:
-        print(f'  [{SCRIPT_ID}] could not read the Discord channel; nothing changed.')
-        return None
-    if not dry_run:
-        dh.save_messages(root, creator_key, rows)
-        pending = dh.unprocessed(root, creator_key)
-    else:   # dry run stores nothing: look at the fresh rows only
-        pending = [dict(r, decoded=[f['href'] for f in dh.decode_links(r)]) for r in reversed(rows)]
+    if dry_run:     # a dry run stores nothing: look at the fresh rows only
+        rows = (fetch or dh.fetch_channel_history)(creator_key, since_message_id=store.newest_stored_id(root, creator_key))
+        if rows is None:
+            print(f'  [{SCRIPT_ID}] could not read the Discord channel; nothing changed.')
+            return None
+        pending = discord_parser.annotate(list(reversed(rows)))
+    else:
+        if dh.refresh(root, creator_key, fetch=fetch) is None:
+            print(f'  [{SCRIPT_ID}] could not read the Discord channel; nothing changed.')
+            return None
+        pending = store.unprocessed(root, creator_key)
     urls = links_from_messages(pending)
     print(f'  [{SCRIPT_ID}] {len(pending)} unprocessed message(s), {len(urls)} pixeldrain link(s) found.')
     if not urls:
         if not dry_run:
             for m in pending:
-                dh.mark_processed(root, creator_key, m['message_id'])
+                store.mark_processed(root, creator_key, m['message_id'])
         return {'messages': len(pending), 'links': 0}
     result = ps.sync_urls(base_path, urls, dest=dest, dry_run=dry_run, interactive=interactive)
     if result is None or dry_run:
         return result
     if result['failed'] == 0 and result['unreadable'] == 0:
         for m in pending:
-            dh.mark_processed(root, creator_key, m['message_id'])
+            store.mark_processed(root, creator_key, m['message_id'])
     else:
         print(f'  [{SCRIPT_ID}] some links failed or could not be read -- those messages stay unprocessed '
               f'and are retried next run.')
