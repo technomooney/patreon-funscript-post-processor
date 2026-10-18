@@ -133,3 +133,21 @@ def download_file(entry: dict, dest_dir: str, scratch_root: str) -> tuple[str | 
         return final, 'ok'
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+
+
+def file_info(fid: str):
+    """pixeldrain's info for one file id: {'id','name','size','sha256','url'} when it is there, 'gone' when
+    pixeldrain says 404 (deleted / never existed), or None when it could not be determined (network, auth)."""
+    dc = _dc()
+    try:
+        data = _get_json(f'https://pixeldrain.com/api/file/{fid}/info', f'info {fid}')
+    except dc.urllib.error.HTTPError as e:
+        return 'gone' if e.code == 404 else None
+    except Exception:       # noqa: BLE001
+        return None
+    if not isinstance(data, dict):
+        return None
+    entry = _entry(data)
+    entry['id'] = entry['id'] or fid
+    entry['url'] = f'https://pixeldrain.com/u/{entry["id"]}'
+    return entry

@@ -177,6 +177,23 @@ moves or deletes anything, and is safe to repeat:
 "Pixeldrain repo sync" and "Discord channel" plugins (menu `s`) then download only files you do not already own,
 including ones the compressor transcoded.
 
+### Rebuilding a messy library ("nuke")
+
+When a library is so messy that redoing it beats repairing it, `rebuild.sh` (`rebuild.bat`) re-downloads the files that
+came from pixeldrain, **but never deletes anything until its replacement is downloaded and sha256-verified**:
+
+```
+./rebuild.sh /path/to/library-root                                  # 1. plan: writes an HTML report + prints a token
+./rebuild.sh /path/to/library-root --confirm TOKEN --decisions rebuild_decisions.json   # 2. apply (resumable)
+```
+
+The report (in `<library>/.library-data/reports/`) lists what would be fetched and everything it will **not** touch:
+dead links (old data kept; paste a replacement link into the report and download your choices), `.manual` and
+hand-edited files, AV1-compressed copies, and unverified links. The token only works while the library is unchanged since
+the report. Replaced files go to `.trash` and can be undone. Limits of this version: only pixeldrain-sourced files are
+re-downloaded (other hosts are not), and the fresh copy goes into the same folder as the old one under the source's name;
+run the normal tools afterwards to reorganise.
+
 ## Disclaimer
 
 This is a personal project provided **as-is**, without warranty of any kind. The author accepts no responsibility for any data loss, file corruption, or damage that may result from using this software. **Always keep backups of your files before running any automated renaming, deduplication, or download operations.**
