@@ -31,6 +31,7 @@ import creator_config
 import collection_redownload_queue
 import folder_log
 import funscript_utils
+import link_decoder
 
 load_dotenv(os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '.env')))
 
@@ -281,6 +282,15 @@ def read_links_filter(path: str) -> list[str]:
     return list(dict.fromkeys(patterns))
 
 
+def _is_supported_domain(url: str) -> bool:
+    """True if *url*'s domain is one we can download from (see check_domain)."""
+    try:
+        check_domain(url)
+        return True
+    except UnknownDomainError:
+        return False
+
+
 def _walk_description(data) -> tuple[list[dict], str]:
     """Walk a parsed ProseMirror description doc, collecting links and plain text.
 
@@ -332,7 +342,14 @@ def _walk_description(data) -> tuple[list[dict], str]:
                 traverse(item)
 
     traverse(data)
-    return entries, ' '.join(text_parts)
+    full_text = ' '.join(text_parts)
+    # Links a creator hid as base64 text (any creator, any post). Only URLs on a supported domain count, so a
+    # long word that happens to decode cleanly can never become a bogus "unknown domain" download.
+    for hidden in link_decoder.find_encoded_urls(full_text, accept=_is_supported_domain):
+        if hidden['href'] not in index_by_href:
+            add_link(hidden['href'], '')
+            entries[-1]['decoded_from_base64'] = True
+    return entries, full_text
 
 
 def extract_link_entries_from_description(desc_path: str) -> list[dict]:

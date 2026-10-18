@@ -15,3 +15,10 @@ Each entry: what problem, what was decided, what was rejected, how to verify. Wr
 - **Rejected:** moving (loses the rollback path if the new location misbehaves); a separate DB file for passwords (one app DB is simpler to back up and inspect); putting app data inside libraries (it is per-machine, not per-library).
 - **Prod note:** the live copy at `/media/Software/StandaloneSoftware/patreondownloaderpostprocessing` has its own repo-root data; after syncing, the first run there copies it into the user's app home.
 - **Verify:** `python3 -I -m unittest discover -s tests -v` (`tests/test_app_data.py`).
+
+## 2026-10-17 - Base64-hidden links are decoded globally
+- **Problem:** at least one creator posts pixeldrain links as base64 text (in Discord, possibly posts too). Nothing in the repo decoded base64, and the rule from the user is that this is a core feature, not a per-creator hack.
+- **Decision:** `link_decoder.py` (stdlib) plus a hook in `downloadContent._walk_description`, which every description/link-extraction path (including the Pize plugin) already goes through. Decoded entries are tagged `decoded_from_base64`. A candidate counts only if it is >=24 base64 chars, decodes to strict UTF-8 with no control chars, contains a URL (or `host.tld/path`) within 2 decode layers, and the URL's domain is supported (`check_domain`). Already-visible URLs are blanked out before scanning so path segments are never mistaken for base64.
+- **Rejected:** per-creator decoding in plugins (every future creator would need it re-added); accepting any decoded URL (random long words and unknown domains would create "unknown domain" noise); shorter minimum length (more false positives).
+- **Not covered yet:** base64 inside a link's href or split across formatted runs; hex/rot13/reversed encodings. Discord messages go through the same decoder once the Discord history reader lands.
+- **Verify:** `tests/test_link_decoder.py` (stdlib) and `tests/test_description_base64.py` (needs the project venv).
