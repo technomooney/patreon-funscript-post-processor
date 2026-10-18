@@ -181,7 +181,19 @@ while true; do
     echo ""
 
     while true; do
-        read -rp "Choose a program to run (1-10, n, t, p, sa, sc, ru, rz, ra, h=help, q=exit): " choice
+        # Read the first key on its own so 'q' quits at once; anything else is completed as a normal line
+        # (most choices are multi-character: 10, sa, ra, ...).
+        read -rn1 -p "Choose a program to run (1-10, n, t, p, sa, sc, ru, rz, ra, h=help, q=exit): " first
+        if [ "$first" = "q" ] || [ "$first" = "Q" ]; then
+            echo ""
+            exit 0
+        fi
+        if [ -n "$first" ]; then
+            read -r rest
+            choice="$first$rest"
+        else
+            choice=""
+        fi
         case "$choice" in
             q|Q)
                 echo ""
