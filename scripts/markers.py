@@ -7,7 +7,7 @@
                  does not claim a human did anything.
 
 Automated passes that must leave a folder alone ask `skips(filenames)`, which is true for either marker.
-(Before 2026-10-18 the tools also wrote `.manual` next to `.consolidated`; remove_auto_manual_markers.py cleans those up.)
+(Before 2026-10-18 the tools also wrote `.manual` next to `.consolidated`; those were removed by hand.)
 """
 MANUAL = '.manual'
 CONSOLIDATED = '.consolidated'
