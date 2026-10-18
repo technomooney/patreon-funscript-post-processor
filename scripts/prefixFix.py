@@ -2,6 +2,7 @@ import os
 import re
 from urllib.parse import unquote
 import action_log
+import markers
 import creator_config
 import folder_log
 
@@ -163,7 +164,7 @@ def getFileList(filePath: str, extList: list):
         dirs.sort()
         dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, root, dirs)
-        if '.manual' in files:
+        if markers.skips(files):
             print(f"  SKIP (manual): {root}")
             continue
         for file in sorted(files):

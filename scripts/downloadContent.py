@@ -27,6 +27,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
 import urllib3.exceptions
 import action_log
+import markers
 import creator_config
 import collection_redownload_queue
 import folder_log
@@ -5422,7 +5423,7 @@ def collect_tasks(base_path: str, require_funscript: bool = True,
                 print(f'[skip-keyword] "{hit}" matched: {_safe(os.path.basename(root))}')
                 keyword_skipped += 1
                 continue
-        if '.manual' in files:
+        if markers.skips(files):
             # '.consolidated' (always paired with '.manual' by consolidate_
             # packs.py) marks an automated decision, not an actual person
             # having looked at the folder the way a real '.manual' does --
@@ -6026,7 +6027,7 @@ def collect_tasks_from_funscript_metadata(base_path: str) -> tuple[list, list]:
         dirs.sort()
         dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, root, dirs)
-        if '.manual' in files:
+        if markers.skips(files):
             continue
         if folder_log.has_run(root, 'downloadFromFunscriptMetadata'):
             continue

@@ -37,6 +37,7 @@ import re
 import sys
 from urllib.parse import unquote
 import action_log
+import markers
 import creator_config
 import folder_log
 
@@ -201,7 +202,7 @@ def process(root_dir: str, dry_run: bool, skip_folders: set[str] | None = None) 
     for dirpath, dirnames, filenames in os.walk(root_dir):
         dirnames[:] = [d for d in dirnames if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, dirpath, dirnames)
-        if '.manual' in filenames:
+        if markers.skips(filenames):
             print(f'  SKIP (manual)  {dirpath}')
             continue
         if skip_folders and dirpath in skip_folders:
@@ -464,7 +465,7 @@ def find_media_misnames(root_dir: str, dry_run: bool, skip_folders: set[str] | N
     for dirpath, dirnames, filenames in os.walk(root_dir):
         dirnames[:] = [d for d in dirnames if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, dirpath, dirnames)
-        if '.manual' in filenames:
+        if markers.skips(filenames):
             continue
         if skip_folders and dirpath in skip_folders:
             continue
@@ -539,7 +540,7 @@ def find_funscript_misnames(root_dir: str, dry_run: bool, skip_folders: set[str]
     for dirpath, dirnames, filenames in os.walk(root_dir):
         dirnames[:] = [d for d in dirnames if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, dirpath, dirnames)
-        if '.manual' in filenames:
+        if markers.skips(filenames):
             continue
         if skip_folders and dirpath in skip_folders:
             continue
@@ -609,7 +610,7 @@ def find_funscript_video_mismatches(
     for dirpath, dirnames, filenames in os.walk(root_dir):
         dirnames[:] = [d for d in dirnames if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, dirpath, dirnames)
-        if '.manual' in filenames:
+        if markers.skips(filenames):
             continue
         if skip_folders and dirpath in skip_folders:
             continue
@@ -727,7 +728,7 @@ def run(root: str, dry_run: bool) -> None:
         _dirs.sort()
         _dirs[:] = [d for d in _dirs if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, _dp, _dirs)
-        if '.manual' in _fnames:
+        if markers.skips(_fnames):
             _dirs[:] = []
             continue
         if folder_log.has_run(_dp, 'fix_garbled_names'):
@@ -816,7 +817,7 @@ def run(root: str, dry_run: bool) -> None:
             _dirs.sort()
             _dirs[:] = [d for d in _dirs if d not in action_log.SKIP_DIRNAMES]
             creator_config.prune(_protected, _dp, _dirs)
-            if '.manual' in _fnames or _dp in skip_set:
+            if markers.skips(_fnames) or _dp in skip_set:
                 _dirs[:] = []
                 continue
             _rows = [r for r in all_reports if _row_folder(r) == _dp]

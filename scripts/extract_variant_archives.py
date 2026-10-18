@@ -126,6 +126,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import action_log
+import markers
 import creator_config
 import collection_redownload_queue
 import consolidate_packs
@@ -803,7 +804,7 @@ def scan_and_extract(base_path: str, creator_key: str | None = None, ignore_manu
     for root, dirs, files in os.walk(base_path):
         dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, root, dirs)
-        if '.manual' in files and not ignore_manual:
+        if markers.skips(files) and not ignore_manual:
             has_archive = any(f.lower().endswith(_ARCHIVE_EXTS) for f in files)
             if has_archive:
                 print(f'  SKIP (manual)  {root}')

@@ -63,6 +63,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import action_log
+import markers
 import creator_config
 import folder_log
 from downloadContent import (
@@ -125,7 +126,7 @@ def _scan(base_path: str):
         dirs.sort()
         dirs[:] = [d for d in dirs if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, root, dirs)
-        if _MANUAL_MARKER in files:
+        if markers.skips(files):
             dirs[:] = []
             continue
         videos = [(Path(f).stem, os.path.join(root, f)) for f in files if _is_video_filename(f)]
@@ -233,12 +234,11 @@ def _resolve_actions(candidates: list[dict]) -> list[dict]:
 
 
 def _mark_consolidated(base_path: str, orig_folder: str, candidate: dict, note: str) -> None:
-    for marker in (_MANUAL_MARKER, _CONSOLIDATED_MARKER):
-        marker_path = os.path.join(orig_folder, marker)
-        if not os.path.exists(marker_path):
-            with open(marker_path, 'w', encoding='utf-8'):
-                pass
-            action_log.record('create_marker', path=marker_path)
+    marker_path = os.path.join(orig_folder, _CONSOLIDATED_MARKER)      # never '.manual': that is the user's alone
+    if not os.path.exists(marker_path):
+        with open(marker_path, 'w', encoding='utf-8'):
+            pass
+        action_log.record('create_marker', path=marker_path)
 
     folder_log.append_run(
         orig_folder, _SCRIPT_NAME,

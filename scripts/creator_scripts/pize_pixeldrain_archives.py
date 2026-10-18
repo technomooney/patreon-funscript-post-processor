@@ -1483,8 +1483,7 @@ def run(base_path: str, options: dict | None = None) -> None:
             summary = empty_post(base_path, lib, rel, keys,
                                  {e['sha256'] for e in entries if e.get('sha256')},
                                  {e['archive_name'] for e in entries if e.get('archive_name')})
-            _mark(post, '.manual')
-            _mark(post, '.consolidated')
+            _mark(post, '.consolidated')      # '.manual' is the user's alone (markers.py)
             folder_log.append_run(post, SCRIPT_ID, pixeldrain_urls=info['pixeldrain'],
                                   original_links=info['originals'],
                                   extracted_to=[f'{LIB_DIRNAME}/{k}' for k in keys],

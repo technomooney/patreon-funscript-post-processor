@@ -10,6 +10,7 @@ example of the creator_scripts contract; see README.md in this folder.
 import os
 
 import action_log
+import markers
 import creator_config
 
 SCRIPT_ID = 'mdemaxis_smooth_fix'
@@ -45,7 +46,7 @@ def process(root_dir: str, extensions: list[str]) -> int:
     for dirpath, dirnames, filenames in os.walk(root_dir):
         dirnames[:] = [d for d in dirnames if d not in action_log.SKIP_DIRNAMES]
         creator_config.prune(_protected, dirpath, dirnames)
-        if '.manual' in filenames:
+        if markers.skips(filenames):
             print(f'  SKIP (manual)  {dirpath}')
             continue
         for filename in filenames:
