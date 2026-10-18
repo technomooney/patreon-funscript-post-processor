@@ -55,6 +55,9 @@ def _discord_driver():
 
     options = uc.ChromeOptions()
     options.set_capability('goog:loggingPrefs', {'browser': 'ALL'})      # lets capture_debug read console errors
+    if os.getenv('DISCORD_DISABLE_GPU', '').strip().lower() in ('1', 'true', 'yes'):
+        # A page that renders and then goes blank is often the GPU process failing; this is the quick test for it.
+        options.add_argument('--disable-gpu')
     kwargs = dict(
         options=options,
         browser_executable_path=launch_browser,
@@ -145,27 +148,36 @@ def debug_dir() -> str:
 def capture_debug(driver, label: str) -> str | None:
     """Save what the browser is showing (screenshot, URL, title, page-text snippet, console log) to
     <app home>/discord_debug/<time>_<label>.*, so a blank/gray Discord can be diagnosed. Never raises."""
+    stem = os.path.join(debug_dir(), f'{time.strftime("%Y%m%d_%H%M%S")}_{label}')
+    lines: list[str] = []
+
+    def step(name, fn):
+        try:
+            lines.append(f'{name}: {fn()}')
+        except Exception as e:      # a crashed tab raises on everything -- record that instead of giving up
+            lines.append(f'{name}: FAILED ({type(e).__name__}: {str(e).splitlines()[0][:200] if str(e) else ""})')
+
+    step('url', lambda: driver.current_url)
+    step('title', lambda: driver.title)
+    step('html length', lambda: driver.execute_script('return document.documentElement.outerHTML.length'))
+    step('page text', lambda: repr(driver.execute_script(
+        'return document.body ? document.body.innerText.slice(0, 1500) : "(no body)"')))
+    step('window handles', lambda: len(driver.window_handles))
     try:
-        stem = os.path.join(debug_dir(), f'{time.strftime("%Y%m%d_%H%M%S")}_{label}')
-        lines = [f'url: {driver.current_url}', f'title: {driver.title}']
-        try:
-            text = driver.execute_script('return document.body ? document.body.innerText.slice(0, 1500) : "(no body)"')
-            html = driver.execute_script('return document.documentElement.outerHTML.length')
-            lines += [f'html length: {html}', 'page text:', text or '(empty)']
-        except Exception as e:
-            lines.append(f'(could not read the page: {e})')
-        try:
-            logs = driver.get_log('browser')
-            lines += ['', f'console ({len(logs)} entries):'] + [f'{e.get("level")}: {e.get("message")}'[:400] for e in logs[-60:]]
-        except Exception as e:
-            lines.append(f'(no console log: {e})')
+        logs = driver.get_log('browser')
+        lines += ['', f'console ({len(logs)} entries):'] + [f'{e.get("level")}: {e.get("message")}'[:400] for e in logs[-60:]]
+    except Exception as e:
+        lines.append(f'console log: FAILED ({type(e).__name__})')
+    try:
         with open(stem + '.txt', 'w', encoding='utf-8') as f:
             f.write('\n'.join(lines) + '\n')
+        shot = ''
         try:
             driver.save_screenshot(stem + '.png')
+            shot = ' / .png'
         except Exception:
             pass
-        print(f'  [discord] saved what the browser shows to {stem}.txt / .png')
+        print(f'  [discord] saved what the browser shows to {stem}.txt{shot}')
         return stem
     except Exception:
         return None
