@@ -54,6 +54,7 @@ def _discord_driver():
     cached_driver = dc._cached_chromedriver(version) if version else None
 
     options = uc.ChromeOptions()
+    options.set_capability('goog:loggingPrefs', {'browser': 'ALL'})      # lets capture_debug read console errors
     kwargs = dict(
         options=options,
         browser_executable_path=launch_browser,
@@ -134,6 +135,42 @@ def _ensure_login(driver, timeout_minutes: int = 20) -> bool:
     return False
 
 
+def debug_dir() -> str:
+    import app_paths
+    path = os.path.join(app_paths.app_home(), 'discord_debug')
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def capture_debug(driver, label: str) -> str | None:
+    """Save what the browser is showing (screenshot, URL, title, page-text snippet, console log) to
+    <app home>/discord_debug/<time>_<label>.*, so a blank/gray Discord can be diagnosed. Never raises."""
+    try:
+        stem = os.path.join(debug_dir(), f'{time.strftime("%Y%m%d_%H%M%S")}_{label}')
+        lines = [f'url: {driver.current_url}', f'title: {driver.title}']
+        try:
+            text = driver.execute_script('return document.body ? document.body.innerText.slice(0, 1500) : "(no body)"')
+            html = driver.execute_script('return document.documentElement.outerHTML.length')
+            lines += [f'html length: {html}', 'page text:', text or '(empty)']
+        except Exception as e:
+            lines.append(f'(could not read the page: {e})')
+        try:
+            logs = driver.get_log('browser')
+            lines += ['', f'console ({len(logs)} entries):'] + [f'{e.get("level")}: {e.get("message")}'[:400] for e in logs[-60:]]
+        except Exception as e:
+            lines.append(f'(no console log: {e})')
+        with open(stem + '.txt', 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines) + '\n')
+        try:
+            driver.save_screenshot(stem + '.png')
+        except Exception:
+            pass
+        print(f'  [discord] saved what the browser shows to {stem}.txt / .png')
+        return stem
+    except Exception:
+        return None
+
+
 SETTLE_SECONDS = float(os.getenv('DISCORD_SETTLE_SECONDS', '4'))
 _HOME_URL = 'https://discord.com/channels/@me'
 
@@ -156,6 +193,12 @@ def ensure_login(driver, timeout_minutes: int = 20) -> bool:
     if not _ensure_login(driver, timeout_minutes):
         return False
     settle(driver)
+    try:
+        if len((driver.execute_script('return document.body ? document.body.innerText : ""') or '').strip()) < 20:
+            print('  [discord] the Discord home page looks blank (gray screen).')
+            capture_debug(driver, 'home_blank')
+    except Exception:
+        pass
     return True
 
 
@@ -291,6 +334,7 @@ def open_channel(creator_key: str, force: bool = False, channel: str | None = No
                 time.sleep(1)
             if driver.find_elements(By.XPATH, message_xpath):
                 break
+            capture_debug(driver, f'channel_attempt{attempt}')
             if attempt == 1:
                 print('  [discord] channel did not come up -- going back to the home page and trying once more...')
                 driver.get(_HOME_URL)
@@ -313,6 +357,7 @@ def open_channel(creator_key: str, force: bool = False, channel: str | None = No
         print('  [discord] browser window was closed before the channel could load.')
         return None
     except Exception:
+        capture_debug(driver, 'channel_failed')
         print(f'  [discord] channel did not load: {url}')
         return None
 
