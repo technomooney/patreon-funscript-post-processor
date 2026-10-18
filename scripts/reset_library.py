@@ -31,19 +31,49 @@ import argparse
 import gzip
 import json
 import hashlib
+import html
 import os
+import secrets
 import shutil
 import sqlite3
 import sys
 import time
 
 import library_db
-import rebuild_library as rb          # token + report styling are shared with the rebuild tool
 
 TOOL = 'downloader'
 KEEP_DIRNAMES = {library_db.DATA_DIRNAME, '.trash', '.av1-compressor'}
 KEEP_CREATOR_FILES = {'creator_config.json'}
 LOG_NAMES = {'.folder_log.json', '.manifest.json'}
+_CSS = """
+:root{--bg:#fff;--fg:#1c1e21;--muted:#65676b;--card:#f4f5f7;--line:#d9dbe0;--ok:#1a7f37;--warn:#9a6700;--bad:#cf222e;--acc:#0b5fff}
+@media (prefers-color-scheme:dark){:root{--bg:#14161a;--fg:#e6e8eb;--muted:#9aa0a6;--card:#1d2026;--line:#333842;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--acc:#6ea8ff}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:16px}
+h1{font-size:1.5rem;margin:.2em 0}h2{font-size:1.15rem;margin:1.6em 0 .4em}
+.cards{display:flex;flex-wrap:wrap;gap:10px}.card{background:var(--card);border-radius:8px;padding:10px 14px;min-width:120px}
+.card b{display:block;font-size:1.4rem}.muted{color:var(--muted)}
+.token{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px;margin:12px 0}
+code{background:var(--card);padding:2px 6px;border-radius:4px;word-break:break-all}
+table{border-collapse:collapse;width:100%;font-size:.9rem}th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top;word-break:break-word}
+input[type=text]{width:100%;box-sizing:border-box;padding:5px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--fg)}
+button{background:var(--acc);color:#fff;border:0;border-radius:6px;padding:8px 14px;cursor:pointer;font-size:.95rem}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+@media (max-width:640px){main{padding:12px}th:nth-child(n+4),td:nth-child(n+4){display:none}}
+"""
+
+TOKEN_VALID_DAYS = 7
+
+class TokenError(Exception):
+    pass
+
+def make_token(fingerprint: str, expires: str) -> str:
+    return secrets.token_hex(4) + '-' + hashlib.sha256((fingerprint + expires + secrets.token_hex(8)).encode()).hexdigest()[:12]
+
+def _e(x) -> str:
+    return html.escape('' if x is None else str(x))
+
+
 PLAN_KEY = 'reset_plan:'
 PREVIOUS = 'previous'
 _UPDATED_BY = 'reset_library'
@@ -186,8 +216,8 @@ def build_plan(root: str) -> dict:
 
 
 def record_plan(root: str, plan: dict) -> str:
-    expires = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(time.time() + rb.TOKEN_VALID_DAYS * 86400))
-    token = rb.make_token(plan['fingerprint'], expires)
+    expires = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(time.time() + TOKEN_VALID_DAYS * 86400))
+    token = make_token(plan['fingerprint'], expires)
     plan.update(token=token, expires_at=expires, status='planned', version=None, phase=None)
     library_db.tool_data_set(root, TOOL, PLAN_KEY + token, plan, _UPDATED_BY)
     return token
@@ -196,7 +226,7 @@ def record_plan(root: str, plan: dict) -> str:
 def _load(root: str, token: str) -> dict:
     plan = library_db.tool_data_get(root, TOOL, PLAN_KEY + token)
     if not plan:
-        raise rb.TokenError('That token is not recognised. Generate a new plan (and report) first.')
+        raise TokenError('That token is not recognised. Generate a new plan (and report) first.')
     return plan
 
 
@@ -207,11 +237,11 @@ def _save(root: str, plan: dict) -> None:
 def check_token(root: str, token: str) -> dict:
     plan = _load(root, token)
     if plan['status'] == 'done':
-        raise rb.TokenError('This plan was already applied. Generate a new plan if you want to reset again.')
+        raise TokenError('This plan was already applied. Generate a new plan if you want to reset again.')
     if plan['expires_at'] < _now():
-        raise rb.TokenError('That token has expired. Generate a new plan.')
+        raise TokenError('That token has expired. Generate a new plan.')
     if plan['status'] == 'planned' and build_plan(root)['fingerprint'] != plan['fingerprint']:
-        raise rb.TokenError('The library changed since the report was made. Generate a new plan and read its report.')
+        raise TokenError('The library changed since the report was made. Generate a new plan and read its report.')
     return plan
 
 
@@ -220,14 +250,14 @@ def _gb(n: int) -> str:
 
 
 def render_plan_html(plan: dict) -> str:
-    e = rb._e
+    e = _e
     cre = ''.join(f'<tr><td>{e(k)}</td><td>{v["files"]}</td><td>{_gb(v["bytes"])}</td></tr>' for k, v in plan['per_creator'].items())
     kept = ''.join(f'<tr><td>{e(m["path"] or "(library root)")}</td><td>{m["files"]}</td><td>{_gb(m["bytes"])}</td></tr>'
                    for m in plan['manual']) or '<tr><td colspan="3" class="muted">None.</td></tr>'
     top = ''.join(f'<tr><td>{e(i["kind"])}</td><td>{e(i["path"])}</td><td>{i["files"]}</td></tr>' for i in plan['entries'][:400])
     more = f'<p class="muted">... and {len(plan["entries"]) - 400} more entries.</p>' if len(plan['entries']) > 400 else ''
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Library reset plan</title><style>{rb._CSS}</style></head><body><main>
+<title>Library reset plan</title><style>{_CSS}</style></head><body><main>
 <h1>Library reset plan</h1>
 <p class="muted">{e(plan['root'])} &middot; generated {e(plan['generated_at'])}. Nothing has been changed yet.</p>
 <div class="cards"><div class="card"><b>{plan['total_files']}</b>files to remove</div><div class="card"><b>{_gb(plan['total_bytes'])}</b>to be freed</div>
@@ -400,7 +430,7 @@ def main(argv=None) -> int:
             print('Cancelled. Nothing changed.')
             return 1
         result = apply(root, args.confirm)
-    except rb.TokenError as e:
+    except TokenError as e:
         print(f'Refused: {e}')
         return 2
     print(f'Done. Snapshot: {result["version"]}\nDatabase forgot: {result.get("forgot")}\n'

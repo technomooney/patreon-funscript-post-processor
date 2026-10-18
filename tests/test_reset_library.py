@@ -106,16 +106,16 @@ class ResetTests(unittest.TestCase):
         self.assertIsNone(library_db.tool_data_get(self.root, 'pize_pixeldrain_archives', 'legacy_manifest_extra:Pize'))
 
     def test_bad_stale_and_reused_tokens_are_refused(self):
-        with self.assertRaises(rs.rb.TokenError):
+        with self.assertRaises(rs.TokenError):
             rs.apply(self.root, 'nope', progress=lambda *_: None)
         _, token = self.plan_and_token()
         self.w('Other/[6] new post/c.mp4', 'c')                          # library changed after the report
-        with self.assertRaises(rs.rb.TokenError):
+        with self.assertRaises(rs.TokenError):
             rs.apply(self.root, token, progress=lambda *_: None)
         self.assertTrue(self.exists('Other/[5] post/b.mp4'))
         _, token2 = self.plan_and_token()
         rs.apply(self.root, token2, progress=lambda *_: None)
-        with self.assertRaises(rs.rb.TokenError):
+        with self.assertRaises(rs.TokenError):
             rs.apply(self.root, token2, progress=lambda *_: None)
 
     def test_interrupted_apply_resumes_with_the_same_token(self):

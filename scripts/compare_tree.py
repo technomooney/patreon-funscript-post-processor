@@ -23,7 +23,6 @@ import time
 import action_log
 import library_db
 import reset_library as rs
-import rebuild_library as rb
 
 ID_RE = re.compile(r'\[(\d{5,})\]')
 
@@ -138,14 +137,14 @@ def restore(root: str, result: dict, apply: bool, log=print) -> int:
 
 
 def render_html(root: str, version: str, result: dict) -> str:
-    e = rb._e
+    e = rs._e
 
     def table(title, rows, head):
         body = ''.join('<tr>' + ''.join(f'<td>{e(c)}</td>' for c in r) + '</tr>' for r in rows[:500])
         more = f'<p class="muted">... and {len(rows) - 500} more.</p>' if len(rows) > 500 else ''
         return f'<h2>{e(title)} ({len(rows)})</h2><table><tr>{"".join(f"<th>{h}</th>" for h in head)}</tr>{body or "<tr><td class=muted>None.</td></tr>"}</table>{more}'
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Library tree comparison</title><style>{rb._CSS}</style></head><body><main>
+<title>Library tree comparison</title><style>{rs._CSS}</style></head><body><main>
 <h1>Library tree comparison</h1><p class="muted">{e(root)} vs snapshot {e(version)}. Nothing was changed.</p>
 {table('Folders that can be renamed back (same post id)', [(r['from'], r['to']) for r in result['dir_renames']], ['Now', 'Was'])}
 {table('Files that can be renamed back (same size)', [(r['dir'], r['from'], r['to']) for r in result['file_renames']], ['In folder', 'Now', 'Was'])}
