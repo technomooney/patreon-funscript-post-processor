@@ -85,8 +85,9 @@ def run(base_path: str, options: dict | None = None) -> None:
 def setup_unattended(current: dict) -> dict:
     """Ask for the pixeldrain sources for 'sa' (Enter keeps what is there)."""
     have = [s['url'] if isinstance(s, dict) else s for s in current.get('sources', [])]
-    print(f'  current sources: {", ".join(have) or "(none -- the creator profile\'s saved sources are used)"}')
-    raw = input('  pixeldrain /l/ /u/ /d/ URLs, space-separated (Enter keeps current): ').strip()
+    print(f'  current sources: {"; ".join(have) or "(none -- the creator profile\'s saved sources are used)"}')
+    raw = input('  pixeldrain /l/ /u/ /d/ URLs, separated by ; (Enter keeps current): ').strip()
     if not raw:
         return current
-    return {**current, 'sources': [{'url': u, 'dest': ''} for u in raw.split() if pdu.kind(u) in pdu.SYNCABLE_KINDS]}
+    urls = [u.strip() for u in raw.split(';')]
+    return {**current, 'sources': [{'url': u, 'dest': ''} for u in urls if pdu.kind(u) in pdu.SYNCABLE_KINDS]}
