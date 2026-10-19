@@ -171,6 +171,29 @@ class SyncTests(unittest.TestCase):
         self.assertEqual([i['verdict'] for i in items], [prs.HAVE, prs.HAVE])
         self.assertEqual(self.downloaded, [])
 
+    def test_file_moved_from_one_source_to_another_is_not_refetched(self):
+        early, public = 'https://pixeldrain.com/d/EARLY', 'https://pixeldrain.com/l/PUBLIC'
+        self.src = [{'url': early, 'dest': ''}, {'url': public, 'dest': ''}]
+        lists = {early: [remote('fs:H1', 'a.mp4', 1000, sha='H1')], public: []}
+        pdu.list_entries = lambda url, **kw: list(lists[url])
+        self.sync()
+        self.assertEqual(self.downloaded, ['fs:H1'])
+        lists[early], lists[public] = [], [remote('P1', 'a.mp4', 1000, sha='H1')]       # released publicly, new id
+        self.downloaded.clear()
+        items, r = self.sync()
+        self.assertEqual((self.downloaded, [i['verdict'] for i in items]), ([], [prs.HAVE]))
+        self.assertEqual([f for f in os.listdir(self.base) if not f.startswith('.')], ['a.mp4'])
+
+    def test_file_listed_by_two_sources_at_once_is_fetched_once(self):
+        self.src = [{'url': 'https://pixeldrain.com/d/EARLY', 'dest': ''}, {'url': 'https://pixeldrain.com/l/PUBLIC', 'dest': ''}]
+        lists = {'https://pixeldrain.com/d/EARLY': [remote('fs:H1', 'a.mp4', 1000, sha='H1'), remote('fs:H2', 'b.mp4', 5, sha='H2')],
+                 'https://pixeldrain.com/l/PUBLIC': [remote('P1', 'a.mp4', 1000, sha='H1')]}
+        pdu.list_entries = lambda url, **kw: list(lists[url])
+        items, r = self.sync()
+        self.assertEqual((self.downloaded, r['downloaded']), (['fs:H1', 'fs:H2'], 2))
+        self.assertEqual(prs.summarize(items)[prs.DUPLICATE], 1)
+        self.assertEqual(sorted(f for f in os.listdir(self.base) if not f.startswith('.')), ['a.mp4', 'b.mp4'])
+
     def test_dry_plan_changes_nothing(self):
         self.remotes = [remote('A', 'a.mkv')]
         items = prs.plan(self.lib, self.base, self.src)

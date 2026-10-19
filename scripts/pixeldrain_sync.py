@@ -8,6 +8,11 @@ Discord channel). See creator_scripts/pixeldrain_repo_sync.py for the user-facin
   ambiguous same name with a different size or extension, or a compressor record whose size does not match:
             it might be YOUR edited or transcoded copy, so it is reported and never overwritten or re-fetched
   new       everything else -- only these are downloaded (to a scratch folder, sha256-verified, then moved in)
+  duplicate a new file that an earlier source in the same run already lists (a creator's early-access share and
+            public share overlap while a release is being moved between them): fetched once, from the first source
+
+A creator can have several sources (any mix of /l/, /u/ and /d/). A file moving between them is no event: files are
+recognised by id / content hash / original name+size, never by which source listed them.
 """
 import os
 import time
@@ -22,7 +27,7 @@ SCRIPT_ID = 'pixeldrain_repo_sync'      # also the undo-journal / folder_log nam
 SOURCES_KEY = 'pixeldrain_sources'      # in the creator profile: [{'url': ..., 'dest': 'subfolder'}]
 _VIDEO_EXTS = {'.mp4', '.mkv', '.webm', '.avi', '.mov', '.m4v', '.wmv', '.ts', '.flv', '.mpg', '.mpeg'}
 
-HAVE, AMBIGUOUS, NEW = 'have', 'ambiguous', 'new'
+HAVE, AMBIGUOUS, NEW, DUPLICATE = 'have', 'ambiguous', 'new', 'duplicate'
 
 
 def _stem(name: str) -> str:
@@ -78,6 +83,7 @@ def plan(root: str, base_path: str, sources: list[dict]) -> list[dict]:
     """Classify every file of every source. Items: {source, dest_rel, remote, verdict, reason, extra}.
     A source that cannot be read yields one item with verdict 'unreadable'."""
     items = []
+    claimed: set = set()        # content keys of NEW files already queued by an earlier source
     for src in sources:
         dest_folder = os.path.join(base_path, src.get('dest', ''))
         remotes = pdu.list_entries(src['url'], on_progress=lambda d, f: progress.live(
@@ -90,6 +96,11 @@ def plan(root: str, base_path: str, sources: list[dict]) -> list[dict]:
             progress.live(f'  checking what you already have... {n}/{len(remotes)}')
             folder = os.path.join(dest_folder, *[safe_name(p) for p in remote.get('subdir', '').split(os.sep) if p])
             verdict, reason, extra = classify(root, folder, remote)
+            if verdict == NEW:
+                key = remote.get('sha256') or (safe_name(remote['name']).casefold(), remote.get('size'))
+                if key in claimed:
+                    verdict, reason = DUPLICATE, 'also listed by an earlier source; fetched once from that one'
+                claimed.add(key)
             items.append({'source': src, 'dest_folder': folder, 'remote': remote,
                           'verdict': verdict, 'reason': reason, 'extra': extra})
         progress.clear()
@@ -97,7 +108,7 @@ def plan(root: str, base_path: str, sources: list[dict]) -> list[dict]:
 
 
 def summarize(items: list[dict]) -> dict:
-    out = {HAVE: 0, AMBIGUOUS: 0, NEW: 0, 'unreadable': 0}
+    out = {HAVE: 0, AMBIGUOUS: 0, NEW: 0, DUPLICATE: 0, 'unreadable': 0}
     for it in items:
         out[it['verdict']] += 1
     return out
@@ -200,6 +211,8 @@ def print_plan(items: list[dict], counts: dict) -> None:
         if it['verdict'] == 'unreadable':
             print(f'  ? {it["source"]["url"]}: {it["reason"]}')
         elif it['verdict'] != HAVE:
-            print(f'  {"+" if it["verdict"] == NEW else "!"} {it["remote"]["name"]}: {it["reason"]}')
+            mark = {NEW: '+', DUPLICATE: '='}.get(it['verdict'], '!')
+            print(f'  {mark} {it["remote"]["name"]}: {it["reason"]}')
     print(f'  new: {counts[NEW]}   already have: {counts[HAVE]}   ambiguous (left alone): {counts[AMBIGUOUS]}'
+          + (f'   duplicates across sources: {counts[DUPLICATE]}' if counts[DUPLICATE] else '')
           + (f'   unreadable sources: {counts["unreadable"]}' if counts['unreadable'] else ''))

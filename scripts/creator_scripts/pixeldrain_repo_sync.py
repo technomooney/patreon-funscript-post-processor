@@ -10,7 +10,10 @@ same name but a different size or extension -- are reported and never overwritte
 are sha256-verified, journaled for undo, and recorded in <library root>/.library-data/library.db as they finish.
 
 Sources (pixeldrain /l/ lists, /u/ files and /d/ folder shares, walked recursively into matching subfolders) are
-saved per creator in the creator profile.
+saved per creator in the creator profile; a creator may have any number of them, mixed. Typical case: one share
+for paid/early-access releases and one public share the early ones are moved into later. A file that moves from one
+source to the other is recognised by id / content hash / name+size and is not fetched again; a file both sources
+list at once is fetched a single time.
 """
 import os
 
@@ -46,11 +49,11 @@ def run(base_path: str, options: dict | None = None) -> None:
             print(f'  saved source: {s["url"]}  ->  {s.get("dest") or "(creator folder)"}')
         if not sources or input('  Add another pixeldrain list/file URL? (y/N): ').strip().lower() == 'y':
             while True:
-                url = input('  pixeldrain URL (blank to finish): ').strip()
+                url = input('  pixeldrain /l/, /u/ or /d/ URL (blank to finish): ').strip()
                 if not url:
                     break
                 if pdu.kind(url) not in pdu.SYNCABLE_KINDS:
-                    print('  only pixeldrain /l/ lists and /u/ files are supported here.')
+                    print('  not a pixeldrain /l/ list, /u/ file or /d/ folder share URL.')
                     continue
                 dest = input('  save into which subfolder of this creator folder? (blank = the folder itself): ').strip()
                 sources.append({'url': url, 'dest': dest})
@@ -83,7 +86,7 @@ def setup_unattended(current: dict) -> dict:
     """Ask for the pixeldrain sources for 'sa' (Enter keeps what is there)."""
     have = [s['url'] if isinstance(s, dict) else s for s in current.get('sources', [])]
     print(f'  current sources: {", ".join(have) or "(none -- the creator profile\'s saved sources are used)"}')
-    raw = input('  pixeldrain list/file URLs, space-separated (Enter keeps current): ').strip()
+    raw = input('  pixeldrain /l/ /u/ /d/ URLs, space-separated (Enter keeps current): ').strip()
     if not raw:
         return current
     return {**current, 'sources': [{'url': u, 'dest': ''} for u in raw.split() if pdu.kind(u) in pdu.SYNCABLE_KINDS]}
