@@ -2214,6 +2214,18 @@ def _rule34video_browser_login(driver) -> bool:
         return False
 
 
+def _rule34video_link_resolution(link) -> int:
+    """Height of a rule34video quality link, from its file name (…/123_720p.mp4, …/123_360.mp4).
+
+    Not from the whole href: every link's download_filename query repeats the video title, which
+    usually contains '1080p', and the access token is random text that can contain any digits."""
+    path = urlparse(link.get_attribute('href') or '').path
+    m = re.search(r'_(\d{3,4})p?\.mp4', path)
+    if m:
+        return int(m.group(1))
+    return _parse_resolution(link.text or '')
+
+
 def download_rule34video(driver, url: str, download_dir: str) -> bool:
     """Navigate to a rule34video.com video page and download the highest quality.
 
@@ -2230,16 +2242,21 @@ def download_rule34video(driver, url: str, download_dir: str) -> bool:
         # rule34video.com hides quality links behind a download button.
         # Use JS to click it so the DOM reveals the links without the browser
         # treating it as a real click and starting its own download.
-        download_btns = driver.find_elements(By.XPATH, (
-            '//a[contains(@class,"download")] | '
-            '//button[contains(@class,"download") or '
-            'contains(translate(normalize-space(.),"DOWNLOAD","download"),"download")]'
-        ))
-        if download_btns:
-            driver.execute_script('arguments[0].click()', download_btns[0])
-            time.sleep(1)
-
-        mp4_links = driver.find_elements(By.XPATH, '//a[contains(@href,".mp4")]')
+        # The quality links (a.tag_item_download) are already in the DOM inside a hidden
+        # "Download" sheet, so only open it when they aren't there -- and never click one
+        # of the links themselves, which would start a browser download.
+        mp4_xpath = '//a[contains(@href,".mp4")]'
+        mp4_links = driver.find_elements(By.XPATH, mp4_xpath)
+        if not mp4_links:
+            download_btns = driver.find_elements(By.XPATH, (
+                '//button[@data-sheet="download"] | '
+                '//button[contains(@class,"download") or '
+                'contains(translate(normalize-space(.),"DOWNLOAD","download"),"download")]'
+            ))
+            if download_btns:
+                driver.execute_script('arguments[0].click()', download_btns[0])
+                time.sleep(1)
+                mp4_links = driver.find_elements(By.XPATH, mp4_xpath)
         if not mp4_links:
             if driver.find_elements(By.ID, 'login'):
                 print('  [rule34video.com] no mp4 links found — this video may be hidden behind a '
@@ -2249,10 +2266,7 @@ def download_rule34video(driver, url: str, download_dir: str) -> bool:
                 print('  [rule34video.com] no mp4 links found')
             return False
 
-        best, resolution = _pick_best(
-            mp4_links,
-            lambda el: _parse_resolution((el.text or '') + (el.get_attribute('href') or '')),
-        )
+        best, resolution = _pick_best(mp4_links, _rule34video_link_resolution)
         video_url = best.get_attribute('href')
         if not video_url:
             print('  [rule34video.com] best link has no href')
