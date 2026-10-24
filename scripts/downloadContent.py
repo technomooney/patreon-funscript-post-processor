@@ -33,6 +33,7 @@ import collection_redownload_queue
 import folder_log
 import browser_defaults
 import funscript_utils
+import fetch_diagnostics
 import link_decoder
 
 load_dotenv(os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '.env')))
@@ -1483,6 +1484,8 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
         with urllib.request.urlopen(req, timeout=15) as resp:
             content_length = int(resp.headers.get('Content-Length', 0))
             head_name = _name_from_response(resp, url)
+    except urllib.error.HTTPError as e:
+        fetch_diagnostics.log_fetch_failure(url, headers, e, 'HEAD')
     except (urllib.error.URLError, OSError, ValueError):
         pass  # HEAD not supported by all servers — continue to other checks
 
@@ -1681,7 +1684,12 @@ def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: 
 
     writing_path = os.path.join(download_dir, f'{temp_prefix}.part')
     req = urllib.request.Request(video_url, headers=headers)
-    with urllib.request.urlopen(req) as response:
+    try:
+        response_cm = urllib.request.urlopen(req)
+    except urllib.error.HTTPError as e:
+        fetch_diagnostics.log_fetch_failure(video_url, headers, e)
+        raise
+    with response_cm as response:
         ext = _ext_from_response(response, video_url)
         _last_fetch_original_name = override_name or _name_from_response(response, video_url)
         size_mb = int(response.headers.get('Content-Length', 0)) / 1024 / 1024
@@ -2223,7 +2231,8 @@ def download_rule34video(driver, url: str, download_dir: str) -> bool:
             return False
 
         print(f'  [rule34video.com] fetching {resolution}p...')
-        return _direct_fetch(video_url, download_dir, '_r34v_temp', {'Referer': 'https://rule34video.com/'})
+        return _direct_fetch(video_url, download_dir, '_r34v_temp',
+                             {'Referer': 'https://rule34video.com/'})
 
     except Exception as e:
         print(f'  [rule34video.com] handler error: {e}')
