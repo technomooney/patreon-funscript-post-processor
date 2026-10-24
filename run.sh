@@ -303,5 +303,10 @@ while true; do
     done
 
     echo ""
+    # A cancelled script (or the browser/terminal helpers it spawned) can leave the tty
+    # with echo/line-editing off, so Enter never registers. Reset it and drop any
+    # keystrokes typed while the script was dying before waiting for a fresh Enter.
+    stty sane 2>/dev/null
+    while read -r -t 0.1 -n 10000 _discard; do :; done 2>/dev/null
     read -rp "Press Enter to return to menu..."
 done
