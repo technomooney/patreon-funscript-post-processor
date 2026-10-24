@@ -81,3 +81,12 @@ class CodeSearchTests(unittest.TestCase):
         self.assertFalse(m('Thing FC-2026-86,5', 'FC-2026-86'))
         self.assertTrue(m('Thing FC-2026-86,5', 'FC-2026-86,5'))
         self.assertFalse(m('Thing FC-2026-8', 'FC-2026-86'))
+
+
+class GenericHostFallbackTests(unittest.TestCase):
+    def test_ytdlp_hosts_only_when_no_known_host(self):
+        html = '<a href="https://www.pornhub.com/view_video.php?viewkey=1">v</a><a href="https://twitter.com/x">t</a>'
+        self.assertEqual(dc._eroscripts_video_links(html), ['https://www.pornhub.com/view_video.php?viewkey=1'])
+        both = html + '<a href="https://mega.nz/file/a#b">m</a>'
+        self.assertEqual(dc._eroscripts_video_links(both), ['https://mega.nz/file/a#b'])
+        self.assertEqual(dc._eroscripts_external_domains(html), ['www.pornhub.com', 'twitter.com'])

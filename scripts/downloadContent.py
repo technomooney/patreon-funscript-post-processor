@@ -4653,9 +4653,26 @@ def _eroscripts_title_has_code(title: str, code: str) -> bool:
     return re.search(rf'(?<![\w-]){re.escape(code)}(?![\w-]|[.,]\d)', title or '', re.IGNORECASE) is not None
 
 
+# Common video sites without a dedicated handler that yt-dlp can usually fetch. Only used when a thread links no
+# host we handle directly, so a stray social/store link never gets picked over a real file host.
+_EROSCRIPTS_YTDLP_HOSTS = ('pornhub.com', 'xvideos.com', 'xhamster.com', 'xnxx.com', 'youtube.com', 'youtu.be',
+                           'vimeo.com', 'streamable.com', 'redgifs.com', 'bilibili.com', 'nicovideo.jp')
+
+
+def _eroscripts_external_domains(cooked_html: str) -> list[str]:
+    """Distinct non-eroscripts link domains in a post, for the 'nothing usable' message."""
+    seen: list[str] = []
+    for href in re.findall(r'href="(https?://[^"]+)"', cooked_html or ''):
+        d = get_domain(href)
+        if 'eroscripts.com' not in d and d not in seen:
+            seen.append(d)
+    return seen
+
+
 def _eroscripts_video_links(cooked_html: str) -> list[str]:
     """Links in a post's HTML that one of our handlers can download: external hosts we know
-    (priority hosts such as mega/pixeldrain first), no eroscripts-internal links or attachments, no images."""
+    (priority hosts such as mega/pixeldrain first), no eroscripts-internal links or attachments, no images.
+    With none of those, links to _EROSCRIPTS_YTDLP_HOSTS (generic yt-dlp extraction) instead."""
     from html.parser import HTMLParser
 
     class _Links(HTMLParser):
@@ -4672,19 +4689,22 @@ def _eroscripts_video_links(cooked_html: str) -> list[str]:
     parser = _Links()
     parser.feed(cooked_html or '')
     found: list[str] = []
+    generic: list[str] = []
     for href in parser.hrefs:
         domain = get_domain(href)
-        if 'eroscripts.com' in domain or href in found:
+        if 'eroscripts.com' in domain or href in found or href in generic:
             continue
         if urlparse(href).path.lower().endswith(_EROSCRIPTS_NOT_VIDEO_EXTS):
             continue
         try:
             check_domain(href)
         except UnknownDomainError:
+            if any(domain == h or domain.endswith('.' + h) for h in _EROSCRIPTS_YTDLP_HOSTS):
+                generic.append(href)
             continue
         found.append(href)
     found.sort(key=lambda h: 0 if _is_priority_download_domain(h) else 1)
-    return found
+    return found or generic
 
 
 def _totp_code(secret: str, at: float | None = None, digits: int = 6, period: int = 30) -> str:
@@ -4871,7 +4891,9 @@ def download_eroscripts(driver, url: str, download_dir: str) -> bool:
         links = _eroscripts_video_links(cooked)
         print(f'  [eroscripts] "{_safe(title)}" — {len(links)} downloadable link(s)')
         if not links:
-            print('  [eroscripts] no links to a supported video host in the first post')
+            seen = _eroscripts_external_domains(cooked)
+            print('  [eroscripts] no links to a supported video host in the first post'
+                  + (f' (external links seen: {", ".join(seen)})' if seen else ' (no external links at all)'))
             return False
 
         # A single link means the title unambiguously names that video; with several (parts, mirrors) a shared
