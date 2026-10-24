@@ -3874,10 +3874,11 @@ def download_yandex_disk(_driver, url: str, download_dir: str) -> bool:
                              {'Referer': 'https://disk.yandex.com/'})
 
     except urllib.error.HTTPError as e:
-        body = e.read().decode('utf-8', errors='replace')
-        print(f'  [disk.yandex] HTTP {e.code}: {body}')
+        fetch_diagnostics.log_fetch_failure(api_url, {'User-Agent': 'Mozilla/5.0 ...'}, e, 'API')
+        hint = ' (Yandex-side server error -- likely an outage, retry later)' if e.code >= 500 else ''
+        print(f'  [disk.yandex] HTTP {e.code}{hint}')
     except Exception as e:
-        print(f'  [disk.yandex] handler error: {e}')
+        print(f'  [disk.yandex] handler error: {type(e).__name__}: {e}')
 
     return False
 
@@ -5869,6 +5870,7 @@ def _triage_failure(entry: dict, folder: str,
       - score >= _MATCH_UNCERTAIN : possible match — add to *uncertain*
       - otherwise                 : genuine failure — add to *failures*
     """
+    fetch_diagnostics.log_link_failure(entry)
     matched_file, score = _best_video_match(folder)
     if score >= _MATCH_CONFIDENT:
         print(f'  [skip-fail] existing video "{_safe(matched_file)}" '
@@ -6439,6 +6441,11 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                 hint = res.get('filename', 'unknown')
                 print(f'  [mega.nz] background download failed: {_safe(res["basename"])} (file: {_safe(hint)})')
                 link_statuses.setdefault(res['download_dir'], {})[res['link']] = 'failed'
+                fetch_diagnostics.log_link_failure(
+                    {'link': res['link'], 'funscript_name': res['basename'],
+                     'save_directory': res['download_dir'], 'domain': 'mega.nz'},
+                    [f'background mega-get failed, exit code {res.get("exit_code")}, file hint: {hint}',
+                     f'(full mega worker output: {mega_worker._log_path})'], outcome='failed (background)')
                 failures.append({'link': res['link'], 'funscript_name': res['basename'],
                                  'filename': hint,
                                  'save_directory': res['download_dir'], 'domain': 'mega.nz'})
@@ -6447,6 +6454,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                                         'filename': hint, 'save_directory': res['download_dir']})
 
     prev_sigint = _install_graceful_sigint()
+    stop_capture = fetch_diagnostics.start_capture()
     try:
         for task_idx, task in enumerate(tasks, start=1):
             if _stop_after_current.is_set():
@@ -6471,6 +6479,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                 if _stop_after_current.is_set():
                     break
                 _last_fetch_original_name = None   # reset before each attempt
+                fetch_diagnostics.reset_capture()
                 _last_download_skipped = False
 
                 if tracker.is_done(folder, link):
@@ -6730,6 +6739,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
             _cleanup_temp_files(current_folder, base_path, protected=_protected())
 
     finally:
+        stop_capture()
         if prev_sigint is not None:
             signal.signal(signal.SIGINT, prev_sigint)
         action_log.finish()

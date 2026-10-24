@@ -67,3 +67,81 @@ def log_fetch_failure(url: str, headers: dict[str, str], exc: BaseException, lab
         return path
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Per-link failure log: what a handler said while it failed.
+#
+# Handlers report problems by printing "[site] ..." lines and returning False, so the reason is gone once
+# the screen scrolls. While a download run is active, stdout is teed into a small rolling buffer that the
+# dispatch loop resets for each link; when a link ends up as a failure, the buffer is appended to
+# <app home>/download_debug/link_failures.log together with the link, domain and folder.
+# ---------------------------------------------------------------------------
+
+_MAX_CAPTURED_LINES = 60
+_captured: list[str] = []
+_partial = ''
+
+
+class _OutputTee:
+    def __init__(self, wrapped):
+        self._wrapped = wrapped
+
+    def write(self, text):
+        global _partial
+        try:
+            # Progress bars rewrite one line with \r; keep only the final state of each line.
+            _partial += text
+            *done, _partial = _partial.split('\n')
+            for line in done:
+                line = line.rsplit('\r', 1)[-1].rstrip()
+                if line:
+                    _captured.append(line)
+            del _captured[:-_MAX_CAPTURED_LINES]
+        except Exception:
+            pass
+        return self._wrapped.write(text)
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
+
+
+def start_capture():
+    """Tee stdout into the rolling buffer. Returns a function that undoes it."""
+    original = sys.stdout
+    sys.stdout = _OutputTee(original)
+
+    def stop():
+        if isinstance(sys.stdout, _OutputTee):
+            sys.stdout = original
+    return stop
+
+
+def reset_capture() -> None:
+    global _partial
+    _captured.clear()
+    _partial = ''
+
+
+def link_log_path() -> str:
+    return os.path.join(os.path.dirname(log_path()), 'link_failures.log')
+
+
+def log_link_failure(entry: dict, lines: list[str] | None = None, outcome: str = 'failed') -> str | None:
+    """Append one failed link (entry has link/domain/save_directory/funscript_name) with the handler output
+    seen since reset_capture() -- or *lines* if given. Never raises."""
+    try:
+        text = [
+            f'--- {time.strftime("%Y-%m-%d %H:%M:%S")} {outcome}: [{entry.get("domain", "?")}]',
+            f'link: {entry.get("link")}',
+            f'post: {entry.get("funscript_name")}',
+            f'folder: {entry.get("save_directory")}',
+            'handler output:',
+        ]
+        seen = list(_captured) if lines is None else lines
+        text += [f'  {l}' for l in seen] or ['  (nothing printed)']
+        with open(link_log_path(), 'a', encoding='utf-8') as f:
+            f.write('\n'.join(text) + '\n\n')
+        return link_log_path()
+    except Exception:
+        return None
