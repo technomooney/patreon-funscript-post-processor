@@ -2106,6 +2106,33 @@ def download_rule34xxx(driver, url: str, download_dir: str) -> bool:
     return False
 
 
+def _browser_session_headers(driver, url: str, referer: str) -> dict[str, str]:
+    """Headers that make a urllib request look like the logged-in browser that found *url*.
+
+    Same User-Agent as the driver (minus the "Headless" tell) and the driver's cookies that a browser would send
+    to this URL's host, so links gated by the browser's login session work in _direct_fetch too.
+    """
+    headers = {'Referer': referer}
+    try:
+        ua = driver.execute_script('return navigator.userAgent') or ''
+        if ua:
+            headers['User-Agent'] = ua.replace('HeadlessChrome', 'Chrome')
+    except WebDriverException:
+        pass
+    try:
+        host = (urlparse(url).hostname or '').lower()
+        pairs = []
+        for c in driver.get_cookies():
+            dom = (c.get('domain') or '').lstrip('.').lower()
+            if dom and (host == dom or host.endswith('.' + dom)):
+                pairs.append(f"{c['name']}={c['value']}")
+        if pairs:
+            headers['Cookie'] = '; '.join(pairs)
+    except WebDriverException:
+        pass
+    return headers
+
+
 _rule34video_browser_logged_in: bool = False
 
 
@@ -2232,7 +2259,7 @@ def download_rule34video(driver, url: str, download_dir: str) -> bool:
 
         print(f'  [rule34video.com] fetching {resolution}p...')
         return _direct_fetch(video_url, download_dir, '_r34v_temp',
-                             {'Referer': 'https://rule34video.com/'})
+                             _browser_session_headers(driver, video_url, 'https://rule34video.com/'))
 
     except Exception as e:
         print(f'  [rule34video.com] handler error: {e}')
