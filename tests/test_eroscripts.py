@@ -89,4 +89,4 @@ class GenericHostFallbackTests(unittest.TestCase):
         self.assertEqual(dc._eroscripts_video_links(html), ['https://www.pornhub.com/view_video.php?viewkey=1'])
         both = html + '<a href="https://mega.nz/file/a#b">m</a>'
         self.assertEqual(dc._eroscripts_video_links(both), ['https://mega.nz/file/a#b'])
-        self.assertEqual(dc._eroscripts_external_domains(html), ['www.pornhub.com', 'twitter.com'])
+        self.assertEqual(dc._eroscripts_external_domains(html), ['pornhub.com', 'twitter.com'])
