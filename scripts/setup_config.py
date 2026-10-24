@@ -751,6 +751,17 @@ def _configure_credentials() -> None:
         print('  Skipping the-joi-database.com.')
 
     print()
+    print('discuss.eroscripts.com  (needed to read threads; nearly all content is hidden from anonymous visitors; leave blank to skip)')
+    ero_user = _ask('Username or email', current=_keyring_get('EROSCRIPTS_USERNAME'))
+    if ero_user:
+        _keyring_set('EROSCRIPTS_USERNAME', ero_user)
+        ero_pass = _ask_secret('Password', current=_keyring_get('EROSCRIPTS_PASSWORD'))
+        if ero_pass:
+            _keyring_set('EROSCRIPTS_PASSWORD', ero_pass)
+    else:
+        print('  Skipping discuss.eroscripts.com.')
+
+    print()
     print('joi.moe  (preferred over the-joi-database.com when both mirror a post; leave blank to skip)')
     joimoe_email = _ask('Email', current=_keyring_get('JOIMOE_EMAIL'))
     if joimoe_email:

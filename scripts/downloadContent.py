@@ -206,6 +206,7 @@ KNOWN_DOMAINS = [
     'e621.net',
     'the-joi-database.com',
     'joi.moe',
+    'discuss.eroscripts.com',
 ]
 
 # mega.nz link handling (password-protected links, task ordering) needs to
@@ -241,7 +242,6 @@ SKIP_DOMAINS = {
     'patreon.com',
     'subscribestar.adult',
     'fanbox.cc',
-    'discuss.eroscripts.com',
     'carrd.co',
     'discord.gg',    # invite/server links — not downloadable (CDN links are fine)
     'discordapp.net',  # not an official Discord domain
@@ -1654,6 +1654,11 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
     return None
 
 
+# Real content name for the next _direct_fetch that has no better name of its own; set (and cleared)
+# by handlers that learn the name from somewhere other than the file host, e.g. an eroscripts thread title.
+_pending_name_hint: str | None = None
+
+
 def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: dict[str, str],
                    override_name: str | None = None) -> bool:
     """Download *video_url* straight to *download_dir* using urllib, no browser needed.
@@ -1673,6 +1678,7 @@ def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: 
     global _last_fetch_original_name, _last_download_skipped, _precheck_replace_target
     _last_download_skipped = False
     _precheck_replace_target = None
+    override_name = override_name or _pending_name_hint
 
     # Pre-download duplicate check: HEAD + ffprobe remote duration.
     # Zero bandwidth cost — we only proceed with the full download if nothing
@@ -4578,6 +4584,193 @@ def download_e621(driver, url: str, download_dir: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# discuss.eroscripts.com (Discourse) thread handler.
+#
+# Creators often keep the funscripts on Patreon and use an eroscripts thread to say where the video
+# is and what the content is really called. Almost everything there (anything NSFW) needs a login, so
+# this signs in through the automation browser, reads the thread through Discourse's own JSON view
+# (/t/<id>.json -- loaded by the browser, so it carries the login and passes bot checks), picks the
+# video links out of the first post, and hands one to the existing per-site handler. When the thread
+# yields exactly one video link, its title becomes the saved name so the video matches the funscripts.
+# ---------------------------------------------------------------------------
+
+_EROSCRIPTS_HOST = 'discuss.eroscripts.com'
+_EROSCRIPTS_BASE = f'https://{_EROSCRIPTS_HOST}'
+_eroscripts_browser_logged_in: bool = False
+_EROSCRIPTS_THREAD_RE = re.compile(r'/t/(?:[^/]+/)?(\d+)(?:/|$)')
+_EROSCRIPTS_NOT_VIDEO_EXTS = ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.funscript', '.zip', '.rar', '.7z')
+
+
+def _eroscripts_thread_id(url: str) -> int | None:
+    """Topic id of a discuss.eroscripts.com /t/... URL, or None for any other page (profile, category, ...)."""
+    parsed = urlparse(url)
+    if parsed.netloc.removeprefix('www.') != _EROSCRIPTS_HOST:
+        return None
+    m = _EROSCRIPTS_THREAD_RE.search(parsed.path)
+    return int(m.group(1)) if m else None
+
+
+def _eroscripts_video_links(cooked_html: str) -> list[str]:
+    """Links in a post's HTML that one of our handlers can download: external hosts we know
+    (priority hosts such as mega/pixeldrain first), no eroscripts-internal links or attachments, no images."""
+    from html.parser import HTMLParser
+
+    class _Links(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.hrefs: list[str] = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag == 'a':
+                href = dict(attrs).get('href') or ''
+                if href.startswith(('http://', 'https://')):
+                    self.hrefs.append(href)
+
+    parser = _Links()
+    parser.feed(cooked_html or '')
+    found: list[str] = []
+    for href in parser.hrefs:
+        domain = get_domain(href)
+        if 'eroscripts.com' in domain or href in found:
+            continue
+        if urlparse(href).path.lower().endswith(_EROSCRIPTS_NOT_VIDEO_EXTS):
+            continue
+        try:
+            check_domain(href)
+        except UnknownDomainError:
+            continue
+        found.append(href)
+    found.sort(key=lambda h: 0 if _is_priority_download_domain(h) else 1)
+    return found
+
+
+def _eroscripts_browser_login(driver) -> bool:
+    """Log into discuss.eroscripts.com through Discourse's login form. Returns True if signed in.
+
+    Required, not best-effort: nearly all content there is hidden from anonymous visitors.
+    """
+    global _eroscripts_browser_logged_in
+    if _eroscripts_browser_logged_in:
+        return True
+
+    driver.get(_EROSCRIPTS_BASE + '/')
+    time.sleep(2)
+    # The automation profile may already hold a session; Discourse puts #current-user in the header when signed in.
+    if driver.find_elements(By.ID, 'current-user'):
+        _eroscripts_browser_logged_in = True
+        return True
+
+    username = _get_secret('EROSCRIPTS_USERNAME').strip()
+    password = _get_secret('EROSCRIPTS_PASSWORD').strip()
+    if not username or not password:
+        print('  [eroscripts] no credentials — set EROSCRIPTS_USERNAME and EROSCRIPTS_PASSWORD via '
+              '`scripts/setup_config.py --credentials`')
+        return False
+
+    try:
+        wait = WebDriverWait(driver, 15)
+        driver.get(_EROSCRIPTS_BASE + '/login')
+        user_field = wait.until(EC.visibility_of_element_located((By.ID, 'login-account-name')))
+        user_field.click()
+        time.sleep(0.3)
+        user_field.clear()
+        for char in username:
+            user_field.send_keys(char)
+            time.sleep(0.05)
+
+        pw_field = driver.find_element(By.ID, 'login-account-password')
+        pw_field.click()
+        time.sleep(0.3)
+        for char in password:
+            pw_field.send_keys(char)
+            time.sleep(0.05)
+
+        time.sleep(0.3)
+        driver.execute_script('arguments[0].click()', driver.find_element(By.ID, 'login-button'))
+
+        try:
+            WebDriverWait(driver, 20).until(lambda d: d.find_elements(By.ID, 'current-user'))
+        except TimeoutException:
+            pass
+        if not driver.find_elements(By.ID, 'current-user'):
+            err = ''
+            try:
+                err = driver.find_element(By.ID, 'modal-alert').text.strip()
+            except WebDriverException:
+                pass
+            print(f'  [eroscripts] login failed{f" ({err})" if err else ""} — check '
+                  'EROSCRIPTS_USERNAME/EROSCRIPTS_PASSWORD (and complete any captcha/2FA in a windowed run)')
+            return False
+
+        print('  [eroscripts] browser login successful')
+        _eroscripts_browser_logged_in = True
+        return True
+    except Exception as e:
+        print(f'  [eroscripts] browser login failed: {e}')
+        return False
+
+
+def _eroscripts_read_thread(driver, topic_id: int) -> tuple[str, str] | None:
+    """(title, first post HTML) of a thread, read from its JSON view in the logged-in browser; None if unreadable."""
+    driver.get(f'{_EROSCRIPTS_BASE}/t/{topic_id}.json')
+    time.sleep(1)
+    try:
+        data = json.loads(driver.execute_script('return document.body.innerText'))
+        title = data.get('fancy_title') or data.get('title') or ''
+        cooked = data['post_stream']['posts'][0]['cooked']
+        return title, cooked
+    except (ValueError, KeyError, IndexError, TypeError, WebDriverException):
+        return None
+
+
+def download_eroscripts(driver, url: str, download_dir: str) -> bool:
+    """Read an eroscripts thread and download the video its first post links to."""
+    global _pending_name_hint
+    topic_id = _eroscripts_thread_id(url)
+    if topic_id is None:
+        print('  [eroscripts] not a thread link — nothing to download')
+        return False
+
+    if not _eroscripts_browser_login(driver):
+        return False
+
+    try:
+        thread = _eroscripts_read_thread(driver, topic_id)
+        if thread is None:
+            print(f'  [eroscripts] could not read thread {topic_id} as JSON — '
+                  'login may have lapsed, or the thread is hidden from this account')
+            return False
+        title, cooked = thread
+        links = _eroscripts_video_links(cooked)
+        print(f'  [eroscripts] "{_safe(title)}" — {len(links)} downloadable link(s)')
+        if not links:
+            print('  [eroscripts] no links to a supported video host in the first post')
+            return False
+
+        # A single link means the title unambiguously names that video; with several (parts, mirrors) a shared
+        # title would make them collide, so leave each under whatever name its host gives it.
+        hint = _page_title_override(title) if len(links) == 1 else None
+        for link in links:
+            try:
+                handler = DOMAIN_HANDLERS[check_domain(link)]
+            except UnknownDomainError:
+                handler = download_ytdlp
+            print(f'  [eroscripts] trying {link}')
+            _pending_name_hint = hint
+            try:
+                if handler(driver, link, download_dir):
+                    return True
+            finally:
+                _pending_name_hint = None
+        return False
+    except CloudflareBlockedError:
+        raise
+    except Exception as e:
+        print(f'  [eroscripts] handler error: {type(e).__name__}: {e}')
+    return False
+
+
 def download_faptap(driver, url: str, download_dir: str) -> bool:
     """Follow the original-source link on a faptap.net video page and dispatch
     to the handler for that source domain.
@@ -4754,6 +4947,7 @@ DOMAIN_HANDLERS = {
     'e621.net':          download_e621,
     'the-joi-database.com': download_the_joi_database,
     'joi.moe':           download_joi_moe,
+    'discuss.eroscripts.com': download_eroscripts,
 }
 
 
@@ -5581,6 +5775,8 @@ def collect_tasks(base_path: str, require_funscript: bool = True,
             domain = get_domain(link)
             if any(domain == s or domain.endswith('.' + s) for s in SKIP_DOMAINS):
                 continue  # reference/social link — nothing to download
+            if domain == _EROSCRIPTS_HOST and _eroscripts_thread_id(link) is None:
+                continue  # profile / category / home link -- only /t/ threads carry content
             try:
                 check_domain(link)
             except UnknownDomainError:
