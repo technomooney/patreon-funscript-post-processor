@@ -4884,6 +4884,13 @@ def download_eroscripts(driver, url: str, download_dir: str) -> bool:
                 return False
         thread = _eroscripts_read_thread(driver, topic_id)
         if thread is None:
+            # A restarted browser has none of our cookies although the cached flag still says logged in:
+            # sign in again once and retry before giving up on the thread.
+            global _eroscripts_browser_logged_in
+            _eroscripts_browser_logged_in = False
+            if _eroscripts_browser_login(driver):
+                thread = _eroscripts_read_thread(driver, topic_id)
+        if thread is None:
             print(f'  [eroscripts] could not read thread {topic_id} as JSON — '
                   'login may have lapsed, or the thread is hidden from this account')
             return False
