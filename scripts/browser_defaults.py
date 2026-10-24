@@ -1,8 +1,10 @@
-"""Launch options shared by every automated browser (the main downloader, the Discord reader, creator plugins).
+"""Launch options for the app's browser (see browser_session.py: one browser shared by the downloader, the Discord
+reader and creator plugins, all started through downloadContent.setup_driver).
 
-Software rendering is the default: with the GPU on, pages (Discord's, confirmed live 2026-10-18) can render once and
-then go blank in this Brave/Linux setup. Set BROWSER_DISABLE_GPU=false in .env to turn the GPU back on for all of
-them. DISCORD_DISABLE_GPU, if set, overrides that for the Discord browser only (kept from the first fix).
+Software rendering is the default for all of it: with the GPU on, pages (Discord's, confirmed live 2026-10-18) can
+render once and then go blank in this Brave/Linux setup. Set BROWSER_DISABLE_GPU=false in .env to turn the GPU
+back on. The *specific_env* argument (formerly DISCORD_DISABLE_GPU for the separate Discord browser) is no longer
+passed by anything, since Discord now runs in the shared browser.
 """
 import os
 
