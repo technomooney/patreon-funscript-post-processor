@@ -13,12 +13,11 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import browser_defaults
+import browser_session
 import creator_profiles
 import downloadContent as dc
 import legacy_app_data
 
-import undetected_chromedriver as uc
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -30,44 +29,20 @@ def _profile_dir() -> str:
     return legacy_app_data.profile_dir('discord', '.discord_browser_profile')
 
 
-_driver = None  # module-level singleton so repeated lookups in one run share one login session
-
-
 def _discord_driver():
-    """Return a persistent-profile browser dedicated to Discord.
+    """The app's one browser (browser_session), with its own Discord tab in front.
 
-    Always windowed, regardless of BROWSER_HEADLESS — the first login (and
-    any occasional re-verification Discord asks for) needs a real window to
-    interact with.
+    Discord shares the saved profile with the downloader and JOIGang -- a profile can only be open in one browser
+    at a time -- so it borrows the browser the downloader already has open instead of launching another. Callers
+    that read Discord inside a download run give the downloader's tab back with release() when done; close()
+    drops the Discord tab. The first Discord login is still manual: it needs the (default) windowed browser.
     """
-    global _driver
-    if _driver is not None:
-        return _driver
+    return browser_session.use_tab('discord')
 
-    profile_dir = _profile_dir()
-    browser = dc._find_browser()
-    if browser is None:
-        raise RuntimeError(
-            'Brave Browser not found. Install it from https://brave.com — or install Chromium as a fallback.'
-        )
-    version = dc._get_browser_major_version(browser)
-    launch_browser = dc._stripped_test_type_browser(browser)
-    cached_driver = dc._cached_chromedriver(version) if version else None
 
-    options = uc.ChromeOptions()
-    options.set_capability('goog:loggingPrefs', {'browser': 'ALL'})      # lets capture_debug read console errors
-    browser_defaults.apply(options, 'DISCORD_DISABLE_GPU')      # software rendering: see browser_defaults.py
-    kwargs = dict(
-        options=options,
-        browser_executable_path=launch_browser,
-        version_main=version,
-        user_data_dir=profile_dir,
-    )
-    if cached_driver:
-        kwargs['driver_executable_path'] = cached_driver
-
-    _driver = uc.Chrome(**kwargs)
-    return _driver
+def release() -> None:
+    """Hand the browser's front tab back to the downloader. Safe if Discord was never opened."""
+    browser_session.back_to_main()
 
 
 # Multiple fallback selectors for the logged-in app shell — Discord's DOM
@@ -428,14 +403,8 @@ def scroll_up(driver) -> None:
 
 
 def close() -> None:
-    """Quit the shared Discord driver, if one was launched."""
-    global _driver
-    if _driver is not None:
-        try:
-            _driver.quit()
-        except Exception:
-            pass
-        _driver = None
+    """Close the Discord tab (the browser itself is the app's, and is quit by whoever started it)."""
+    browser_session.close_tab('discord')
 
 
 def _main() -> None:

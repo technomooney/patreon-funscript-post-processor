@@ -33,6 +33,7 @@ import creator_config
 import collection_redownload_queue
 import folder_log
 import browser_defaults
+import browser_session
 import funscript_utils
 import fetch_diagnostics
 import link_decoder
@@ -692,7 +693,14 @@ def setup_driver(initial_download_dir: str):
     versions match. A plain relaunch usually succeeds, so this retries a few
     times before giving up.
     """
+    # One browser per process (see browser_session.py): if something already started it -- the Discord reader,
+    # a plugin -- use it instead of launching a second one on the same profile.
+    existing = browser_session.current()
+    if existing is not None:
+        return existing
+
     headless = os.getenv('BROWSER_HEADLESS', 'false').strip().lower() == 'true'
+    use_profile = browser_session.persistent_profile_enabled()
 
     def _build_options() -> uc.ChromeOptions:
         # ChromeOptions can't be reused across uc.Chrome() calls (it raises if
@@ -750,9 +758,17 @@ def setup_driver(initial_download_dir: str):
         socket.setdefaulttimeout(60)
         try:
             kwargs = dict(options=_build_options(), browser_executable_path=launch_browser, version_main=version)
+            # The last attempt goes without the saved profile: a profile another browser process still holds
+            # (or a corrupted one) must not stop the run, it only costs the saved logins for this launch.
+            if use_profile and attempt < max_attempts:
+                kwargs['user_data_dir'] = browser_session.profile_dir()
+            elif use_profile:
+                print('  [browser] last attempt: starting with a temporary profile (saved logins unavailable)')
             if cached_driver:
                 kwargs['driver_executable_path'] = cached_driver
-            return uc.Chrome(**kwargs)
+            driver = uc.Chrome(**kwargs)
+            browser_session.register(driver)
+            return driver
         except (WebDriverException, urllib3.exceptions.ProtocolError,
                 urllib3.exceptions.MaxRetryError, TimeoutError) as e:
             if attempt == max_attempts:

@@ -65,13 +65,19 @@ def fetch_channel_history(creator_key: str, since_message_id=None, max_messages=
     Each message: {'id', 'ts', 'author', 'text', 'raw', 'hrefs'}. See collect_history for since/max semantics."""
     import discord_browser as db
 
-    opened = db.open_channel(creator_key, force=force, channel=channel)
-    if opened is None:
-        return None
-    driver, discord_cfg = opened
-    print(f'  [discord] reading channel history for "{creator_key}" '
-          f'(this scrolls back through the chat, so it can take a while)...')
+    try:
+        opened = db.open_channel(creator_key, force=force, channel=channel)
+        if opened is None:
+            return None
+        driver, discord_cfg = opened
+        print(f'  [discord] reading channel history for "{creator_key}" '
+              f'(this scrolls back through the chat, so it can take a while)...')
+        return _read_open_channel(db, driver, discord_cfg, since_message_id, max_messages, settle_seconds)
+    finally:
+        db.release()        # give the downloader its tab back (a no-op when Discord ran on its own)
 
+
+def _read_open_channel(db, driver, discord_cfg, since_message_id, max_messages, settle_seconds):
     try:
         rows = collect_history(lambda: db.read_rows(driver), lambda: db.scroll_up(driver), since_id=since_message_id, max_messages=max_messages,
                                wait=lambda: time.sleep(settle_seconds),

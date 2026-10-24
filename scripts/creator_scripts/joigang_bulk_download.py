@@ -40,11 +40,9 @@ import time
 from pathlib import Path
 
 import action_log
-import browser_defaults
+import browser_session
 import downloadContent as dc
-import legacy_app_data
 
-import undetected_chromedriver as uc
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -58,44 +56,10 @@ MENU_DESCRIPTION = (
 )
 REPLACES_DOWNLOAD = True
 
-def _profile_dir() -> str:
-    """Machine-local app data directory; an old repo-root .joigang_browser_profile is copied there once."""
-    return legacy_app_data.profile_dir('joigang', '.joigang_browser_profile')
-
-_driver = None  # module-level singleton, same convention as discord_passwords._driver
-
-
 def _joigang_driver():
-    """Return a persistent-profile browser dedicated to joigang.com (kept
-    separate from the main automation profile so its Patreon-linked login
-    survives between runs, same reasoning as discord_passwords._discord_driver)."""
-    global _driver
-    if _driver is not None:
-        return _driver
-
-    profile_dir = _profile_dir()
-    browser = dc._find_browser()
-    if browser is None:
-        raise RuntimeError(
-            'Brave Browser not found. Install it from https://brave.com — or install Chromium as a fallback.'
-        )
-    version = dc._get_browser_major_version(browser)
-    launch_browser = dc._stripped_test_type_browser(browser)
-    cached_driver = dc._cached_chromedriver(version) if version else None
-
-    options = uc.ChromeOptions()
-    browser_defaults.apply(options)      # software rendering by default (see browser_defaults.py)
-    kwargs = dict(
-        options=options,
-        browser_executable_path=launch_browser,
-        version_main=version,
-        user_data_dir=profile_dir,
-    )
-    if cached_driver:
-        kwargs['driver_executable_path'] = cached_driver
-
-    _driver = uc.Chrome(**kwargs)
-    return _driver
+    """The app's one browser (browser_session) with a joigang tab in front. Its Patreon-linked login lives in the
+    shared saved profile, so it survives between runs like every other site's."""
+    return browser_session.use_tab('joigang')
 
 
 def _is_logged_in(driver) -> bool:
@@ -393,6 +357,13 @@ def _entry_already_done(folder: str) -> bool:
 
 
 def run(base_path: str) -> None:
+    try:
+        _run(base_path)
+    finally:
+        browser_session.close_tab('joigang')
+
+
+def _run(base_path: str) -> None:
     driver = _joigang_driver()
     if not _ensure_login(driver):
         print('  [joigang] cannot continue without a working login')
