@@ -55,3 +55,29 @@ class TotpTests(unittest.TestCase):
         self.assertEqual(dc._totp_code(secret, at=59, digits=8), '94287082')
         self.assertEqual(dc._totp_code(secret, at=1111111109, digits=8), '07081804')
         self.assertEqual(dc._totp_code('gezd gnbv-gy3t qojq gezd gnbv gy3t qojq', at=59), '287082')
+
+
+class CodeSearchTests(unittest.TestCase):
+    def test_code_from_folder_name(self):
+        f = dc._eroscripts_code_for_folder
+        self.assertEqual(f('[155541226] 2026-04-13 FC-2026-114', True), 'FC-2026-114')
+        self.assertEqual(f('[153299454] 2026-03-17 FC-2026-76,5', True), 'FC-2026-76,5')
+        self.assertEqual(f('[155471310] 2026-04-12 FC-2026-111 (Premium request)', True), 'FC-2026-111')
+        self.assertIsNone(f('[152412958] 2026-03-06 Welcome to my Patreon!', True))
+        self.assertIsNone(f('[1] 2026-03-06 FC-2026-114', False))
+        self.assertEqual(f('post AB12 here', r'\b([A-Z]{2}\d{2})\b'), 'AB12')
+
+    def test_search_url_round_trip(self):
+        url = dc._eroscripts_search_url('FC-2026-76,5')
+        self.assertEqual(dc._eroscripts_search_code(url), 'FC-2026-76,5')
+        self.assertIsNone(dc._eroscripts_search_code('https://discuss.eroscripts.com/t/slug/12'))
+        self.assertIsNone(dc._eroscripts_thread_id(url))
+
+    def test_title_match_is_exact_token(self):
+        m = dc._eroscripts_title_has_code
+        self.assertTrue(m('Widowmaker’s Work Affairs Part 2 Reinamation FC-2026-86', 'FC-2026-86'))
+        self.assertTrue(m('FC-2026-86 something', 'FC-2026-86'))
+        self.assertFalse(m('Thing FC-2026-865', 'FC-2026-86'))
+        self.assertFalse(m('Thing FC-2026-86,5', 'FC-2026-86'))
+        self.assertTrue(m('Thing FC-2026-86,5', 'FC-2026-86,5'))
+        self.assertFalse(m('Thing FC-2026-8', 'FC-2026-86'))

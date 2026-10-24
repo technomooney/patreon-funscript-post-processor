@@ -4611,6 +4611,48 @@ def _eroscripts_thread_id(url: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+# A creator who titles each Patreon post with a code ("FC-2026-114") and puts the same code in the title of
+# the matching eroscripts thread. creator_config.json "eroscripts_code_search": true uses this pattern on the
+# post folder's name; a string uses that regex instead (first match, or group 1 if it has one).
+_EROSCRIPTS_DEFAULT_CODE_RE = r'(?<![\w-])[A-Za-z]{1,8}-\d{4}-\d+(?:,\d+)?(?![\w-])'
+
+
+def _eroscripts_code_for_folder(folder_name: str, setting) -> str | None:
+    """The post code found in *folder_name* under creator_config's eroscripts_code_search *setting*, or None."""
+    if not setting:
+        return None
+    pattern = setting if isinstance(setting, str) else _EROSCRIPTS_DEFAULT_CODE_RE
+    try:
+        m = re.search(pattern, folder_name)
+    except re.error:
+        print(f'  [eroscripts] eroscripts_code_search is not a valid regex: {pattern!r}')
+        return None
+    if not m:
+        return None
+    return (m.group(1) if m.groups() else m.group(0)).strip() or None
+
+
+def _eroscripts_search_url(code: str) -> str:
+    """A pseudo-link meaning "find the eroscripts thread whose title has *code*"; download_eroscripts resolves it."""
+    return f'{_EROSCRIPTS_BASE}/search?q={quote(code + " in:title", safe="")}'
+
+
+def _eroscripts_search_code(url: str) -> str | None:
+    """The code inside a link made by _eroscripts_search_url, or None for any other URL."""
+    parsed = urlparse(url)
+    if parsed.netloc.removeprefix('www.') != _EROSCRIPTS_HOST or parsed.path.rstrip('/') != '/search':
+        return None
+    q = (parse_qs(parsed.query).get('q') or [''])[0]
+    code = re.sub(r'\s+in:title\s*$', '', q).strip()
+    return code or None
+
+
+def _eroscripts_title_has_code(title: str, code: str) -> bool:
+    """True if *title* contains *code* as its own token: 'FC-2026-76' matches 'FC-2026-76 foo' but not
+    'FC-2026-765' or 'FC-2026-76,5' (a different post)."""
+    return re.search(rf'(?<![\w-]){re.escape(code)}(?![\w-]|[.,]\d)', title or '', re.IGNORECASE) is not None
+
+
 def _eroscripts_video_links(cooked_html: str) -> list[str]:
     """Links in a post's HTML that one of our handlers can download: external hosts we know
     (priority hosts such as mega/pixeldrain first), no eroscripts-internal links or attachments, no images."""
@@ -4763,16 +4805,43 @@ def _eroscripts_browser_login(driver) -> bool:
         return False
 
 
-def _eroscripts_read_thread(driver, topic_id: int) -> tuple[str, str] | None:
-    """(title, first post HTML) of a thread, read from its JSON view in the logged-in browser; None if unreadable."""
-    driver.get(f'{_EROSCRIPTS_BASE}/t/{topic_id}.json')
+def _eroscripts_get_json(driver, path: str):
+    """Load a Discourse .json view in the logged-in browser and parse it; None if it isn't JSON."""
+    driver.get(_EROSCRIPTS_BASE + path)
     time.sleep(1)
     try:
-        data = json.loads(driver.execute_script('return document.body.innerText'))
+        return json.loads(driver.execute_script('return document.body.innerText'))
+    except (ValueError, TypeError, WebDriverException):
+        return None
+
+
+def _eroscripts_find_thread_by_code(driver, code: str) -> int | None:
+    """Topic id of the one thread whose title carries *code*; None (with the reason printed) otherwise."""
+    data = _eroscripts_get_json(driver, '/search.json?q=' + quote(f'{code} in:title', safe=''))
+    if data is None:
+        print('  [eroscripts] search did not return JSON — login may have lapsed')
+        return None
+    hits = [t for t in data.get('topics') or [] if _eroscripts_title_has_code(t.get('title', ''), code)]
+    if not hits:
+        print(f'  [eroscripts] no thread with {code} in its title')
+        return None
+    if len(hits) > 1:
+        print(f'  [eroscripts] {len(hits)} threads have {code} in their title — not guessing:')
+        for t in hits[:8]:
+            print(f'    {_EROSCRIPTS_BASE}/t/{t.get("slug")}/{t.get("id")}  {_safe(t.get("title", ""))}')
+        return None
+    print(f'  [eroscripts] {code} → "{_safe(hits[0].get("title", ""))}"')
+    return hits[0]['id']
+
+
+def _eroscripts_read_thread(driver, topic_id: int) -> tuple[str, str] | None:
+    """(title, first post HTML) of a thread, read from its JSON view in the logged-in browser; None if unreadable."""
+    data = _eroscripts_get_json(driver, f'/t/{topic_id}.json')
+    try:
         title = data.get('fancy_title') or data.get('title') or ''
         cooked = data['post_stream']['posts'][0]['cooked']
         return title, cooked
-    except (ValueError, KeyError, IndexError, TypeError, WebDriverException):
+    except (KeyError, IndexError, TypeError, AttributeError):
         return None
 
 
@@ -4780,7 +4849,8 @@ def download_eroscripts(driver, url: str, download_dir: str) -> bool:
     """Read an eroscripts thread and download the video its first post links to."""
     global _pending_name_hint
     topic_id = _eroscripts_thread_id(url)
-    if topic_id is None:
+    code = _eroscripts_search_code(url)
+    if topic_id is None and code is None:
         print('  [eroscripts] not a thread link — nothing to download')
         return False
 
@@ -4788,6 +4858,10 @@ def download_eroscripts(driver, url: str, download_dir: str) -> bool:
         return False
 
     try:
+        if topic_id is None:
+            topic_id = _eroscripts_find_thread_by_code(driver, code)
+            if topic_id is None:
+                return False
         thread = _eroscripts_read_thread(driver, topic_id)
         if thread is None:
             print(f'  [eroscripts] could not read thread {topic_id} as JSON — '
@@ -5869,6 +5943,14 @@ def collect_tasks(base_path: str, require_funscript: bool = True,
         # remaining same-post funscript links that are just alternate
         # versions of each other (e.g. plain vs device-specific).
         validated_links = _prefer_joimoe_mirror(validated_links)
+        # Creators who title posts with a code and reuse it in the matching eroscripts thread's title: add a
+        # search link for it, unless the post already links an eroscripts thread itself.
+        if not any(_eroscripts_thread_id(l) for l in validated_links):
+            ero_code = _eroscripts_code_for_folder(
+                os.path.basename(root), creator_config.get(root, 'eroscripts_code_search', False))
+            if ero_code:
+                print(f'  [eroscripts] post code {ero_code} — will look up its eroscripts thread')
+                validated_links.append(_eroscripts_search_url(ero_code))
         link_paragraph_text = _extract_link_paragraph_text(desc_path)
         validated_links = _prefer_marked_funscript_links(validated_links, link_paragraph_text)
         if not validated_links:
