@@ -10,6 +10,7 @@ import json
 import mimetypes
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -4219,6 +4220,7 @@ class _MegaWorker:
         self._log_path = os.path.join(tempfile.gettempdir(), 'patreon_dl_mega.log')
         self._thread = threading.Thread(target=self._run, daemon=True, name='mega-worker')
         self._term_proc: subprocess.Popen | None = None
+        self._abort = threading.Event()
 
     def start(self) -> None:
         with open(self._log_path, 'w', encoding='utf-8') as f:
@@ -4275,12 +4277,16 @@ class _MegaWorker:
     def _process(self, job: dict) -> None:
         # Wait with periodic log lines so the window shows progress.
         while True:
+            if self._abort.is_set():
+                return
             remaining = job['retry_after'] - time.time()
             if remaining <= 0:
                 break
             self._log(f'{job["basename"]}: retrying in {int(remaining)}s...')
-            time.sleep(min(self._LOG_INTERVAL, max(1, remaining)))
+            self._abort.wait(min(self._LOG_INTERVAL, max(1, remaining)))
 
+        if self._abort.is_set():
+            return
         mega_get = shutil.which('mega-get')
         if not mega_get:
             self._results.put({'success': False, 'link': job['link'],
@@ -4343,9 +4349,26 @@ class _MegaWorker:
         """Block until the queue is empty and all jobs are finished."""
         self._queue.join()
 
-    def stop(self) -> None:
+    def abort(self) -> int:
+        """Give up on every queued retry right now (they stay un-tracked, so the next run
+        picks them up again), stop the worker and close its log window. A mega-get already
+        running isn't killed -- it belongs to the MEGAcmd server -- but nothing new starts.
+        Returns how many queued jobs were dropped."""
+        self._abort.set()
+        dropped = 0
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+            self._queue.task_done()
+            dropped += 1
+        self.stop(join_timeout=3)
+        return dropped
+
+    def stop(self, join_timeout: float = 30) -> None:
         self._queue.put(None)
-        self._thread.join(timeout=30)
+        self._thread.join(timeout=join_timeout)
         self._log('Worker stopped.')
         if self._term_proc and self._term_proc.poll() is None:
             try:
@@ -6409,8 +6432,11 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                     mega_error6.append({'link': res['link'], 'funscript_name': res['basename'],
                                         'filename': hint, 'save_directory': res['download_dir']})
 
+    prev_sigint = _install_graceful_sigint()
     try:
         for task_idx, task in enumerate(tasks, start=1):
+            if _stop_after_current.is_set():
+                break
             folder   = task['folder']
             basename = task['basename']
             links    = task['links']
@@ -6428,6 +6454,8 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
             saved_for_folder = 0
             n_links = len(links)
             for link_idx, link in enumerate(links, start=1):
+                if _stop_after_current.is_set():
+                    break
                 _last_fetch_original_name = None   # reset before each attempt
                 _last_download_skipped = False
 
@@ -6635,7 +6663,12 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
             _cleanup_temp_files(folder, base_path, protected=_protected())
 
         # Wait for all background mega retries to finish, then process results.
-        if mega_worker is not None:
+        if mega_worker is not None and _stop_after_current.is_set():
+            dropped = mega_worker.abort()
+            _drain_mega_results()
+            if dropped:
+                print(f'\n[mega.nz] stopped; {dropped} queued retry(ies) dropped — they will be picked up next run.')
+        elif mega_worker is not None:
             pending = mega_worker._queue.qsize()
             if pending:
                 print(f'\n[mega.nz] waiting for {pending} background download(s) to finish...')
@@ -6643,10 +6676,15 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
             _drain_mega_results()
             mega_worker.stop()
 
-        completed_cleanly = True
+        if _stop_after_current.is_set():
+            print('\nStopped early as requested — progress is kept; run again to resume.')
+        else:
+            completed_cleanly = True
 
     except KeyboardInterrupt:
         print('\n\nInterrupted.')
+        if mega_worker is not None:
+            mega_worker.abort()
         try:
             current_files = set(os.listdir(current_folder)) if os.path.isdir(current_folder) else set()
             new_files = current_files - current_before_files
@@ -6678,6 +6716,8 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
             _cleanup_temp_files(current_folder, base_path, protected=_protected())
 
     finally:
+        if prev_sigint is not None:
+            signal.signal(signal.SIGINT, prev_sigint)
         action_log.finish()
         driver.quit()
         # Close the Discord browser too, if _fetch_discord_password_cached ever
@@ -6724,6 +6764,28 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
 
     if flagged_entries and redownload_flagged:
         _run_flagged_collection_redownloads(base_path, flagged_entries, resume=resume, auto_confirm=auto_confirm)
+
+
+_stop_after_current = threading.Event()
+
+
+def _install_graceful_sigint():
+    """First Ctrl+C: finish the file being downloaded, then stop before the next one.
+    Second Ctrl+C: raise KeyboardInterrupt as usual. Returns the previous handler to
+    restore, or None if handlers can't be installed (not the main thread)."""
+    _stop_after_current.clear()
+
+    def _on_sigint(signum, frame):
+        if _stop_after_current.is_set():
+            raise KeyboardInterrupt
+        _stop_after_current.set()
+        print('\n  Ctrl+C: finishing the current file, then stopping '
+              '(press Ctrl+C again to abort now).', flush=True)
+
+    try:
+        return signal.signal(signal.SIGINT, _on_sigint)
+    except ValueError:
+        return None
 
 
 def _print_handlers():
