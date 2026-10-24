@@ -4645,6 +4645,51 @@ def _eroscripts_video_links(cooked_html: str) -> list[str]:
     return found
 
 
+def _totp_code(secret: str, at: float | None = None, digits: int = 6, period: int = 30) -> str:
+    """RFC 6238 time-based one-time code (what authenticator apps show) for a base32 *secret*."""
+    import base64
+    import hmac
+    key = base64.b32decode(re.sub(r'[\s-]', '', secret).upper() + '=' * (-len(re.sub(r'[\s-]', '', secret)) % 8))
+    counter = int((time.time() if at is None else at) // period)
+    digest = hmac.new(key, counter.to_bytes(8, 'big'), 'sha1').digest()
+    offset = digest[-1] & 0x0F
+    value = int.from_bytes(digest[offset:offset + 4], 'big') & 0x7FFFFFFF
+    return str(value % 10 ** digits).zfill(digits)
+
+
+def _eroscripts_second_factor(driver) -> bool:
+    """Answer Discourse's two-factor prompt. Uses the authenticator secret EROSCRIPTS_2FA_SECRET when one is
+    stored (a fresh code, waiting out the last seconds of the current one); otherwise asks for the code in the
+    terminal. A backup code works in the same field. Returns True once the account menu is showing."""
+    field = driver.find_element(By.ID, 'login-second-factor')
+    secret = _get_secret('EROSCRIPTS_2FA_SECRET').strip()
+    if secret:
+        try:
+            if 30 - (time.time() % 30) < 3:
+                time.sleep(3.5)         # don't type a code that expires mid-submit
+            code = _totp_code(secret)
+        except (ValueError, TypeError):
+            print('  [eroscripts] EROSCRIPTS_2FA_SECRET is not a valid base32 key — asking for the code instead')
+            secret = ''
+    if not secret:
+        code = input('  [eroscripts] two-factor code (authenticator app or backup code): ').strip()
+        if not code:
+            return False
+    field.click()
+    time.sleep(0.3)
+    field.clear()
+    for char in code:
+        field.send_keys(char)
+        time.sleep(0.05)
+    time.sleep(0.3)
+    driver.execute_script('arguments[0].click()', driver.find_element(By.ID, 'login-button'))
+    try:
+        WebDriverWait(driver, 20).until(lambda d: d.find_elements(By.ID, 'current-user'))
+    except TimeoutException:
+        return False
+    return True
+
+
 def _eroscripts_browser_login(driver) -> bool:
     """Log into discuss.eroscripts.com through Discourse's login form. Returns True if signed in.
 
@@ -4689,10 +4734,17 @@ def _eroscripts_browser_login(driver) -> bool:
         time.sleep(0.3)
         driver.execute_script('arguments[0].click()', driver.find_element(By.ID, 'login-button'))
 
+        # Next screen is either the signed-in header, or (2FA accounts) the second-factor prompt.
         try:
-            WebDriverWait(driver, 20).until(lambda d: d.find_elements(By.ID, 'current-user'))
+            WebDriverWait(driver, 20).until(lambda d: d.find_elements(By.ID, 'current-user') or any(
+                e.is_displayed() for e in d.find_elements(By.ID, 'login-second-factor')))
         except TimeoutException:
             pass
+        if not driver.find_elements(By.ID, 'current-user') and driver.find_elements(By.ID, 'login-second-factor'):
+            if not _eroscripts_second_factor(driver):
+                print('  [eroscripts] two-factor code was not accepted — check EROSCRIPTS_2FA_SECRET '
+                      '(or the code you typed) and that your computer clock is correct')
+                return False
         if not driver.find_elements(By.ID, 'current-user'):
             err = ''
             try:

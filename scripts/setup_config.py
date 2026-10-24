@@ -758,6 +758,11 @@ def _configure_credentials() -> None:
         ero_pass = _ask_secret('Password', current=_keyring_get('EROSCRIPTS_PASSWORD'))
         if ero_pass:
             _keyring_set('EROSCRIPTS_PASSWORD', ero_pass)
+        print('  Two-factor: paste the authenticator setup key (the base32 text shown under the QR code) to log in')
+        print('  unattended, or leave blank to be asked for a code at the terminal each run.')
+        ero_2fa = _ask_secret('2FA setup key', current=_keyring_get('EROSCRIPTS_2FA_SECRET'))
+        if ero_2fa:
+            _keyring_set('EROSCRIPTS_2FA_SECRET', ero_2fa)
     else:
         print('  Skipping discuss.eroscripts.com.')
 

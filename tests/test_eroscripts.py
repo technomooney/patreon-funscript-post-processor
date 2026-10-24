@@ -47,3 +47,11 @@ class VideoLinkTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TotpTests(unittest.TestCase):
+    def test_rfc6238_vectors(self):
+        secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'     # ASCII "12345678901234567890"
+        self.assertEqual(dc._totp_code(secret, at=59, digits=8), '94287082')
+        self.assertEqual(dc._totp_code(secret, at=1111111109, digits=8), '07081804')
+        self.assertEqual(dc._totp_code('gezd gnbv-gy3t qojq gezd gnbv gy3t qojq', at=59), '287082')
