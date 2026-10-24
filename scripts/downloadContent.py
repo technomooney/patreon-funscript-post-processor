@@ -4633,20 +4633,20 @@ def _eroscripts_thread_id(url: str) -> int | None:
 
 
 # A creator who titles each Patreon post with a code ("FC-2026-114") and puts the same code in the title of
-# the matching eroscripts thread. creator_config.json "eroscripts_code_search": true uses this pattern on the
+# the matching eroscripts thread. creator_config.json "eroscripts_title_search": true uses this pattern on the
 # post folder's name; a string uses that regex instead (first match, or group 1 if it has one).
 _EROSCRIPTS_DEFAULT_CODE_RE = r'(?<![\w-])[A-Za-z]{1,8}-\d{4}-\d+(?:,\d+)?(?![\w-])'
 
 
 def _eroscripts_code_for_folder(folder_name: str, setting) -> str | None:
-    """The post code found in *folder_name* under creator_config's eroscripts_code_search *setting*, or None."""
+    """The post code found in *folder_name* under creator_config's eroscripts_title_search *setting*, or None."""
     if not setting:
         return None
     pattern = setting if isinstance(setting, str) else _EROSCRIPTS_DEFAULT_CODE_RE
     try:
         m = re.search(pattern, folder_name)
     except re.error:
-        print(f'  [eroscripts] eroscripts_code_search is not a valid regex: {pattern!r}')
+        print(f'  [eroscripts] eroscripts_title_search is not a valid regex: {pattern!r}')
         return None
     if not m:
         return None
@@ -5997,7 +5997,7 @@ def collect_tasks(base_path: str, require_funscript: bool = True,
         # search link for it, unless the post already links an eroscripts thread itself.
         if not any(_eroscripts_thread_id(l) for l in validated_links):
             ero_code = _eroscripts_code_for_folder(
-                os.path.basename(root), creator_config.get(root, 'eroscripts_code_search', False))
+                os.path.basename(root), creator_config.get(root, 'eroscripts_title_search', False))
             if ero_code:
                 print(f'  [eroscripts] post code {ero_code} — will look up its eroscripts thread')
                 validated_links.append(_eroscripts_search_url(ero_code))

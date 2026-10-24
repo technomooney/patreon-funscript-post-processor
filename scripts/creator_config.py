@@ -28,11 +28,12 @@ Keys:
                          subfolder name (or true for 'discord'): this creator's
                          pixeldrain links live in a Discord channel, so its
                          pipeline fetches them (discord_pixeldrain_sync.py).
-  eroscripts_code_search true (or a regex string): this creator titles each Patreon post with a code
-                         (e.g. "FC-2026-114") and puts the same code in the title of the matching
-                         discuss.eroscripts.com thread. Each post folder's code is looked up there and the
-                         thread's video link downloaded (needs the eroscripts login). A regex string replaces
-                         the default code pattern; group 1 is the code if it has a group.
+  eroscripts_title_search true (or a regex string): this creator puts the same text in the title of each Patreon
+                         post and of its matching discuss.eroscripts.com thread (e.g. "FC-2026-114"). That text
+                         is taken from the post folder's name and searched for in eroscripts thread *titles*;
+                         the matching thread's video link is downloaded (needs the eroscripts login). true uses
+                         a LETTERS-YEAR-NUMBER pattern; a regex string replaces it (group 1 is the text if it
+                         has a group).
   protected_dirs         subfolders (relative to the creator folder) every
                          core tree-walking script must skip entirely, e.g.
                          ["_pixeldrain"] -- owned by a creator script, never
