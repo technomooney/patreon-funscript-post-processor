@@ -2123,6 +2123,16 @@ def _rule34video_browser_login(driver) -> bool:
     try:
         wait = WebDriverWait(driver, 10)
 
+        # The "Log in" link lives in a hidden popup (#rd-hd-login) that the
+        # header account icon opens; open it first so the link becomes clickable.
+        # Older layouts had the link directly in the header, so this is optional.
+        try:
+            acct_btn = driver.find_element(By.CSS_SELECTOR, 'button[data-rd-account]')
+            driver.execute_script('arguments[0].click()', acct_btn)
+            time.sleep(0.5)
+        except WebDriverException:
+            pass
+
         login_btn = wait.until(EC.element_to_be_clickable((By.ID, 'login')))
         driver.execute_script('arguments[0].click()', login_btn)
         time.sleep(1)
