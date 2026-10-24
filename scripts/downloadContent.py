@@ -2144,7 +2144,9 @@ def _rule34video_browser_login(driver) -> bool:
 
         time.sleep(0.3)
         login_form = pw_field.find_element(By.XPATH, './ancestor::form')
-        submit = login_form.find_element(By.XPATH, './/input[@type="submit"]')
+        # The site has used both <input type=submit> and <button type=submit>.
+        submit = login_form.find_element(
+            By.XPATH, './/button[@type="submit"] | .//input[@type="submit"]')
         driver.execute_script('arguments[0].click()', submit)
 
         # Form submits via AJAX and updates the header in place — wait for the
