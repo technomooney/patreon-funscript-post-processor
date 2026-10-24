@@ -700,7 +700,6 @@ def setup_driver(initial_download_dir: str):
         return existing
 
     headless = os.getenv('BROWSER_HEADLESS', 'false').strip().lower() == 'true'
-    use_profile = browser_session.persistent_profile_enabled()
 
     def _build_options() -> uc.ChromeOptions:
         # ChromeOptions can't be reused across uc.Chrome() calls (it raises if
@@ -760,9 +759,9 @@ def setup_driver(initial_download_dir: str):
             kwargs = dict(options=_build_options(), browser_executable_path=launch_browser, version_main=version)
             # The last attempt goes without the saved profile: a profile another browser process still holds
             # (or a corrupted one) must not stop the run, it only costs the saved logins for this launch.
-            if use_profile and attempt < max_attempts:
+            if attempt < max_attempts:
                 kwargs['user_data_dir'] = browser_session.profile_dir()
-            elif use_profile:
+            else:
                 print('  [browser] last attempt: starting with a temporary profile (saved logins unavailable)')
             if cached_driver:
                 kwargs['driver_executable_path'] = cached_driver

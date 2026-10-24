@@ -96,5 +96,35 @@ class TabTests(unittest.TestCase):
                     os.environ['LIBRARY_TOOLS_HOME'] = old
 
 
+class ResetTests(unittest.TestCase):
+    def test_false_wipes_profile_once_and_flips_back_to_true(self):
+        with tempfile.TemporaryDirectory() as home:
+            env_file = os.path.join(home, '.env')
+            with open(env_file, 'w') as f:
+                f.write('A=1\nBROWSER_PERSISTENT_PROFILE=false\nB=2\n')
+            saved = (os.environ.get('LIBRARY_TOOLS_HOME'), os.environ.get('BROWSER_PERSISTENT_PROFILE'), bs._ENV_PATH)
+            os.environ['LIBRARY_TOOLS_HOME'] = home
+            os.environ['BROWSER_PERSISTENT_PROFILE'] = 'false'
+            bs._ENV_PATH = env_file
+            try:
+                dest = os.path.join(home, 'profiles', 'app')
+                os.makedirs(dest)
+                open(os.path.join(dest, 'Cookies'), 'w').close()
+                self.assertEqual(bs.profile_dir(), dest)
+                self.assertFalse(os.path.exists(os.path.join(dest, 'Cookies')))      # wiped
+                self.assertEqual(os.environ['BROWSER_PERSISTENT_PROFILE'], 'true')
+                self.assertEqual(open(env_file).read(), 'A=1\nBROWSER_PERSISTENT_PROFILE=true\nB=2\n')
+                open(os.path.join(dest, 'Cookies'), 'w').close()
+                bs.profile_dir()                                                      # second launch: kept
+                self.assertTrue(os.path.exists(os.path.join(dest, 'Cookies')))
+            finally:
+                home_old, flag_old, bs._ENV_PATH = saved
+                for k, v in (('LIBRARY_TOOLS_HOME', home_old), ('BROWSER_PERSISTENT_PROFILE', flag_old)):
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+
+
 if __name__ == '__main__':
     unittest.main()
