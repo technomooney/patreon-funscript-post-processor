@@ -2170,13 +2170,19 @@ def _rule34video_browser_login(driver) -> bool:
     if _rule34video_browser_logged_in:
         return True
 
+    driver.get('https://rule34video.com/')
+    time.sleep(2)
+
+    # The saved browser profile (browser_session) keeps the session between runs; the header's #login link only
+    # exists for anonymous visitors, so without it we're already signed in and there's nothing to type.
+    if not driver.find_elements(By.ID, 'login'):
+        _rule34video_browser_logged_in = True
+        return True
+
     email = _get_secret('RULE34VIDEO_EMAIL').strip()
     password = _get_secret('RULE34VIDEO_PASSWORD').strip()
     if not email or not password:
         return False
-
-    driver.get('https://rule34video.com/')
-    time.sleep(2)
 
     try:
         wait = WebDriverWait(driver, 10)
