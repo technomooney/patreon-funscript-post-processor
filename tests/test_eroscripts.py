@@ -80,6 +80,29 @@ class DerivedLinksTests(unittest.TestCase):
             dc._eroscripts_derived.clear()
 
 
+class ExternalLinksDbTests(unittest.TestCase):
+    def test_recorded_in_library_db_and_filtered_next_time(self):
+        import tempfile
+        import external_links, library_db
+        with tempfile.TemporaryDirectory() as lib:
+            library_db.use_root(lib)
+            folder = os.path.join(lib, 'post'); os.makedirs(folder)
+            thread = ('T', '<a href="https://pixeldrain.com/u/zzz">v</a><a href="https://mega.nz/file/q#k">m</a>')
+            calls = []
+            def handler(driver, link, d):
+                calls.append(link)
+                return 'mega' not in link
+            with mock.patch.object(dc, '_eroscripts_browser_login', return_value=True), \
+                 mock.patch.object(dc, '_eroscripts_read_thread', return_value=thread), \
+                 mock.patch.dict(dc.DOMAIN_HANDLERS, {'pixeldrain.com': handler, 'mega.nz': handler}):
+                dc.download_eroscripts(None, 'https://discuss.eroscripts.com/t/s/5', folder)
+                self.assertEqual(external_links.downloaded_urls(folder), {'https://pixeldrain.com/u/zzz'})
+                self.assertFalse(dc._eroscripts_derived)
+                calls.clear()
+                dc.download_eroscripts(None, 'https://discuss.eroscripts.com/t/s/5', folder)
+            self.assertEqual(calls, ['https://mega.nz/file/q#k'])     # downloaded one skipped, failed one retried
+
+
 class TotpTests(unittest.TestCase):
     def test_rfc6238_vectors(self):
         secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'     # ASCII "12345678901234567890"

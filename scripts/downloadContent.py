@@ -31,6 +31,7 @@ import action_log
 import markers
 import creator_config
 import collection_redownload_queue
+import external_links
 import folder_log
 import browser_defaults
 import browser_session
@@ -4886,8 +4887,8 @@ def _eroscripts_read_thread(driver, topic_id: int) -> tuple[str, str] | None:
         return None
 
 
-# folder (abspath) -> {link: 'downloaded'} for links found *inside* eroscripts threads this run; main() merges
-# them into the folder's folder_log entry so the next run counts them as processed, like a link from the post.
+# Fallback for folders outside any library database (see external_links): folder (abspath) -> {link: 'downloaded'};
+# main() merges them into the folder's folder_log entry so the next run counts them as processed.
 _eroscripts_derived: dict[str, dict[str, str]] = {}
 
 
@@ -4902,6 +4903,7 @@ def _eroscripts_known_links(folder: str) -> set[str]:
             known.update(extract_links_from_description(desc))
         except (OSError, ValueError):
             pass
+    known.update(external_links.downloaded_urls(folder))
     return {k.rstrip('/') for k in known}
 
 
@@ -4959,8 +4961,11 @@ def download_eroscripts(driver, url: str, download_dir: str) -> bool:
             print(f'  [eroscripts] trying {link}')
             _pending_name_hint = hint
             try:
-                if handler(driver, link, download_dir):
-                    _eroscripts_derived.setdefault(os.path.abspath(download_dir), {})[link] = 'downloaded'
+                ok = handler(driver, link, download_dir)
+                if not external_links.record(download_dir, link, 'eroscripts', url, 'downloaded' if ok else 'failed'):
+                    if ok:   # no library database here: folder_log carries it instead
+                        _eroscripts_derived.setdefault(os.path.abspath(download_dir), {})[link] = 'downloaded'
+                if ok:
                     return True
             finally:
                 _pending_name_hint = None
