@@ -64,6 +64,22 @@ class KnownLinksTests(unittest.TestCase):
         self.assertIn('https://mega.nz/file/x#k', got)
 
 
+class DerivedLinksTests(unittest.TestCase):
+    def test_success_is_recorded_for_folder_log(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            dc._eroscripts_derived.clear()
+            thread = ('T', '<a href="https://pixeldrain.com/u/zzz">v</a>')
+            with mock.patch.object(dc, '_eroscripts_browser_login', return_value=True), \
+                 mock.patch.object(dc, '_eroscripts_read_thread', return_value=thread), \
+                 mock.patch.dict(dc.DOMAIN_HANDLERS, {'pixeldrain.com': lambda *a: True}):
+                ok = dc.download_eroscripts(None, 'https://discuss.eroscripts.com/t/s/5', d)
+            self.assertTrue(ok)
+            self.assertEqual(dc._eroscripts_derived[os.path.abspath(d)],
+                             {'https://pixeldrain.com/u/zzz': 'downloaded'})
+            dc._eroscripts_derived.clear()
+
+
 class TotpTests(unittest.TestCase):
     def test_rfc6238_vectors(self):
         secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'     # ASCII "12345678901234567890"
