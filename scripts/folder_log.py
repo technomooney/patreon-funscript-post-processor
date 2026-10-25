@@ -35,23 +35,42 @@ def _declared_root(folder: str):
     return root if os.path.isdir(os.path.join(root, library_db.DATA_DIRNAME)) else None
 
 
-def ensure_library(base_path: str) -> str | None:
-    """Make sure *base_path* belongs to a library database, declaring it one if it does not yet.
+_migrated: set[str] = set()      # library roots already checked for legacy logs in this process
 
-    Tools only coordinate through the shared DB, so a run on a folder with none must not fall back to loose
-    per-folder files. Returns the library root, or None when the folder is deliberately left alone: it sits above
-    other libraries (a parent of per-creator libraries must never hold a database of its own). A folder that cannot
-    be written raises: nothing could be downloaded into it anyway.
-    Folders that already have legacy .folder_log.json files keep them readable; read() merges them into the DB view."""
+
+def _migrate_legacy(root: str) -> None:
+    """Import old .folder_log.json / compressor logs into the library DB before anything else uses it."""
+    if root in _migrated:
+        return
+    _migrated.add(root)
+    import migrate_library_data
+    done = migrate_library_data.migrate_if_needed(root)
+    if done:
+        print(f'[library] migrated old logs in {root}: {done["runs"]} run record(s), {done["links"]} pixeldrain '
+              f'link(s), {done["files"]} file identity row(s)')
+
+
+def ensure_library(base_path: str) -> str | None:
+    """Make sure *base_path* belongs to a library database, then bring it up to date. Run before any tool's work.
+
+    Tools only coordinate through the shared DB, so: declare the folder a library when none exists above it, and
+    import any old per-folder logs into it (idempotent; legacy files are filed under .library-data/legacy, never
+    deleted). Returns the library root, or None when the folder sits above other libraries (a parent of per-creator
+    libraries must never hold a database of its own; each of those libraries is migrated instead). A folder that
+    cannot be written raises: nothing could be downloaded into it anyway."""
     root = _declared_root(base_path)
-    if root is not None:
-        return root
-    if any(os.path.isdir(os.path.join(base_path, d, library_db.DATA_DIRNAME)) for d in os.listdir(base_path)):
-        print(f'[library] {base_path} holds other libraries — not creating a database at this level; '
-              'run on one creator folder instead.')
-        return None
-    root = library_db.use_root(base_path)
-    print(f'[library] created {library_db.db_path(root)} (this folder is now a library shared by the tools)')
+    if root is None:
+        children = [os.path.join(base_path, d) for d in os.listdir(base_path)
+                    if os.path.isdir(os.path.join(base_path, d, library_db.DATA_DIRNAME))]
+        if children:
+            print(f'[library] {base_path} holds other libraries — not creating a database at this level; '
+                  'run on one creator folder instead.')
+            for child in children:
+                _migrate_legacy(child)
+            return None
+        root = library_db.use_root(base_path)
+        print(f'[library] created {library_db.db_path(root)} (this folder is now a library shared by the tools)')
+    _migrate_legacy(root)
     return root
 
 

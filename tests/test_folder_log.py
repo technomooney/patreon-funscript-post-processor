@@ -99,8 +99,12 @@ class FolderLogTests(unittest.TestCase):
     def test_ensure_library_creates_db_and_keeps_legacy_history(self):
         post = os.path.join(self.base, 'post'); os.makedirs(post)
         folder_log.append_run(post, 'old')                       # no library yet -> legacy json
+        folder_log._migrated.clear()
         root = folder_log.ensure_library(self.base)
         self.assertEqual(root, self.base)
+        # the old json was imported and filed away, not left beside the post
+        self.assertFalse(os.path.exists(os.path.join(post, '.folder_log.json')))
+        self.assertEqual(len(library_db.runs_for(self.base, 'post')), 1)
         self.assertTrue(os.path.isfile(library_db.db_path(self.base)))
         self.assertEqual([r['script'] for r in folder_log.read(post)], ['old'])
         folder_log.append_run(post, 'new')                       # now goes to the DB

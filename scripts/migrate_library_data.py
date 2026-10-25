@@ -317,6 +317,17 @@ def format_report(plan: dict, applied: dict | None, moved: list | None = None) -
     return '\n'.join(lines)
 
 
+def migrate_if_needed(root: str) -> dict | None:
+    """Import and file away any legacy logs still lying around *root*, then return what was imported (None if
+    there was nothing). The same steps as `--apply`, for tools that must not work on a half-migrated library."""
+    plan = build_plan(root)
+    if not (plan['runs'] or plan['links'] or plan['files'] or plan['movable']):
+        return None
+    applied = apply_plan(plan)
+    move_legacy(plan)
+    return applied
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description='Convert libraries to the shared library database '
                                                  '(dry run unless --apply)')
