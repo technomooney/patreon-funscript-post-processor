@@ -61,22 +61,6 @@ class KnownLinksTests(unittest.TestCase):
         self.assertIn('https://mega.nz/file/x#k', got)
 
 
-class DerivedLinksTests(unittest.TestCase):
-    def test_success_is_recorded_for_folder_log(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as d:
-            dc._eroscripts_derived.clear()
-            thread = ('T', '<a href="https://pixeldrain.com/u/zzz">v</a>')
-            with mock.patch.object(dc, '_eroscripts_browser_login', return_value=True), \
-                 mock.patch.object(dc, '_eroscripts_read_thread', return_value=thread), \
-                 mock.patch.dict(dc.DOMAIN_HANDLERS, {'pixeldrain.com': lambda *a: True}):
-                ok = dc.download_eroscripts(None, 'https://discuss.eroscripts.com/t/s/5', d)
-            self.assertTrue(ok)
-            self.assertEqual(dc._eroscripts_derived[os.path.abspath(d)],
-                             {'https://pixeldrain.com/u/zzz': 'downloaded'})
-            dc._eroscripts_derived.clear()
-
-
 class ExternalLinksDbTests(unittest.TestCase):
     def test_recorded_in_library_db_and_filtered_next_time(self):
         import tempfile
@@ -94,7 +78,6 @@ class ExternalLinksDbTests(unittest.TestCase):
                  mock.patch.dict(dc.DOMAIN_HANDLERS, {'pixeldrain.com': handler, 'mega.nz': handler}):
                 dc.download_eroscripts(None, 'https://discuss.eroscripts.com/t/s/5', folder)
                 self.assertEqual(external_links.downloaded_urls(folder), {'https://pixeldrain.com/u/zzz'})
-                self.assertFalse(dc._eroscripts_derived)
                 calls.clear()
                 dc.download_eroscripts(None, 'https://discuss.eroscripts.com/t/s/5', folder)
             self.assertEqual(calls, ['https://mega.nz/file/q#k'])     # downloaded one skipped, failed one retried

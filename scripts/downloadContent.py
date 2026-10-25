@@ -4916,11 +4916,6 @@ def _eroscripts_read_thread(driver, topic_id: int) -> tuple[str, str] | None:
         return None
 
 
-# Fallback for folders outside any library database (see external_links): folder (abspath) -> {link: 'downloaded'};
-# main() merges them into the folder's folder_log entry so the next run counts them as processed.
-_eroscripts_derived: dict[str, dict[str, str]] = {}
-
-
 def _eroscripts_known_links(folder: str) -> set[str]:
     """Links *folder* already has covered: the Patreon post's own links plus whatever folder_log recorded.
 
@@ -4991,9 +4986,7 @@ def download_eroscripts(driver, url: str, download_dir: str) -> bool:
             _pending_name_hint = hint
             try:
                 ok = handler(driver, link, download_dir)
-                if not external_links.record(download_dir, link, 'eroscripts', url, 'downloaded' if ok else 'failed'):
-                    if ok:   # no library database here: folder_log carries it instead
-                        _eroscripts_derived.setdefault(os.path.abspath(download_dir), {})[link] = 'downloaded'
+                external_links.record(download_dir, link, 'eroscripts', url, 'downloaded' if ok else 'failed')
                 if ok:
                     return True
             finally:
@@ -7203,9 +7196,8 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                           if os.path.abspath(os.path.dirname(f)) == os.path.abspath(_folder)]
                 folder_log.append_run(
                     _folder, script_name,
-                    links=[{'url': url, 'status': st} for url, st in
-                           {**link_statuses.get(_folder, {}),
-                            **_eroscripts_derived.get(os.path.abspath(_folder), {})}.items()],
+                    links=[{'url': url, 'status': st}
+                           for url, st in link_statuses.get(_folder, {}).items()],
                     files_saved=_saved,
                 )
                 _logged += 1

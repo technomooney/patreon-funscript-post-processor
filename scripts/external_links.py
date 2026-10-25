@@ -5,8 +5,8 @@ post's own. They live in the library database (library_db, table downloader_exte
 downloader) so a later run can tell what a source already yielded. Keyed by folder + url: a folder is its own
 scope, the same link in another post's folder is a separate row.
 
-A folder under no declared library root has no database; every call is then a no-op and the callers fall back
-to folder_log.
+The downloader declares its folder a library before it runs (folder_log.ensure_library); a folder under no
+declared root simply has nothing recorded.
 """
 import json
 import os

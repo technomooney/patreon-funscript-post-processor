@@ -40,20 +40,17 @@ def ensure_library(base_path: str) -> str | None:
 
     Tools only coordinate through the shared DB, so a run on a folder with none must not fall back to loose
     per-folder files. Returns the library root, or None when the folder is deliberately left alone: it sits above
-    other libraries (a parent of per-creator libraries must never hold a database of its own) or cannot be written.
+    other libraries (a parent of per-creator libraries must never hold a database of its own). A folder that cannot
+    be written raises: nothing could be downloaded into it anyway.
     Folders that already have legacy .folder_log.json files keep them readable; read() merges them into the DB view."""
     root = _declared_root(base_path)
     if root is not None:
         return root
-    try:
-        if any(os.path.isdir(os.path.join(base_path, d, library_db.DATA_DIRNAME)) for d in os.listdir(base_path)):
-            print(f'[library] {base_path} holds other libraries — not creating a database at this level; '
-                  'run on one creator folder instead.')
-            return None
-        root = library_db.use_root(base_path)
-    except OSError as e:
-        print(f'[library] could not create a library database in {base_path}: {e}')
+    if any(os.path.isdir(os.path.join(base_path, d, library_db.DATA_DIRNAME)) for d in os.listdir(base_path)):
+        print(f'[library] {base_path} holds other libraries — not creating a database at this level; '
+              'run on one creator folder instead.')
         return None
+    root = library_db.use_root(base_path)
     print(f'[library] created {library_db.db_path(root)} (this folder is now a library shared by the tools)')
     return root
 
