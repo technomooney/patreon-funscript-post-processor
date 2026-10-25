@@ -52,24 +52,15 @@ def _migrate_legacy(root: str) -> None:
               f'link(s), {done["files"]} file identity row(s)')
 
 
-def ensure_library(base_path: str) -> str | None:
+def ensure_library(base_path: str) -> str:
     """Make sure *base_path* belongs to a library database, then bring it up to date. Run before any tool's work.
 
     Tools only coordinate through the shared DB, so: declare the folder a library when none exists above it, and
     import any old per-folder logs into it (idempotent; legacy files are filed under .library-data/legacy, never
-    deleted). Returns the library root, or None when the folder sits above other libraries (a parent of per-creator
-    libraries must never hold a database of its own; each of those libraries is migrated instead). A folder that
-    cannot be written raises: nothing could be downloaded into it anyway."""
+    deleted). Returns the library root. A folder that cannot be written raises: nothing could be downloaded into
+    it anyway. Always give it the folder one creator's content lives in, never a folder of creators."""
     root = _declared_root(base_path)
     if root is None:
-        children = [os.path.join(base_path, d) for d in os.listdir(base_path)
-                    if os.path.isdir(os.path.join(base_path, d, library_db.DATA_DIRNAME))]
-        if children:
-            print(f'[library] {base_path} holds other libraries — not creating a database at this level; '
-                  'run on one creator folder instead.')
-            for child in children:
-                _migrate_legacy(child)
-            return None
         root = library_db.use_root(base_path)
         print(f'[library] created {library_db.db_path(root)} (this folder is now a library shared by the tools)')
     _migrate_legacy(root)

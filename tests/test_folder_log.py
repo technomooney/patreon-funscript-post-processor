@@ -83,14 +83,6 @@ class FolderLogTests(unittest.TestCase):
         folder_log.append_run(post, 'new')
         self.assertEqual(sorted(r['script'] for r in folder_log.read(post)), ['new', 'old'])
 
-    def test_ensure_library_leaves_a_parent_of_libraries_alone(self):
-        child = os.path.join(self.base, 'creator'); os.makedirs(child)
-        library_db.use_root(child)
-        library_db._roots.clear()
-        self.assertIsNone(folder_log.ensure_library(self.base))
-        self.assertFalse(os.path.exists(os.path.join(self.base, library_db.DATA_DIRNAME)))
-        self.assertEqual(folder_log.ensure_library(child), child)    # already a library: unchanged
-
 
 if __name__ == '__main__':
     unittest.main()

@@ -177,17 +177,14 @@ def execute(root: str, base_path: str, items: list[dict], download=None) -> dict
     return result
 
 
-def resolve_root(base_path: str, interactive: bool) -> str | None:
-    """The library root for base_path, declaring one (and importing old logs) when it has none yet. None when
-    base_path sits above other libraries: run it on one creator folder instead."""
+def resolve_root(base_path: str, interactive: bool) -> str:
+    """The library root for base_path, declaring one (and importing old logs) when it has none yet."""
     return folder_log.ensure_library(base_path)
 
 
 def sync_urls(base_path: str, urls: list[str], dest: str = '', dry_run: bool = False, interactive: bool = False) -> dict | None:
     """Public entry for other plugins (e.g. the Discord one): sync these pixeldrain URLs into base_path/dest."""
     root = resolve_root(base_path, interactive)
-    if root is None:
-        return None
     sources = [{'url': u, 'dest': dest} for u in urls if pdu.kind(u) in pdu.SYNCABLE_KINDS]
     items = plan(root, base_path, sources)
     counts = summarize(items)

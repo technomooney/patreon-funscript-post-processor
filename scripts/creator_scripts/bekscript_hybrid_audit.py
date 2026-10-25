@@ -249,8 +249,6 @@ def fetch_archive(base_path: str, interactive: bool, step=None) -> None:
 def run(base_path: str, options: dict | None = None) -> None:
     interactive = options is None
     root = ps.resolve_root(base_path, interactive)
-    if root is None:
-        return
     fetch = (options or {}).get('fetch', True) if not interactive else input(
         '  First fetch new links from the creator\'s Discord channel(s) (opens the browser)? (Y/n): '
     ).strip().lower() != 'n'

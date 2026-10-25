@@ -292,8 +292,6 @@ def run(base_path: str, options: dict | None, script_id: str, cfg: dict | None =
     base_path = os.path.abspath(base_path)
     cfg = cfg or settings(base_path)
     root = ps.resolve_root(base_path, interactive)
-    if root is None:
-        return
     lib = os.path.join(base_path, cfg['dir'])
     os.makedirs(lib, exist_ok=True)
     do_fetch = options.get('fetch', True) if not interactive else input(

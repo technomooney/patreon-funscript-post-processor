@@ -44,8 +44,6 @@ def read_pending(base_path: str, channel: str | None, interactive: bool, dry_run
     freshly read messages. Shared by every channel method (links, attachments, site links)."""
     creator_key = os.path.basename(os.path.normpath(base_path))
     root = ps.resolve_root(base_path, interactive)
-    if root is None:
-        return None
     key = store.scope(creator_key, channel)
     extra = {'channel': channel} if channel else {}
     if dry_run:     # a dry run stores nothing: look at the fresh rows only

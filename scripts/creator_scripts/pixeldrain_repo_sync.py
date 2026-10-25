@@ -42,8 +42,6 @@ def run(base_path: str, options: dict | None = None) -> None:
     interactive = options is None
     creator_key = os.path.basename(os.path.normpath(base_path))
     root = ps.resolve_root(base_path, interactive)
-    if root is None:
-        return
     sources = _sources(creator_key, options)
     if interactive:
         for s in sources:
