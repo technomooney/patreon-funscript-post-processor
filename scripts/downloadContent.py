@@ -4886,6 +4886,20 @@ def _eroscripts_read_thread(driver, topic_id: int) -> tuple[str, str] | None:
         return None
 
 
+def _eroscripts_known_links(folder: str) -> set[str]:
+    """Links *folder* already has covered: the Patreon post's own links plus whatever folder_log recorded.
+
+    A thread that just repeats a link from the post (or one a previous run handled) must not be fetched again."""
+    known: set[str] = set(_previously_seen_links(folder))
+    desc = os.path.join(folder, 'description.json')
+    if os.path.isfile(desc):
+        try:
+            known.update(extract_links_from_description(desc))
+        except (OSError, ValueError):
+            pass
+    return {k.rstrip('/') for k in known}
+
+
 def download_eroscripts(driver, url: str, download_dir: str) -> bool:
     """Read an eroscripts thread and download the video its first post links to."""
     global _pending_name_hint
@@ -4917,6 +4931,11 @@ def download_eroscripts(driver, url: str, download_dir: str) -> bool:
             return False
         title, cooked = thread
         links = _eroscripts_video_links(cooked)
+        known = _eroscripts_known_links(download_dir)
+        fresh = [l for l in links if l.rstrip('/') not in known]
+        if len(fresh) != len(links):
+            print(f'  [eroscripts] skipping {len(links) - len(fresh)} link(s) already in the post or processed')
+        links = fresh
         print(f'  [eroscripts] "{_safe(title)}" — {len(links)} downloadable link(s)')
         if not links:
             seen = _eroscripts_external_domains(cooked)

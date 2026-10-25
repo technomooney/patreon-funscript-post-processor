@@ -2,6 +2,7 @@
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts'))
 import downloadContent as dc
@@ -47,6 +48,20 @@ class VideoLinkTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class KnownLinksTests(unittest.TestCase):
+    def test_post_links_and_folder_log_are_known(self):
+        import json, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            doc = {'type': 'doc', 'content': [{'type': 'paragraph', 'content': [{'type': 'text', 'text': 'v', 'marks': [
+                {'type': 'link', 'attrs': {'href': 'https://pixeldrain.com/u/abc/'}}]}]}]}
+            with open(os.path.join(d, 'description.json'), 'w') as f:
+                json.dump(doc, f)
+            with mock.patch.object(dc, '_previously_seen_links', return_value={'https://mega.nz/file/x#k'}):
+                got = dc._eroscripts_known_links(d)
+        self.assertIn('https://pixeldrain.com/u/abc', got)
+        self.assertIn('https://mega.nz/file/x#k', got)
 
 
 class TotpTests(unittest.TestCase):
