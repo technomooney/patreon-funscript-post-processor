@@ -24,13 +24,12 @@ class FolderLogTests(unittest.TestCase):
             os.environ['FORCE_RERUN'] = self._old
         self._tmp.cleanup()
 
-    def test_no_root_uses_legacy_file_and_creates_no_db(self):
+    def test_no_library_raises_and_creates_nothing(self):
         d = os.path.join(self.base, 'plain')
         os.makedirs(d)
-        folder_log.append_run(d, 's', n=1)
-        self.assertTrue(folder_log.has_run(d, 's'))
-        self.assertTrue(os.path.isfile(os.path.join(d, '.folder_log.json')))
-        self.assertFalse(os.path.exists(os.path.join(d, '.library-data')))
+        with self.assertRaises(folder_log.NoLibrary):
+            folder_log.append_run(d, 's')
+        self.assertEqual(os.listdir(d), [])
 
     def test_declared_root_writes_db_not_files(self):
         root = library_db.use_root(os.path.join(self.base, 'lib'))
@@ -41,42 +40,18 @@ class FolderLogTests(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(d, '.folder_log.json')))
         self.assertFalse(folder_log.has_run(os.path.join(root, 'creator'), 's'))
 
-    def test_legacy_history_is_merged_not_lost_and_not_duplicated(self):
-        root = library_db.use_root(os.path.join(self.base, 'lib'))
-        d = os.path.join(root, 'post')
-        os.makedirs(d)
-        legacy = [{'timestamp': '2020-01-01T00:00:00', 'script': 'old', 'x': 1}]
-        with open(os.path.join(d, '.folder_log.json'), 'w') as f:
-            json.dump(legacy, f)
-        self.assertTrue(folder_log.has_run(d, 'old'))
-        # the same record imported into the DB must not show twice
-        library_db.add_run(root, 'post', 'old', legacy[0])
-        folder_log.append_run(d, 'new')
-        scripts = [r['script'] for r in folder_log.read(d)]
-        self.assertEqual(sorted(scripts), ['new', 'old'])
-        self.assertTrue(os.path.isfile(os.path.join(d, '.folder_log.json')))   # never deleted
-
-    def test_compressor_log_is_visible(self):
-        root = library_db.use_root(os.path.join(self.base, 'lib'))
-        d = os.path.join(root, 'v')
-        os.makedirs(d)
-        os.makedirs(os.path.join(root, '.av1-compressor'))
-        with open(os.path.join(root, '.av1-compressor', 'library_log.jsonl'), 'w') as f:
+    def test_ensure_library_imports_compressor_and_parked_logs(self):
+        os.makedirs(os.path.join(self.base, 'v'))
+        os.makedirs(os.path.join(self.base, '.av1-compressor', 'legacy_folder_logs', 'post'))
+        os.makedirs(os.path.join(self.base, 'post'))
+        with open(os.path.join(self.base, '.av1-compressor', 'library_log.jsonl'), 'w') as f:
             f.write(json.dumps({'timestamp': 't', 'script': 'compress_library', 'folder': 'v', 'file': 'a.mp4'}) + '\n')
-            f.write(json.dumps({'timestamp': 't', 'script': 'compress_library', 'folder': 'other'}) + '\n')
-        recs = folder_log.read(d)
-        self.assertEqual([r['file'] for r in recs], ['a.mp4'])
-        self.assertTrue(folder_log.has_run(d, 'compress_library'))
-
-    def test_logs_parked_by_old_compressor_are_found(self):
-        root = library_db.use_root(os.path.join(self.base, 'lib'))
-        parked = os.path.join(root, '.av1-compressor', 'legacy_folder_logs', 'post')
-        os.makedirs(parked)
-        with open(os.path.join(parked, '.folder_log.json'), 'w') as f:
+        with open(os.path.join(self.base, '.av1-compressor', 'legacy_folder_logs', 'post', '.folder_log.json'), 'w') as f:
             json.dump([{'timestamp': '1', 'script': 'fix_garbled_names'}], f)
-        d = os.path.join(root, 'post')
-        os.makedirs(d)
-        self.assertTrue(folder_log.has_run(d, 'fix_garbled_names'))
+        folder_log._migrated.clear()
+        folder_log.ensure_library(self.base)
+        self.assertEqual([r['file'] for r in folder_log.read(os.path.join(self.base, 'v'))], ['a.mp4'])
+        self.assertTrue(folder_log.has_run(os.path.join(self.base, 'post'), 'fix_garbled_names'))
 
     def test_force_rerun(self):
         root = library_db.use_root(os.path.join(self.base, 'lib'))
@@ -96,18 +71,16 @@ class FolderLogTests(unittest.TestCase):
         self.assertEqual(folder_log.remove_records(root, lambda r: r['script'] == 'a'), 1)
         self.assertEqual([r['script'] for r in folder_log.read(root)], ['b'])
 
-    def test_ensure_library_creates_db_and_keeps_legacy_history(self):
+    def test_ensure_library_creates_db_and_imports_old_folder_log(self):
         post = os.path.join(self.base, 'post'); os.makedirs(post)
-        folder_log.append_run(post, 'old')                       # no library yet -> legacy json
+        with open(os.path.join(post, '.folder_log.json'), 'w') as f:
+            json.dump([{'timestamp': '2020-01-01T00:00:00', 'script': 'old'}], f)
         folder_log._migrated.clear()
-        root = folder_log.ensure_library(self.base)
-        self.assertEqual(root, self.base)
-        # the old json was imported and filed away, not left beside the post
-        self.assertFalse(os.path.exists(os.path.join(post, '.folder_log.json')))
-        self.assertEqual(len(library_db.runs_for(self.base, 'post')), 1)
+        self.assertEqual(folder_log.ensure_library(self.base), self.base)
         self.assertTrue(os.path.isfile(library_db.db_path(self.base)))
-        self.assertEqual([r['script'] for r in folder_log.read(post)], ['old'])
-        folder_log.append_run(post, 'new')                       # now goes to the DB
+        # imported and filed away, not left beside the post
+        self.assertFalse(os.path.exists(os.path.join(post, '.folder_log.json')))
+        folder_log.append_run(post, 'new')
         self.assertEqual(sorted(r['script'] for r in folder_log.read(post)), ['new', 'old'])
 
     def test_ensure_library_leaves_a_parent_of_libraries_alone(self):

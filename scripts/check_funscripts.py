@@ -653,6 +653,7 @@ def resolve_alt_tagged_videos(root_dir: str) -> tuple[int, int]:
     _reports/alt_video_review.csv instead of being touched or guessed at.
     Returns (resolved_count, unresolved_count).
     """
+    folder_log.ensure_library(root_dir)
     root_dir = os.path.abspath(root_dir)
     resolved: list[dict] = []
     unresolved: list[dict] = []
@@ -706,6 +707,7 @@ def resolve_alt_tagged_videos(root_dir: str) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 def scan(root_dir: str, do_rename: bool = False) -> list[FolderResult]:
+    folder_log.ensure_library(root_dir)
     root_dir = os.path.abspath(root_dir)
     results = []
 

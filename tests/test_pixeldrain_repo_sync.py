@@ -223,11 +223,11 @@ class SyncTests(unittest.TestCase):
             journal = json.load(f)
         self.assertEqual([e['op'] for e in journal['entries']], ['create_marker'])
 
-    def test_sync_urls_refuses_without_a_library_root_when_unattended(self):
+    def test_resolve_root_declares_a_library_when_none_exists(self):
         bare = os.path.join(self._tmp.name, 'nolib', 'c')
         os.makedirs(bare)
-        self.assertIsNone(prs.sync_urls(bare, ['https://pixeldrain.com/l/X'], interactive=False))
-        self.assertFalse(os.path.exists(os.path.join(bare, '.library-data')))
+        self.assertEqual(prs.resolve_root(bare, interactive=False), bare)
+        self.assertTrue(os.path.isdir(os.path.join(bare, '.library-data')))
 
 
 class UtilTests(unittest.TestCase):

@@ -68,6 +68,7 @@ def sync_channel(base_path: str, dest: str = DEFAULT_DEST, dry_run: bool = False
     *latest_only*: for a channel where each post replaces the last (a re-posted archive link), sync only the newest
     post's links, falling back to the next older post only if the newer one can't be read or fails.
     *fetch* is injectable for tests (defaults to the browser reader)."""
+    folder_log.ensure_library(base_path)
     got = read_pending(base_path, channel, interactive, dry_run, fetch)
     if got is None:
         return None

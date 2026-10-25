@@ -424,6 +424,7 @@ def _render_page(folder_path: str, folder_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 def generate(root_dir: str, dry_run: bool) -> int:
+    folder_log.ensure_library(root_dir)
     root_dir = os.path.abspath(root_dir)
     written = 0
 

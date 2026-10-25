@@ -178,18 +178,9 @@ def execute(root: str, base_path: str, items: list[dict], download=None) -> dict
 
 
 def resolve_root(base_path: str, interactive: bool) -> str | None:
-    """The library root for base_path. If none is declared, interactive runs may create one here; unattended
-    runs refuse (a nested database would shadow the real library's -- run migrate_library_data.py first)."""
-    root = library_db.find_root(base_path)
-    if os.path.isdir(os.path.join(root, library_db.DATA_DIRNAME)):
-        return root
-    if not interactive:
-        print(f'  [{SCRIPT_ID}] no library database above {base_path}; run migrate_library_data.py first. Skipping.')
-        return None
-    print(f'  No library database (.library-data) exists above {base_path}.')
-    if input('  Create one in this folder? Say n if this folder sits inside a bigger library (y/n): ').strip().lower() != 'y':
-        return None
-    return library_db.use_root(base_path)
+    """The library root for base_path, declaring one (and importing old logs) when it has none yet. None when
+    base_path sits above other libraries: run it on one creator folder instead."""
+    return folder_log.ensure_library(base_path)
 
 
 def sync_urls(base_path: str, urls: list[str], dest: str = '', dry_run: bool = False, interactive: bool = False) -> dict | None:

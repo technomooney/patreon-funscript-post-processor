@@ -285,6 +285,7 @@ def _write_csv(base_path: str, rows: list[list]) -> str:
 
 def run(base_path: str, options: dict | None, script_id: str, cfg: dict | None = None) -> None:
     """The whole loose-archive run. *script_id* names the undo journal."""
+    folder_log.ensure_library(base_path)
     import pixeldrain_sync as ps
     interactive = options is None
     options = options or {}

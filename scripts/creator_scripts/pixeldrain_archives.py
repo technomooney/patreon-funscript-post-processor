@@ -1406,6 +1406,7 @@ def _process_link_inner(url: str, base_path: str, lib: str, manifest: Manifest, 
 
 
 def run(base_path: str, options: dict | None = None) -> None:
+    folder_log.ensure_library(base_path)
     interactive = options is None
     options = options or {}
     base_path = os.path.abspath(base_path)

@@ -280,6 +280,7 @@ def consolidate(base_path: str) -> tuple[int, int]:
     check). Returns (consolidated_count, error_count); does nothing and
     returns (0, 0) if nothing is found.
     """
+    folder_log.ensure_library(base_path)
     candidates = find_candidates(base_path)
     if not candidates:
         return 0, 0

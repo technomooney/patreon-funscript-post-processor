@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Generate an HTML audit report from .folder_log.json files.
+Generate an HTML audit report from the library database run history.
 
-Reads every .folder_log.json under the given base path, builds one HTML file
+Reads every folder's recorded runs under the given base path, builds one HTML file
 with an overall summary and per-folder detail, and writes it to
 _reports/audit_report.html.
 
@@ -414,6 +414,7 @@ def _render_run(run: dict, dl_script: str | None = None) -> str:
 
 def generate(base: str) -> str:
     base    = os.path.abspath(base)
+    _flog.ensure_library(base)
     entries = _collect(base)
     total   = len(entries)
 

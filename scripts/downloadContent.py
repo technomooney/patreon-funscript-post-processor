@@ -6614,6 +6614,7 @@ def find_and_download_from_funscript_metadata(
 
     *resume*/*auto_confirm*: passed straight through to find_and_download()
     (there's no require_funscript prompt here — tasks are always prebuilt)."""
+    folder_log.ensure_library(base_path)
     tasks, failures = collect_tasks_from_funscript_metadata(base_path)
     if not tasks:
         print("No funscripts with a usable video_url and no existing video found.")

@@ -6,6 +6,7 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'scripts'))
 
+import library_db  # noqa: E402
 import markers  # noqa: E402
 import consolidate_packs  # noqa: E402
 
@@ -20,9 +21,10 @@ class MarkerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as t:
             folder = os.path.join(t, 'post')
             os.makedirs(folder)
+            library_db.use_root(t)
             os.environ.setdefault('ACTION_LOG_POINTER_PATH', os.path.join(t, 'p.json'))
             consolidate_packs._mark_consolidated(t, folder, {'pack_folder': t, 'video': 'v', 'orig_folder': folder}, 'n')
-            self.assertEqual(sorted(f for f in os.listdir(folder) if f.startswith('.')), ['.consolidated', '.folder_log.json'] if os.path.exists(os.path.join(folder, '.folder_log.json')) else ['.consolidated'])
+            self.assertEqual(sorted(f for f in os.listdir(folder) if f.startswith('.')), ['.consolidated'])
             self.assertFalse(os.path.exists(os.path.join(folder, '.manual')))
 
 

@@ -630,14 +630,14 @@ def main():
 
     force_rerun = _ask_bool(
         'Force re-process all folders even if already logged as done? (true/false)\n'
-        '  Each script records a .folder_log.json inside completed folders and\n'
+        '  Each script records completed folders in the library database and\n'
         '  skips them on future runs. Set to true to override that and re-run\n'
         '  everything. The new run is still logged with force_rerun=true.\n'
         '  (Leave false for normal use — override temporarily when needed)',
         current=_read_env('FORCE_RERUN').lower() not in ('', 'false', '0', 'no'),
     )
     _write_env('FORCE_RERUN', 'true' if force_rerun else 'false',
-               comment='Re-process folders that already have a completed run in .folder_log.json. Run is still logged with force_rerun=true.')
+               comment='Re-process folders that already have a completed run in the library database. Run is still logged with force_rerun=true.')
 
     # -------------------------------------------------------------------------
     # Credentials  (keyring, with .env fallback)

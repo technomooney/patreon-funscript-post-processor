@@ -49,7 +49,7 @@ _STEP_CATALOG = [
     ('generate_html', 'Generate HTML',
      'build a description.html visual overview in each post folder'),
     ('generate_audit_report', 'Audit report',
-     'generate _reports/audit_report.html from every folder\'s .folder_log.json'),
+     'generate _reports/audit_report.html from every folder\'s run history'),
 ]
 _STEP_BY_ID = {step_id: (label, desc) for step_id, label, desc in _STEP_CATALOG}
 

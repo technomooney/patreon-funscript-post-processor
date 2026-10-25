@@ -38,6 +38,7 @@ def _sources(creator_key: str, options: dict | None) -> list[dict]:
 
 
 def run(base_path: str, options: dict | None = None) -> None:
+    folder_log.ensure_library(base_path)
     interactive = options is None
     creator_key = os.path.basename(os.path.normpath(base_path))
     root = ps.resolve_root(base_path, interactive)

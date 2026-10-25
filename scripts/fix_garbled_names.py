@@ -713,6 +713,7 @@ def run(root: str, dry_run: bool) -> None:
     folder_log bookkeeping -- no prompts. Used directly by run_unattended.py;
     the __main__ block below is just the interactive/CLI wrapper that
     collects *root*/*dry_run* first."""
+    folder_log.ensure_library(root)
     print(f'Processing: {root}')
     if dry_run:
         print('(dry run — no changes will be made)')

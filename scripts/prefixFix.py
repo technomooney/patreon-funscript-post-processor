@@ -109,6 +109,7 @@ def run(filePath: str, extList: list, reprocess_all: bool) -> None:
     """The actual work, with every choice already made -- no prompts. Used
     directly by run_unattended.py; main() below is just the interactive
     wrapper that collects those choices first."""
+    folder_log.ensure_library(filePath)
     fileList, fileRoots = getFileList(filePath, extList)
 
     # Group files by folder so we can skip/log at the folder level.
