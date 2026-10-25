@@ -46,9 +46,6 @@ class VideoLinkTests(unittest.TestCase):
         self.assertEqual(dc._eroscripts_video_links(''), [])
 
 
-if __name__ == '__main__':
-    unittest.main()
-
 
 class KnownLinksTests(unittest.TestCase):
     def test_post_links_and_folder_log_are_known(self):
@@ -144,3 +141,26 @@ class GenericHostFallbackTests(unittest.TestCase):
         both = html + '<a href="https://mega.nz/file/a#b">m</a>'
         self.assertEqual(dc._eroscripts_video_links(both), ['https://mega.nz/file/a#b'])
         self.assertEqual(dc._eroscripts_external_domains(html), ['pornhub.com', 'twitter.com'])
+
+
+class CompressedProtectionTests(unittest.TestCase):
+    def test_compressed_video_is_protected_unless_overridden(self):
+        import tempfile
+        import library_db
+        with tempfile.TemporaryDirectory() as lib:
+            library_db.use_root(lib)
+            folder = os.path.join(lib, 'post'); os.makedirs(folder)
+            a, b = (os.path.join(folder, n) for n in ('a.mkv', 'b.mkv'))
+            for f in (a, b):
+                open(f, 'wb').close()
+            library_db.add_file(lib, 'test', folder='post', cur_name='a.mkv', state='compressed')
+            library_db.add_file(lib, 'test', folder='post', cur_name='b.mkv', state='downloaded')
+            self.assertTrue(dc._protected_from_replace(a))
+            self.assertFalse(dc._protected_from_replace(b))
+            with mock.patch.dict(os.environ, {'OVERWRITE_COMPRESSED': 'true'}):
+                self.assertFalse(dc._protected_from_replace(a))
+        self.assertFalse(dc._protected_from_replace(os.path.join(tempfile.gettempdir(), 'x.mkv')))
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -33,6 +33,7 @@ import creator_config
 import collection_redownload_queue
 import external_links
 import folder_log
+import library_db
 import browser_defaults
 import browser_session
 import funscript_utils
@@ -1182,6 +1183,33 @@ def _protect_av1_enabled() -> bool:
     return os.getenv('PROTECT_AV1_FROM_REPLACE', 'false').strip().lower() in ('true', '1', 'yes')
 
 
+def _overwrite_compressed_enabled() -> bool:
+    """OVERWRITE_COMPRESSED from the environment (default off): lets a download replace a compressed video."""
+    return os.getenv('OVERWRITE_COMPRESSED', 'false').strip().lower() in ('true', '1', 'yes')
+
+
+def _is_marked_compressed(path: str) -> bool:
+    """True if the library database says the AV1 compressor produced *path* (files.state = 'compressed').
+
+    Replacement rules compare size/resolution and are codec-blind, so they would happily swap a compressed
+    video back for the bigger original. Outside a library database nothing is marked, so this is False."""
+    folder = os.path.dirname(os.path.abspath(path))
+    root = library_db.find_root(folder)
+    if not os.path.isdir(os.path.join(root, library_db.DATA_DIRNAME)):
+        return False
+    rows = library_db.find_files(root, folder=library_db.rel_folder(root, folder), cur_name=os.path.basename(path))
+    return any(r.get('state') == 'compressed' for r in rows)
+
+
+def _protected_from_replace(path: str) -> bool:
+    """A compressed video is left alone by every replace rule unless OVERWRITE_COMPRESSED is on."""
+    if _overwrite_compressed_enabled() or not _is_marked_compressed(path):
+        return False
+    print(f'  [protect] {_safe(os.path.basename(path))} was compressed — not replacing '
+          '(set OVERWRITE_COMPRESSED=true to allow)')
+    return True
+
+
 def _quality_is_replacement_candidate(remote_q: dict, local_q: dict,
                                        remote_size: int, local_size: int) -> bool:
     """Return True if the remote file is worth downloading to replace the local one.
@@ -1458,7 +1486,8 @@ def _decide_skip_or_replace(match_path: str, url: str, headers: dict[str, str],
         print('  [pre-check] probing remote quality...', end='\r', flush=True)
         remote_q = _video_quality(url, headers) or {}
 
-    if _quality_is_replacement_candidate(remote_q, local_q, content_length, local_size):
+    if (_quality_is_replacement_candidate(remote_q, local_q, content_length, local_size)
+            and not _protected_from_replace(match_path)):
         if content_length > 0:
             note = (f'smaller file {content_length / 1024 / 1024:.1f} MB '
                     f'vs {local_size / 1024 / 1024:.1f} MB')
@@ -1741,7 +1770,7 @@ def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: 
         existing_path = os.path.join(download_dir, existing_match)
         new_size = os.path.getsize(final_temp)
         old_size = os.path.getsize(existing_path)
-        if new_size < old_size:
+        if new_size < old_size and not _protected_from_replace(existing_path):
             # New file is smaller (better compressed) — replace the old one
             os.remove(existing_path)
             print(f'  [post-check] replacing {_safe(existing_match)} with smaller identical-content file '
@@ -7029,7 +7058,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                         max_res = _get_max_resolution()
                         new_h = (_video_quality(downloaded) or {}).get('height', 0)
                         old_h = (_video_quality(similar) or {}).get('height', 0)
-                        if _closer_to_target_resolution(new_h, old_h, max_res):
+                        if _closer_to_target_resolution(new_h, old_h, max_res) and not _protected_from_replace(similar):
                             kept_name = os.path.basename(similar)
                             print(f'  [replace] {_safe(os.path.basename(downloaded))} ({new_h}p) fits '
                                   f'MAX_RESOLUTION better than existing {_safe(kept_name)} ({old_h}p) — replacing')
