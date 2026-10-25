@@ -96,6 +96,24 @@ class FolderLogTests(unittest.TestCase):
         self.assertEqual(folder_log.remove_records(root, lambda r: r['script'] == 'a'), 1)
         self.assertEqual([r['script'] for r in folder_log.read(root)], ['b'])
 
+    def test_ensure_library_creates_db_and_keeps_legacy_history(self):
+        post = os.path.join(self.base, 'post'); os.makedirs(post)
+        folder_log.append_run(post, 'old')                       # no library yet -> legacy json
+        root = folder_log.ensure_library(self.base)
+        self.assertEqual(root, self.base)
+        self.assertTrue(os.path.isfile(library_db.db_path(self.base)))
+        self.assertEqual([r['script'] for r in folder_log.read(post)], ['old'])
+        folder_log.append_run(post, 'new')                       # now goes to the DB
+        self.assertEqual(sorted(r['script'] for r in folder_log.read(post)), ['new', 'old'])
+
+    def test_ensure_library_leaves_a_parent_of_libraries_alone(self):
+        child = os.path.join(self.base, 'creator'); os.makedirs(child)
+        library_db.use_root(child)
+        library_db._roots.clear()
+        self.assertIsNone(folder_log.ensure_library(self.base))
+        self.assertFalse(os.path.exists(os.path.join(self.base, library_db.DATA_DIRNAME)))
+        self.assertEqual(folder_log.ensure_library(child), child)    # already a library: unchanged
+
 
 if __name__ == '__main__':
     unittest.main()

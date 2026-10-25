@@ -6742,6 +6742,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
     given) follows the config's force_normal_download. *script_options* is
     handed to the creator script for an unattended run.
     """
+    folder_log.ensure_library(base_path)
     prebuilt = tasks is not None
     if not prebuilt and _run_download_script(base_path, force_normal, auto_confirm, script_options):
         return
