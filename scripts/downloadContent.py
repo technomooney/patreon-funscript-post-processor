@@ -7038,6 +7038,11 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                             _link_failed = True
                             break
 
+                if domain == _EROSCRIPTS_HOST and not _link_failed and not _link_deferred:
+                    # Whatever came of it, a resume must not hit the forum for this thread again: that many
+                    # requests is what trips its rate limit. A fresh (non-resume) run clears this and retries.
+                    tracker.mark_done(folder, link)
+
                 if _link_deferred:
                     link_statuses.setdefault(folder, {})[link] = 'deferred_mega'
                     continue  # mega retry handed off to background worker
