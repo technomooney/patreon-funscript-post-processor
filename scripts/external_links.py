@@ -66,3 +66,15 @@ def downloaded_urls(folder: str) -> set[str]:
         rows = con.execute("SELECT url FROM downloader_external_links WHERE folder=? AND status='downloaded'",
                            (rel,)).fetchall()
     return {r[0] for r in rows}
+
+
+def source_settled(folder: str, source_url: str) -> bool:
+    """True when everything found on *source_url* (e.g. a thread) for *folder* downloaded and nothing there failed."""
+    loc = _locate(folder)
+    if loc is None:
+        return False
+    root, rel = loc
+    with library_db.db(root) as con:
+        statuses = {r[0] for r in con.execute(
+            'SELECT status FROM downloader_external_links WHERE folder=? AND source_url=?', (rel, source_url))}
+    return statuses == {'downloaded'}

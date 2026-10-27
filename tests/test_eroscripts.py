@@ -61,14 +61,45 @@ class KnownLinksTests(unittest.TestCase):
         self.assertIn('https://mega.nz/file/x#k', got)
 
 
+class CaptchaUnwrapTests(unittest.TestCase):
+    CAPTCHA = ('https://disk.yandex.com/showcaptcha?cc=1&mt=AB&retpath='
+               'aHR0cHM6Ly9kaXNrLnlhbmRleC5jb20vaS8wNDFYRzB1ODBIbDlOQT8%2C_a7bb70927cf1&t=2')
+
+    def test_original_link_recovered(self):
+        self.assertEqual(dc._unwrap_captcha_link(self.CAPTCHA), 'https://disk.yandex.com/i/041XG0u80Hl9NA')
+
+    def test_other_links_untouched(self):
+        for url in ['https://disk.yandex.com/i/abc', 'https://mega.nz/file/a#b', 'https://disk.yandex.com/showcaptcha?cc=1']:
+            self.assertEqual(dc._unwrap_captcha_link(url), url)
+
+    def test_video_links_use_the_unwrapped_url(self):
+        html = f'<a href="{self.CAPTCHA.replace("&", "&amp;")}">Yandex</a>'
+        self.assertEqual(dc._eroscripts_video_links(html), ['https://disk.yandex.com/i/041XG0u80Hl9NA'])
+
+
 class ExternalLinksDbTests(unittest.TestCase):
+    def test_settled_thread_is_skipped_without_opening_it(self):
+        import tempfile
+        import external_links, library_db
+        with tempfile.TemporaryDirectory() as lib:
+            library_db.use_root(lib)
+            folder = os.path.join(lib, 'post'); os.makedirs(folder)
+            url = 'https://discuss.eroscripts.com/t/s/5'
+            external_links.record(folder, 'https://pixeldrain.com/u/zzz', 'eroscripts', url, 'downloaded')
+            with mock.patch.object(dc, '_eroscripts_browser_login') as login:
+                self.assertTrue(dc.download_eroscripts(None, url, folder))
+                login.assert_not_called()
+            self.assertTrue(dc._last_download_skipped)
+            external_links.record(folder, 'https://mega.nz/file/q#k', 'eroscripts', url, 'failed')
+            self.assertFalse(external_links.source_settled(folder, url))
+
     def test_recorded_in_library_db_and_filtered_next_time(self):
         import tempfile
         import external_links, library_db
         with tempfile.TemporaryDirectory() as lib:
             library_db.use_root(lib)
             folder = os.path.join(lib, 'post'); os.makedirs(folder)
-            thread = ('T', '<a href="https://pixeldrain.com/u/zzz">v</a><a href="https://mega.nz/file/q#k">m</a>')
+            thread = ('T', '<a href="https://mega.nz/file/q#k">m</a><a href="https://pixeldrain.com/u/zzz">v</a>')
             calls = []
             def handler(driver, link, d):
                 calls.append(link)
@@ -80,7 +111,7 @@ class ExternalLinksDbTests(unittest.TestCase):
                 self.assertEqual(external_links.downloaded_urls(folder), {'https://pixeldrain.com/u/zzz'})
                 calls.clear()
                 dc.download_eroscripts(None, 'https://discuss.eroscripts.com/t/s/5', folder)
-            self.assertEqual(calls, ['https://mega.nz/file/q#k'])     # downloaded one skipped, failed one retried
+            self.assertEqual(calls, ['https://mega.nz/file/q#k'])     # downloaded one skipped, failed one retried (mega is tried first, fails, then pixeldrain succeeds)
 
 
 class TotpTests(unittest.TestCase):

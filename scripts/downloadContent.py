@@ -4712,12 +4712,32 @@ _EROSCRIPTS_YTDLP_HOSTS = ('pornhub.com', 'xvideos.com', 'xhamster.com', 'xnxx.c
 
 def _eroscripts_external_domains(cooked_html: str) -> list[str]:
     """Distinct non-eroscripts link domains in a post, for the 'nothing usable' message."""
+    from html import unescape
     seen: list[str] = []
     for href in re.findall(r'href="(https?://[^"]+)"', cooked_html or ''):
-        d = get_domain(href)
+        d = get_domain(_unwrap_captcha_link(unescape(href)))
         if 'eroscripts.com' not in d and d not in seen:
             seen.append(d)
     return seen
+
+
+def _unwrap_captcha_link(href: str) -> str:
+    """The page a Yandex /showcaptcha redirect was meant for, or *href* unchanged for any other link.
+
+    Discourse builds link previews server-side and stores the URL it ended up on. Yandex bounces that bot to
+    /showcaptcha, so the post's cooked HTML carries the captcha URL; its retpath parameter is the original
+    link, base64-encoded and followed by ',<signature>'."""
+    import base64
+    parsed = urlparse(href)
+    host = parsed.netloc.removeprefix('www.')
+    if parsed.path.rstrip('/') != '/showcaptcha' or not (host.startswith('disk.yandex.') or host.startswith('yandex.')):
+        return href
+    retpath = parse_qs(parsed.query).get('retpath', [''])[0].split(',')[0]
+    try:
+        original = base64.urlsafe_b64decode(retpath + '=' * (-len(retpath) % 4)).decode('utf-8').rstrip('?')
+    except (ValueError, UnicodeDecodeError):
+        return href
+    return original if original.startswith(('http://', 'https://')) else href
 
 
 def _eroscripts_video_links(cooked_html: str) -> list[str]:
@@ -4733,7 +4753,7 @@ def _eroscripts_video_links(cooked_html: str) -> list[str]:
 
         def handle_starttag(self, tag, attrs):
             if tag == 'a':
-                href = dict(attrs).get('href') or ''
+                href = _unwrap_captcha_link(dict(attrs).get('href') or '')
                 if href.startswith(('http://', 'https://')):
                     self.hrefs.append(href)
 
@@ -4933,12 +4953,19 @@ def _eroscripts_known_links(folder: str) -> set[str]:
 
 def download_eroscripts(driver, url: str, download_dir: str) -> bool:
     """Read an eroscripts thread and download the video its first post links to."""
-    global _pending_name_hint
+    global _pending_name_hint, _last_download_skipped
     topic_id = _eroscripts_thread_id(url)
     code = _eroscripts_search_code(url)
     if topic_id is None and code is None:
         print('  [eroscripts] not a thread link — nothing to download')
         return False
+
+    if topic_id is not None and external_links.source_settled(download_dir, url):
+        # A previous run pulled everything this thread offered (none of its links failed), so opening it
+        # again is wasted work; a resume used to re-walk every thread this way.
+        print('  [eroscripts] thread already processed — skipping')
+        _last_download_skipped = True
+        return True
 
     if not _eroscripts_browser_login(driver):
         return False
@@ -4966,6 +4993,11 @@ def download_eroscripts(driver, url: str, download_dir: str) -> bool:
         fresh = [l for l in links if l.rstrip('/') not in known]
         if len(fresh) != len(links):
             print(f'  [eroscripts] skipping {len(links) - len(fresh)} link(s) already in the post or processed')
+        if links and not fresh:
+            # Everything the thread offers is already covered: that is done, not failed.
+            print('  [eroscripts] nothing new in this thread')
+            _last_download_skipped = True
+            return True
         links = fresh
         print(f'  [eroscripts] "{_safe(title)}" — {len(links)} downloadable link(s)')
         if not links:
