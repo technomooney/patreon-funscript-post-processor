@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 _BROWSER_UA = ('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) '
                'Chrome/130.0.0.0 Safari/537.36')
 _TIMEOUT = 15
+_BODY_BYTES = 20000
 _MEGA_API = 'https://g.api.mega.co.nz/cs'
 
 # MEGA SDK error -> (reason, permanent). Everything else is reported but retryable.
@@ -32,16 +33,20 @@ class Verdict(NamedTuple):
     permanent: bool
 
 
-def _http_status(url: str) -> int | None:
-    """Status code of a GET with a browser User-Agent; None when the request itself failed (DNS, timeout...)."""
+def _http_status(url: str) -> tuple[int | None, str]:
+    """(status code, first bytes of the body) of a GET with a browser User-Agent. Status is None when the request
+    itself failed (DNS, timeout...). The probe is anonymous, like nobody logged in."""
     req = urllib.request.Request(url, headers={'User-Agent': _BROWSER_UA})
     try:
         with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-            return resp.status
+            return resp.status, ''
     except urllib.error.HTTPError as e:
-        return e.code
+        try:
+            return e.code, e.read(_BODY_BYTES).decode('utf-8', 'replace')
+        except OSError:
+            return e.code, ''
     except (urllib.error.URLError, OSError, ValueError):
-        return None
+        return None, ''
 
 
 def _mega_api(payload: dict, node: str | None = None):
@@ -84,12 +89,20 @@ def _probe_mega(url: str) -> Verdict | None:
     return Verdict('mega_alive', None, False)
 
 
+_NOT_FOUND_TITLE = re.compile(r'<title>\s*(?:404|410)\b[^<]*not found|<title>[^<]*not found', re.I)
+
+
 def _probe_http_page(url: str) -> Verdict:
-    status = _http_status(url)
+    status, body = _http_status(url)
     if status is None:
         return Verdict('unreachable', None, False)
     if status in (404, 410):
-        return Verdict(f'http_{status}', status, True)
+        # Only a plain "404 Not Found" page proves the video is gone. A page for something hidden from an
+        # anonymous visitor (private / members-only / login-gated) must never be mistaken for it: the downloader
+        # may be logged in and see it fine.
+        if _NOT_FOUND_TITLE.search(body):
+            return Verdict(f'http_{status}', status, True)
+        return Verdict(f'http_{status}_unrecognised', status, False)
     if status in (401, 403):
         return Verdict(f'blocked_{status}', status, False)
     if status == 429:

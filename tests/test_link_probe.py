@@ -43,14 +43,23 @@ class MegaTests(unittest.TestCase):
         self.assertIsNone(link_probe.probe('https://mega.nz/'))
 
 
+NOT_FOUND_BODY = '<html><head><title>404 Not Found</title></head><body><h1>Not Found</h1></body></html>'
+
+
 class PageTests(unittest.TestCase):
-    def verdict(self, status):
-        with mock.patch.object(link_probe, '_http_status', return_value=status):
+    def verdict(self, status, body=''):
+        with mock.patch.object(link_probe, '_http_status', return_value=(status, body)):
             return link_probe.probe(R34)
 
-    def test_404_and_410_are_permanent(self):
-        self.assertEqual(self.verdict(404), ('http_404', 404, True))
-        self.assertTrue(self.verdict(410).permanent)
+    def test_plain_404_and_410_pages_are_permanent(self):
+        self.assertEqual(self.verdict(404, NOT_FOUND_BODY), ('http_404', 404, True))
+        self.assertTrue(self.verdict(410, NOT_FOUND_BODY.replace('404', '410')).permanent)
+
+    def test_404_that_is_not_the_plain_page_is_never_permanent(self):
+        # a login-gated / private page that happens to carry a 404 status must not be mistaken for a removal
+        for body in ('', '<title>Please log in to view this video</title>', '<title>Private video</title>'):
+            v = self.verdict(404, body)
+            self.assertEqual((v.reason, v.permanent), ('http_404_unrecognised', False))
 
     def test_blocked_rate_limited_and_server_errors_are_not(self):
         for status in (401, 403, 429, 500, 503, None):
@@ -68,7 +77,7 @@ class PageTests(unittest.TestCase):
 
 class ClassifyEntryTests(unittest.TestCase):
     def test_adds_fields_only_when_probed(self):
-        with mock.patch.object(link_probe, '_http_status', return_value=404):
+        with mock.patch.object(link_probe, '_http_status', return_value=(404, NOT_FOUND_BODY)):
             e = link_probe.classify_entry({'link': R34})
         self.assertEqual((e['reason'], e['http_status'], e['permanent']), ('http_404', 404, True))
         self.assertEqual(link_probe.classify_entry({'link': 'https://example.com/x'}), {'link': 'https://example.com/x'})
