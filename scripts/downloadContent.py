@@ -657,6 +657,11 @@ def _stripped_test_type_browser(browser: str) -> str:
     if sys.platform == 'win32':
         return browser
 
+    # undetected_chromedriver appends --no-sandbox to every launch whatever we ask, which makes Brave show its
+    # "unsupported command-line flag" banner (and runs the renderer unsandboxed). Unprivileged user namespaces are
+    # on here, so the sandbox works: strip the flag too, unless BROWSER_NO_SANDBOX=true (root / container).
+    no_sandbox = os.getenv('BROWSER_NO_SANDBOX', 'false').strip().lower() == 'true'
+
     try:
         cache_dir = os.path.dirname(uc.Patcher().executable_path)
     except Exception:
@@ -671,6 +676,7 @@ def _stripped_test_type_browser(browser: str) -> str:
         'for a in "$@"; do\n'
         '  case "$a" in\n'
         '    --test-type|--test-type=*) continue ;;\n'
+        + ('' if no_sandbox else '    --no-sandbox) continue ;;\n') +
         '  esac\n'
         '  args="$args \\"$a\\""\n'
         'done\n'

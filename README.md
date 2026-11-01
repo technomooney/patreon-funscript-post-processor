@@ -114,6 +114,7 @@ All settings live in `.env` (created by setup). Key options:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BROWSER_HEADLESS` | `true` | Run Brave in headless mode. Set to `false` if sites block automation |
+| `BROWSER_NO_SANDBOX` | `false` | Keep Chromium's `--no-sandbox` flag. Off by default so the sandbox stays on (and Brave shows no warning banner); set `true` when running as root or in a container |
 | `MAX_RESOLUTION` | `1080` | Maximum download resolution |
 | `SKIP_KNOWN_FAILURES` | `false` | Skip links listed in `failed_downloads.csv` |
 | `DEDUP_VERBOSE` | `false` | Print one line per file during dedup. Warning: very noisy on large libraries |
