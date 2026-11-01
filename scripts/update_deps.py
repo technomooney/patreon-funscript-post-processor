@@ -37,6 +37,23 @@ def _package_names() -> list[str]:
     return names
 
 
+def _upper_bounds() -> dict[str, str]:
+    """Return {package name: version} for every '<X' ceiling in requirements.txt.
+
+    Only ceilings are honored when picking a version ('==' pins are the baseline the updater is meant to move
+    past). One exists because a package must stay inside what another supports: yt-dlp only uses curl-cffi
+    below 0.16 and silently drops impersonation for anything newer.
+    """
+    bounds = {}
+    with open(REQUIREMENTS_PATH, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.split('#', 1)[0].strip()
+            m = re.match(r'^([A-Za-z0-9._-]+)\s*<\s*(\d+(?:\.\d+)*)\s*$', line)
+            if m:
+                bounds[m.group(1)] = m.group(2)
+    return bounds
+
+
 # Only plain numeric dotted versions (e.g. "4.46.0") are candidates. This also
 # weeds out legacy pre-PEP440 formats old packages like setuptools still have
 # in their PyPI history (e.g. "0.6c11"), which aren't safely comparable.
@@ -48,10 +65,11 @@ def _version_key(version: str) -> tuple:
     return tuple(int(p) if p.isdigit() else p for p in re.split(r'[.\-+]', version))
 
 
-def _best_version(name: str, min_age_days: int) -> str | None:
+def _best_version(name: str, min_age_days: int, below: str | None = None) -> str | None:
     """Return the newest stable, non-yanked version of *name* published at least
     *min_age_days* ago, or None. Pre-release/dev builds (yt-dlp publishes nightly
     dev builds to PyPI) and yanked releases are never candidates regardless of age.
+    *below*: exclusive version ceiling, when requirements.txt sets one.
     """
     url = f'https://pypi.org/pypi/{name}/json'
     with urllib.request.urlopen(url, timeout=15) as resp:
@@ -68,6 +86,8 @@ def _best_version(name: str, min_age_days: int) -> str | None:
         if not upload_times:
             continue
         uploaded = min(datetime.datetime.fromisoformat(t.replace('Z', '+00:00')) for t in upload_times)
+        if below and _version_key(version) >= _version_key(below):
+            continue
         if uploaded <= cutoff:
             candidates.append(version)
 
@@ -79,10 +99,11 @@ def _best_version(name: str, min_age_days: int) -> str | None:
 def main() -> None:
     pip_cmd = [sys.executable, '-m', 'pip', 'install', '--quiet']
 
+    bounds = _upper_bounds()
     for name in _package_names():
         print(f'[update-deps] checking {name} (>= {MIN_PACKAGE_AGE_DAYS}d old)...')
         try:
-            version = _best_version(name, MIN_PACKAGE_AGE_DAYS)
+            version = _best_version(name, MIN_PACKAGE_AGE_DAYS, bounds.get(name))
         except (OSError, json.JSONDecodeError) as e:
             print(f'[update-deps] could not check {name}: {e} — skipping')
             continue
