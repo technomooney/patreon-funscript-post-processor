@@ -36,6 +36,7 @@ import library_db
 import report_store
 import link_probe
 import link_probe_browser
+import mega_cooldown
 import browser_defaults
 import browser_session
 import funscript_utils
@@ -264,10 +265,11 @@ class CloudflareBlockedError(Exception):
 
 
 class MegaRateLimitedError(Exception):
-    """Raised by download_mega on exit 6 (too many connections).
+    """Raised by download_mega on exit 6 ("too many requests for this resource"), or when a recent exit 6 has MEGA
+    on cooldown and no mega-get was started at all.
 
-    *remaining_delays* is the list of wait intervals (seconds) still available
-    for retries; the worker pops from the front on each attempt.
+    *remaining_delays* has one entry per retry still available; the worker pops from the front on each attempt
+    (the actual waiting is the shared cooldown, see mega_cooldown.py).
     """
     def __init__(self, remaining_delays: list[int]):
         self.remaining_delays = remaining_delays
@@ -4291,7 +4293,21 @@ def _mega_flatten_folders(download_dir: str, before: set[str]) -> None:
 
 
 _MEGA_RATE_LIMIT_EXIT = 6
-_MEGA_RATE_LIMIT_DELAYS = (15, 15, 15)  # seconds before each retry attempt
+# A rate limit pauses every mega-get (foreground and worker) for an escalating time, not a fixed 15 s: MEGA publishes no
+# figure for how long exit 6 lasts. MEGA_RETRY_MINUTES tunes the steps; MEGA_MAX_WAIT_MINUTES is how long the end of a
+# run waits for retries before leaving the rest for a later run.
+_mega_cooldown = mega_cooldown.Cooldown(mega_cooldown.levels_from_env(os.getenv('MEGA_RETRY_MINUTES')))
+_env_mega_max_wait = os.getenv('MEGA_MAX_WAIT_MINUTES', '120').strip()
+_MEGA_MAX_WAIT: int = int(float(_env_mega_max_wait) * 60) if _env_mega_max_wait.replace('.', '', 1).isdigit() else 7200
+
+
+# Only one mega-get at a time, whoever starts it (the main loop or the retry worker): two sessions on the one MEGAcmd
+# server at once is an easy way to provoke the very rate limit the cooldown is waiting out.
+_mega_get_lock = threading.Lock()
+
+
+def _iso_time(ts: float) -> str:
+    return time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(ts))
 
 # The background worker (see _MegaWorker below) doesn't kill mega-get on a
 # fixed overall duration - most of what used to eat the full _MEGA_TIMEOUT
@@ -4394,6 +4410,7 @@ class _MegaWorker:
         self._thread = threading.Thread(target=self._run, daemon=True, name='mega-worker')
         self._term_proc: subprocess.Popen | None = None
         self._abort = threading.Event()
+        self._current: dict | None = None     # the job being waited on or run right now
 
     def start(self) -> None:
         with open(self._log_path, 'w', encoding='utf-8') as f:
@@ -4430,7 +4447,7 @@ class _MegaWorker:
                   f'({len(remaining_delays)} attempt(s) remaining)')
         self._queue.put({
             'link': link, 'download_dir': download_dir, 'basename': basename,
-            'delays': remaining_delays, 'retry_after': retry_after,
+            'delays': remaining_delays, 'total': len(remaining_delays), 'retry_after': retry_after,
         })
 
     def _run(self) -> None:
@@ -4442,22 +4459,36 @@ class _MegaWorker:
             if job is None:
                 self._queue.task_done()
                 break
+            self._current = job
             try:
                 self._process(job)
             finally:
+                self._current = None
                 self._queue.task_done()
 
     def _process(self, job: dict) -> None:
-        # Wait with periodic log lines so the window shows progress.
+        # Wait with periodic log lines so the window shows progress. The wait ends only when both its own time
+        # and the shared pause are over AND no other mega-get is running (lock held until the run below ends).
         while True:
             if self._abort.is_set():
                 return
-            remaining = job['retry_after'] - time.time()
-            if remaining <= 0:
-                break
-            self._log(f'{job["basename"]}: retrying in {int(remaining)}s...')
-            self._abort.wait(min(self._LOG_INTERVAL, max(1, remaining)))
+            # Its own time, and the shared pause every other mega-get is also waiting out.
+            remaining = max(job['retry_after'], _mega_cooldown.until()) - time.time()
+            if remaining > 0:
+                self._log(f'{job["basename"]}: retrying in {int(remaining)}s...')
+                self._abort.wait(min(self._LOG_INTERVAL, max(1, remaining)))
+                continue
+            if _mega_get_lock.acquire(timeout=1):
+                if max(job['retry_after'], _mega_cooldown.until()) - time.time() <= 0:
+                    break
+                _mega_get_lock.release()    # someone was rate limited while we waited for the lock: wait again
 
+        try:
+            self._run_locked(job)
+        finally:
+            _mega_get_lock.release()
+
+    def _run_locked(self, job: dict) -> None:
         if self._abort.is_set():
             return
         mega_get = shutil.which('mega-get')
@@ -4467,8 +4498,8 @@ class _MegaWorker:
                                'before': set()})
             return
 
-        attempt_num = len(_MEGA_RATE_LIMIT_DELAYS) - len(job['delays']) + 1
-        self._log(f'{job["basename"]}: running mega-get (attempt {attempt_num}/{len(_MEGA_RATE_LIMIT_DELAYS)})...')
+        attempt_num = job['total'] - len(job['delays']) + 1
+        self._log(f'{job["basename"]}: running mega-get (attempt {attempt_num}/{job["total"]})...')
         before = set(os.listdir(job['download_dir']))
 
         cmd = [mega_get]
@@ -4488,6 +4519,7 @@ class _MegaWorker:
             return
 
         if result.returncode == 0:
+            _mega_cooldown.ok()
             self._log(f'{job["basename"]}: succeeded!')
             self._results.put({'success': True, 'link': job['link'],
                                'download_dir': job['download_dir'], 'basename': job['basename'],
@@ -4496,10 +4528,12 @@ class _MegaWorker:
 
         err = _safe(result.stderr.strip()) if result.stderr else '(no output)'
         next_delays = job['delays'][1:]
+        if result.returncode == _MEGA_RATE_LIMIT_EXIT:
+            wait = _mega_cooldown.hit()     # the whole app pauses, not just this job
+            self._log(f'{job["basename"]}: still rate limited -- every mega-get now waits {wait // 60} min')
         if result.returncode == _MEGA_RATE_LIMIT_EXIT and next_delays:
-            self._log(f'{job["basename"]}: still rate limited — retrying in {next_delays[0]}s')
             job['delays'] = next_delays
-            job['retry_after'] = time.time() + next_delays[0]
+            job['retry_after'] = time.time() + wait
             self._queue.put(job)  # re-enqueue; task_done called by _run after _process returns
             return
 
@@ -4518,26 +4552,31 @@ class _MegaWorker:
                 break
         return results
 
-    def wait_all(self) -> None:
-        """Block until the queue is empty and all jobs are finished."""
-        self._queue.join()
+    def wait_all(self, timeout: float | None = None) -> bool:
+        """Block until the queue is empty and all jobs are finished, or *timeout* seconds have passed.
+        Returns True when everything finished."""
+        deadline = None if timeout is None else time.time() + timeout
+        while self._queue.unfinished_tasks:
+            if deadline is not None and time.time() >= deadline:
+                return False
+            time.sleep(0.5)
+        return True
 
-    def abort(self) -> int:
-        """Give up on every queued retry right now (they stay un-tracked, so the next run
-        picks them up again), stop the worker and close its log window. A mega-get already
-        running isn't killed -- it belongs to the MEGAcmd server -- but nothing new starts.
-        Returns how many queued jobs were dropped."""
+    def abort(self) -> list[dict]:
+        """Give up on every queued retry right now, stop the worker and close its log window. A mega-get already
+        running isn't killed -- it belongs to the MEGAcmd server -- but nothing new starts. Returns the jobs that
+        never got their answer (the one being waited on included) so the caller can note them for a later run."""
+        in_flight = self._current          # read before the flag: the worker clears it once it notices the abort
         self._abort.set()
-        dropped = 0
+        dropped = [in_flight] if in_flight is not None else []
         while True:
             try:
-                self._queue.get_nowait()
+                dropped.append(self._queue.get_nowait())
             except queue.Empty:
                 break
             self._queue.task_done()
-            dropped += 1
         self.stop(join_timeout=3)
-        return dropped
+        return [j for j in dropped if j]
 
     def stop(self, join_timeout: float = 30) -> None:
         self._queue.put(None)
@@ -4613,28 +4652,37 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
         cmd.append(f'--password={password}')
     cmd += [url, download_dir]
 
-    print('  [mega.nz] running mega-get...' + (' (password-protected link)' if password else ''))
-    _set_status(f'  [mega.nz] downloading — timeout {_MEGA_TIMEOUT // 60} min...')
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True, text=True, timeout=_MEGA_TIMEOUT,
-            creationflags=_MEGA_WIN_FLAGS,
-        )
-    except subprocess.TimeoutExpired:
-        _last_mega_filename_hint = _mega_filename_hint(download_dir, before)
-        print(f'  [mega.nz] download timed out after {_MEGA_TIMEOUT // 60} min (file: {_last_mega_filename_hint})')
-        _note_failure(link_probe.Verdict('mega_timeout', None, False))
-        return False
-    except OSError as e:
-        print(f'  [mega.nz] handler error: {e}')
-        return False
+    with _mega_get_lock:
+        # (checked inside the lock: the worker may have been rate limited while we waited for it)
+        if _mega_cooldown.remaining() > 0:
+            # MEGA pushed back a moment ago: do not ask again until the wait is over, hand the link to the worker.
+            print(f'  [mega.nz] rate limited recently -- not asking again for {int(_mega_cooldown.remaining())}s, '
+                  'deferring to background worker')
+            raise MegaRateLimitedError(list(_mega_cooldown.levels))
+
+        print('  [mega.nz] running mega-get...' + (' (password-protected link)' if password else ''))
+        _set_status(f'  [mega.nz] downloading — timeout {_MEGA_TIMEOUT // 60} min...')
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True, text=True, timeout=_MEGA_TIMEOUT,
+                creationflags=_MEGA_WIN_FLAGS,
+            )
+        except subprocess.TimeoutExpired:
+            _last_mega_filename_hint = _mega_filename_hint(download_dir, before)
+            print(f'  [mega.nz] download timed out after {_MEGA_TIMEOUT // 60} min (file: {_last_mega_filename_hint})')
+            _note_failure(link_probe.Verdict('mega_timeout', None, False))
+            return False
+        except OSError as e:
+            print(f'  [mega.nz] handler error: {e}')
+            return False
 
     if result.stdout:
         for line in result.stdout.strip().splitlines():
             print(f'  [mega.nz] {_safe(line)}')
 
     if result.returncode == 0:
+        _mega_cooldown.ok()
         global _last_download_skipped
         _mega_flatten_folders(download_dir, before)
         after = set(os.listdir(download_dir))
@@ -4646,8 +4694,9 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
     err = _safe(result.stderr.strip()) if result.stderr else '(no output)'
     if result.returncode == _MEGA_RATE_LIMIT_EXIT:
         _last_mega_filename_hint = _mega_filename_hint(download_dir, before, result.stdout)
-        print('  [mega.nz] rate limited — deferring to background worker')
-        raise MegaRateLimitedError(list(_MEGA_RATE_LIMIT_DELAYS))
+        wait = _mega_cooldown.hit()
+        print(f'  [mega.nz] rate limited -- pausing mega for {wait // 60} min, deferring to background worker')
+        raise MegaRateLimitedError(list(_mega_cooldown.levels))
 
     _last_mega_filename_hint = _mega_filename_hint(download_dir, before, result.stdout)
     print(f'  [mega.nz] mega-get failed (exit {result.returncode}): {err}')
@@ -6916,6 +6965,11 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
     if known_dead:
         known_failure_links |= known_dead
         print(f'[skip-dead-url] {len(known_dead)} permanently dead link(s) will be skipped.')
+    # Rate-limited links wait for their retry time; asking MEGA again before it only extends the block.
+    cooling = report_store.cooling_down_links(base_path)
+    if cooling:
+        known_failure_links |= cooling
+        print(f'[skip-cooling-down] {len(cooling)} rate-limited link(s) are not due for a retry yet.')
 
     if prebuilt:
         failures = failures or []
@@ -7005,6 +7059,16 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
 
     mega_worker: _MegaWorker | None = None
 
+    def _leave_mega_for_later(jobs: list[dict]) -> None:
+        """Note rate-limited links the worker never got to as retryable failures with the time they are due, so
+        the next run skips them until then and retries them after."""
+        due = _iso_time(max(_mega_cooldown.until(), time.time()))
+        for job in jobs:
+            failures.append({'link': job['link'], 'funscript_name': job['basename'], 'filename': 'unknown',
+                             'save_directory': job['download_dir'], 'domain': 'mega.nz',
+                             'reason': 'mega_too_many_requests', 'http_status': -_MEGA_RATE_LIMIT_EXIT,
+                             'permanent': False, 'retry_after': due})
+
     def _drain_mega_results() -> None:
         """Process any completed background mega jobs and update shared state."""
         if mega_worker is None:
@@ -7037,7 +7101,9 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                 failures.append({'link': res['link'], 'funscript_name': res['basename'], 'filename': hint,
                                  'save_directory': res['download_dir'], 'domain': 'mega.nz',
                                  'reason': _verdict.reason, 'http_status': _verdict.http_status,
-                                 'permanent': _verdict.permanent})
+                                 'permanent': _verdict.permanent,
+                                 'retry_after': (_iso_time(max(_mega_cooldown.until(), time.time()))
+                                                 if res.get('exit_code') == _MEGA_RATE_LIMIT_EXIT else None)})
                 if res.get('exit_code') == _MEGA_RATE_LIMIT_EXIT:
                     mega_error6.append({'link': res['link'], 'funscript_name': res['basename'],
                                         'filename': hint, 'save_directory': res['download_dir']})
@@ -7299,15 +7365,23 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
         if mega_worker is not None and _stop_after_current.is_set():
             dropped = mega_worker.abort()
             _drain_mega_results()
+            _leave_mega_for_later(dropped)
             if dropped:
-                print(f'\n[mega.nz] stopped; {dropped} queued retry(ies) dropped — they will be picked up next run.')
+                print(f'\n[mega.nz] stopped; {len(dropped)} queued retry(ies) left for a later run.')
         elif mega_worker is not None:
-            pending = mega_worker._queue.qsize()
+            pending = mega_worker._queue.unfinished_tasks
             if pending:
-                print(f'\n[mega.nz] waiting for {pending} background download(s) to finish...')
-            mega_worker.wait_all()
-            _drain_mega_results()
-            mega_worker.stop()
+                print(f'\n[mega.nz] waiting for {pending} background download(s) to finish '
+                      f'(up to {_MEGA_MAX_WAIT // 60} min; Ctrl+C to leave them for a later run)...')
+            if mega_worker.wait_all(timeout=_MEGA_MAX_WAIT):
+                _drain_mega_results()
+                mega_worker.stop()
+            else:
+                leftover = mega_worker.abort()
+                _drain_mega_results()
+                _leave_mega_for_later(leftover)
+                print(f'\n[mega.nz] still rate limited after {_MEGA_MAX_WAIT // 60} min; {len(leftover)} link(s) '
+                      f'left for a later run (retried automatically once their time has passed).')
 
         if _stop_after_current.is_set():
             print('\nStopped early as requested — progress is kept; run again to resume.')
@@ -7317,7 +7391,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
     except KeyboardInterrupt:
         print('\n\nInterrupted.')
         if mega_worker is not None:
-            mega_worker.abort()
+            _leave_mega_for_later(mega_worker.abort())
         try:
             current_files = set(os.listdir(current_folder)) if os.path.isdir(current_folder) else set()
             new_files = current_files - current_before_files

@@ -17,9 +17,27 @@ class MegaWorkerAbortTests(unittest.TestCase):
         t0 = time.time()
         dropped = w.abort()
         self.assertLess(time.time() - t0, 10)
-        self.assertGreaterEqual(dropped, 2)     # the worker may already hold one job
+        self.assertGreaterEqual(len(dropped), 3)    # the queued ones plus the one the worker already holds
+        self.assertTrue(all(j['link'].startswith('https://mega.nz/file/') for j in dropped))
         self.assertFalse(w._thread.is_alive())
         self.assertEqual(w.drain_results(), [])
+
+
+class MegaWorkerWaitTests(unittest.TestCase):
+    def test_wait_all_gives_up_after_its_timeout_and_reports_it(self):
+        w = dc._MegaWorker()
+        w._thread.start()
+        w.submit('https://mega.nz/file/x', '/nonexistent', 'job', [3600])
+        try:
+            t0 = time.time()
+            self.assertFalse(w.wait_all(timeout=1))
+            self.assertLess(time.time() - t0, 5)
+        finally:
+            w.abort()
+
+    def test_wait_all_returns_true_when_nothing_is_pending(self):
+        w = dc._MegaWorker()
+        self.assertTrue(w.wait_all(timeout=1))
 
 
 class GracefulSigintTests(unittest.TestCase):

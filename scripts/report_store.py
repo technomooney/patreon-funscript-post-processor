@@ -1,6 +1,6 @@
 """Download outcomes and report tables, stored in the library database instead of loose CSV files.
 
-Three downloader-owned tables (migration track 'downloader' v2 and v3, see library_db.register_migration):
+Three downloader-owned tables (migration track 'downloader' v2, v3 and v4, see library_db.register_migration):
 
 * downloader_link_outcomes: one row per (folder, url) that failed or needs a human look, with WHY it failed (the
   HTTP status when we got one, a short reason, and whether the link is permanently dead so no run retries it).
@@ -54,7 +54,11 @@ _MIGRATION_V3 = [
         PRIMARY KEY (folder, url)
     )""",
 ]
-_MIGRATIONS = ((2, _MIGRATION_V2), (3, _MIGRATION_V3))
+# When a retryable failure (a rate limit) is worth another try; later runs leave the link alone until then.
+_MIGRATION_V4 = [
+    "ALTER TABLE downloader_link_outcomes ADD COLUMN retry_after TEXT",
+]
+_MIGRATIONS = ((2, _MIGRATION_V2), (3, _MIGRATION_V3), (4, _MIGRATION_V4))
 
 KINDS = ('failed', 'uncertain')
 
@@ -79,7 +83,8 @@ def _rel(root: str, folder: str) -> str:
 
 def record_outcome(base: str, url: str, folder: str, kind: str = 'failed', *, domain: str = '',
                    funscript_name: str = '', filename: str = '', reason: str = '', http_status: int | None = None,
-                   permanent: bool = False, matched_video: str = '', match_score: float | None = None) -> bool:
+                   permanent: bool = False, matched_video: str = '', match_score: float | None = None,
+                   retry_after: str | None = None) -> bool:
     """Upsert the outcome of one link. A repeat bumps `attempts`; `permanent` never goes back to 0 on its own
     (a link once proven dead stays dead until forget() is called). False when *base* has no library database."""
     if kind not in KINDS:
@@ -91,15 +96,15 @@ def record_outcome(base: str, url: str, folder: str, kind: str = 'failed', *, do
     with library_db.db(root, write=True) as con:
         con.execute(
             'INSERT INTO downloader_link_outcomes(folder, url, kind, domain, funscript_name, filename, reason, '
-            'http_status, permanent, matched_video, match_score, attempts, first_seen, last_attempt) '
-            'VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?) '
+            'http_status, permanent, matched_video, match_score, attempts, first_seen, last_attempt, retry_after) '
+            'VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?,?) '
             'ON CONFLICT(folder, url) DO UPDATE SET kind=excluded.kind, domain=excluded.domain, '
             'funscript_name=excluded.funscript_name, filename=excluded.filename, reason=excluded.reason, '
             'http_status=excluded.http_status, permanent=MAX(permanent, excluded.permanent), '
             'matched_video=excluded.matched_video, match_score=excluded.match_score, '
-            'attempts=attempts+1, last_attempt=excluded.last_attempt',
+            'attempts=attempts+1, last_attempt=excluded.last_attempt, retry_after=excluded.retry_after',
             (_rel(root, folder), url, kind, domain, funscript_name, filename, reason, http_status,
-             1 if permanent else 0, matched_video, match_score, now, now))
+             1 if permanent else 0, matched_video, match_score, now, now, retry_after))
     return True
 
 
@@ -129,6 +134,17 @@ def outcomes(base: str, kind: str | None = None, *, permanent: bool | None = Non
     for r in rows:
         r['save_directory'] = os.path.normpath(os.path.join(root, r.pop('folder')))
     return rows
+
+
+def cooling_down_links(base: str) -> set[str]:
+    """URLs whose retry_after time has not come yet (rate-limited): later runs leave them alone until it has."""
+    root = _locate(base)
+    if root is None:
+        return set()
+    with library_db.db(root) as con:
+        return {r[0] for r in con.execute(
+            'SELECT url FROM downloader_link_outcomes WHERE retry_after IS NOT NULL AND retry_after > ?',
+            (library_db._now(),))}
 
 
 def known_dead_links(base: str) -> set[str]:
@@ -191,7 +207,8 @@ def record_rows(base: str, rows: list[dict], kind: str = 'failed') -> int:
             filename=row.get('filename') or '', reason=row.get('reason') or '',
             http_status=row.get('http_status'), permanent=bool(row.get('permanent')),
             matched_video=row.get('matched_video') or '',
-            match_score=float(row['match_score']) if row.get('match_score') not in (None, '') else None)
+            match_score=float(row['match_score']) if row.get('match_score') not in (None, '') else None,
+            retry_after=row.get('retry_after') or None)
         n += ok
     return n
 

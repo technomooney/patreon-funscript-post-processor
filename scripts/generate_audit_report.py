@@ -146,7 +146,7 @@ _CSV_META: dict[str, dict] = {
 # Columns shown for the link outcomes kept in the database, in display order.
 _OUTCOME_COLS = {
     'failed': ('link', 'funscript_name', 'save_directory', 'domain', 'reason', 'http_status', 'permanent',
-               'attempts', 'last_attempt'),
+               'attempts', 'last_attempt', 'retry_after'),
     'uncertain': ('link', 'funscript_name', 'save_directory', 'domain', 'matched_video', 'match_score',
                   'attempts', 'last_attempt'),
 }

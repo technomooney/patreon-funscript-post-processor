@@ -117,6 +117,8 @@ All settings live in `.env` (created by setup). Key options:
 | `BROWSER_NO_SANDBOX` | `false` | Keep Chromium's `--no-sandbox` flag. Off by default so the sandbox stays on (and Brave shows no warning banner); set `true` when running as root or in a container |
 | `MAX_RESOLUTION` | `1080` | Maximum download resolution |
 | `SKIP_KNOWN_FAILURES` | `false` | Skip links recorded as failed in the library database |
+| `MEGA_RETRY_MINUTES` | `5,15,30,60` | How long every mega download pauses after MEGA rate-limits it (exit 6), escalating with each repeat; the last value repeats. MEGA publishes no figure, so tune it |
+| `MEGA_MAX_WAIT_MINUTES` | `120` | How long the end of a run waits for rate-limited mega links before leaving them for a later run (they are skipped until their retry time, then retried automatically) |
 | `DEDUP_VERBOSE` | `false` | Print one line per file during dedup. Warning: very noisy on large libraries |
 | `TRASH_RETENTION_DAYS` | `14` | Days a soft-deleted (dedup) file stays in `.trash` before permanent removal. Separate from the one-run-deep "undo last action" journal |
 | `PROTECT_AV1_FROM_REPLACE` | `false` | Never let the "same content, strictly smaller file" download-replace rule swap a local AV1 video for a non-AV1 one. Enable after an AV1 library transcode: an already-heavily-compressed source can be smaller than its own transparent AV1 re-encode, and without this a re-download would trash the AV1 and restore the original |

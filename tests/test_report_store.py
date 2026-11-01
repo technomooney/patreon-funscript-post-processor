@@ -78,6 +78,24 @@ class ReportStoreTests(unittest.TestCase):
         report_store.forget_many(self.root, [('http://x/1', self.post)])
         self.assertEqual(report_store.failed_links(self.root), {'http://x/2'})
 
+    def test_retry_after_is_stored_and_only_future_times_cool_down(self):
+        report_store.record_outcome(self.root, 'http://x/future', self.post, retry_after='2999-01-01T00:00:00')
+        report_store.record_outcome(self.root, 'http://x/past', self.post, retry_after='2000-01-01T00:00:00')
+        report_store.record_outcome(self.root, 'http://x/none', self.post)
+        self.assertEqual(report_store.cooling_down_links(self.root), {'http://x/future'})
+        rows = {r['url']: r['retry_after'] for r in report_store.outcomes(self.root)}
+        self.assertEqual(rows['http://x/future'], '2999-01-01T00:00:00')
+
+    def test_a_later_failure_without_retry_after_clears_it(self):
+        report_store.record_outcome(self.root, 'http://x/1', self.post, retry_after='2999-01-01T00:00:00')
+        report_store.record_outcome(self.root, 'http://x/1', self.post, reason='other')
+        self.assertEqual(report_store.cooling_down_links(self.root), set())
+
+    def test_record_rows_passes_retry_after_through(self):
+        report_store.record_rows(self.root, [{'link': 'http://x/1', 'save_directory': self.post,
+                                              'retry_after': '2999-01-01T00:00:00'}])
+        self.assertEqual(report_store.cooling_down_links(self.root), {'http://x/1'})
+
 
 if __name__ == '__main__':
     unittest.main()
