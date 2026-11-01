@@ -25,7 +25,7 @@ class Verdict(NamedTuple):
 # "hidden". iwara.tv answers an anonymous request for a login-only video with the same 404 (errors.notFound) as
 # for one that does not exist. A not-found from these only counts when the logged-in browser saw it
 # (link_probe_browser).
-GATED_HOSTS = ('iwara.tv', 'hanime.tv', 'the-joi-database.com', 'joi.moe', 'eroscripts.com', 'gofile.io',
+GATED_HOSTS = ('iwara.tv', 'iwara.ai', 'hanime.tv', 'the-joi-database.com', 'joi.moe', 'eroscripts.com', 'gofile.io',
                'rule34video.com', 'rule34video.party')
 
 

@@ -10,7 +10,7 @@ A "not found" only counts as permanent when the page proves the visitor was sign
 reported ("..._logged_out") but never permanent, because the video may simply be hidden from anonymous visitors.
 
 What is read, per site (all observed live, 2026-11-01):
-* iwara.tv: a single-page app that always loads with status 200. A missing video renders title 'Error' and the text
+* iwara.tv and iwara.ai (the same app and backend): a single-page app that always loads with status 200. A missing video renders title 'Error' and the text
   'HTTP 404 - Not found'; an existing one (also a login-only one, when signed in) renders its title. Signed in =
   localStorage 'token' exists.
 * rule34video.com: a removed video renders a 'Page not Found' page (title and a '404 / Page not found' heading),
@@ -29,7 +29,7 @@ _STATE_JS = r"""
 var n = performance.getEntriesByType('navigation')[0];
 var host = location.hostname;
 var loggedIn = null;
-if (/iwara\.tv$/.test(host)) loggedIn = !!window.localStorage.getItem('token');
+if (/iwara\.(tv|ai)$/.test(host)) loggedIn = !!window.localStorage.getItem('token');
 else if (/rule34video\.com$/.test(host)) loggedIn = !document.getElementById('login');
 else if (/hanime\.tv$/.test(host)) loggedIn = !/SIGN IN/.test((document.body && document.body.innerText) || '');
 return {url: location.href, nav_status: n ? n.responseStatus : null, title: document.title || '',
@@ -45,7 +45,7 @@ def _page_key(url: str):
     """What identifies the video a URL points at, so a page left over from some other link is never judged."""
     host = (urlparse(url).hostname or '').lower()
     path = urlparse(url).path
-    if host.endswith('iwara.tv'):
+    if host.endswith(('iwara.tv', 'iwara.ai')):
         m = _IWARA_ID.search(path)
         return ('iwara', m.group(1)) if m else None
     if host.endswith('rule34video.com'):

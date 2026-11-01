@@ -197,6 +197,7 @@ KNOWN_DOMAINS = [
     'hanime.tv',
     'gofile.io',
     'iwara.tv',
+    'iwara.ai',
     'pixeldrain.com',
     'rule34video.com',
     'rule34.xxx',
@@ -3222,16 +3223,73 @@ def download_hanimetv(driver, url: str, download_dir: str) -> bool:
 # ---------------------------------------------------------------------------
 
 # Cached Bearer token — obtained once per session on first iwara.tv download.
-_iwara_token: str | None = None
+# iwara.ai is the same web app and the same backend as iwara.tv (one account, one API at api.iwara.tv): the page's
+# script tells the API which site it is on with an `X-Site: <hostname>` header. So a link on either host is handled by
+# the same code, with the site taken from the link itself. yt-dlp's iwara extractor only knows iwara.tv.
+def _iwara_site(url: str) -> str:
+    """The site a link lives on, as the web app names it: 'www.iwara.tv' or 'www.iwara.ai'."""
+    host = (urlparse(url).hostname or '').lower().removeprefix('www.')
+    return 'www.iwara.ai' if host.endswith('iwara.ai') else 'www.iwara.tv'
+
+
+def _iwara_site_headers(site: str) -> dict[str, str]:
+    headers = {'Origin': f'https://{site}', 'Referer': f'https://{site}/'}
+    if not site.endswith('iwara.tv'):
+        headers['X-Site'] = site
+    return headers
+
+
+_iwara_tokens: dict[str, str] = {}      # site -> Bearer token (one login per site, the same credentials)
 
 # Whether the browser session has already completed the iwara.tv login flow.
-_iwara_browser_logged_in: bool = False
+_iwara_browser_logged_in: set[str] = set()   # sites the browser profile is signed in to
 
 
-def _iwara_browser_login(driver) -> bool:
-    """Log into iwara.tv via the browser UI. Returns True if successful."""
-    global _iwara_browser_logged_in
-    if _iwara_browser_logged_in:
+# iwara.tv's "Warning: Content may contain nudity and/or other adult themes" overlay, shown over the page on a first
+# visit (or after the saved profile is reset). Its two buttons are "I am over 18" and "Go back"; only the first is ever
+# wanted, so it is matched by its own text inside the overlay, never by a loose guess.
+_IWARA_ADULT_GATE_BUTTON = (
+    '//div[contains(@class, "adultWarning")]//button[contains(translate(normalize-space(.), '
+    '"ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"), "over 18")]')
+
+
+def _iwara_dismiss_adult_gate(driver, timeout: float = 3.0) -> bool:
+    """Click "I am over 18" if iwara's adult-content gate is showing. Returns True when it was there and is now gone.
+
+    The gate is drawn by the page's script a moment after load, so it is waited for briefly; a page without one
+    costs `timeout` seconds. Clicked through JavaScript so an overlay can never intercept the click."""
+    deadline = time.time() + timeout
+    buttons = []
+    while time.time() < deadline:
+        try:
+            buttons = driver.find_elements(By.XPATH, _IWARA_ADULT_GATE_BUTTON)
+        except WebDriverException:
+            return False
+        if buttons:
+            break
+        time.sleep(0.25)
+    if not buttons:
+        return False
+    try:
+        driver.execute_script('arguments[0].click()', buttons[0])
+    except WebDriverException:
+        return False
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        try:
+            if not driver.find_elements(By.XPATH, _IWARA_ADULT_GATE_BUTTON):
+                print('  [iwara.tv] confirmed "I am over 18"')
+                return True
+        except WebDriverException:
+            return False
+        time.sleep(0.25)
+    print('  [iwara.tv] clicked "I am over 18" but the warning is still showing')
+    return False
+
+
+def _iwara_browser_login(driver, site: str = 'www.iwara.tv') -> bool:
+    """Log into iwara.tv (or iwara.ai, same account) via the browser UI. Returns True if successful."""
+    if site in _iwara_browser_logged_in:
         return True
 
     email    = _get_secret('IWARA_EMAIL').strip()
@@ -3241,7 +3299,7 @@ def _iwara_browser_login(driver) -> bool:
         return False
 
     for attempt in range(3):
-        driver.get('https://www.iwara.tv/login')
+        driver.get(f'https://{site}/login')
         time.sleep(2)
 
         page_src = driver.page_source.lower()
@@ -3255,18 +3313,7 @@ def _iwara_browser_login(driver) -> bool:
         print('  [iwara.tv] login page rate-limited after 3 attempts')
         return False
 
-    # Dismiss age gate if present.
-    try:
-        age_btn = driver.find_element(By.XPATH,
-            '//button[contains(normalize-space(.),"18") or '
-            'contains(normalize-space(.),"Yes") or '
-            'contains(normalize-space(.),"Enter") or '
-            'contains(normalize-space(.),"I am")]'
-        )
-        age_btn.click()
-        time.sleep(1)
-    except WebDriverException:
-        pass
+    _iwara_dismiss_adult_gate(driver)
 
     try:
         wait = WebDriverWait(driver, 10)
@@ -3328,7 +3375,7 @@ def _iwara_browser_login(driver) -> bool:
 
         print('  [iwara.tv] browser login successful')
 
-        _iwara_browser_logged_in = True
+        _iwara_browser_logged_in.add(site)
         return True
     except Exception as e:
         print(f'  [iwara.tv] browser login failed: {e}')
@@ -3337,12 +3384,14 @@ def _iwara_browser_login(driver) -> bool:
 
 def _download_iwara_browser(driver, url: str, download_dir: str) -> bool:
     """Use the browser to scrape download links when the API/yt-dlp paths fail."""
-    if not _iwara_browser_login(driver):
+    site = _iwara_site(url)
+    if not _iwara_browser_login(driver, site):
         return False
 
     time.sleep(2)  # Let session establish before navigating.
     driver.get(url)
     time.sleep(5)
+    _iwara_dismiss_adult_gate(driver)
     print(f'  [iwara.tv] navigated to video — current URL: {driver.current_url}')
 
     # If the SPA redirected us away from the video path (e.g. to home/search),
@@ -3352,6 +3401,7 @@ def _download_iwara_browser(driver, url: str, download_dir: str) -> bool:
         print('  [iwara.tv] unexpected redirect, retrying navigation...')
         driver.get(url)
         time.sleep(5)
+        _iwara_dismiss_adult_gate(driver)
         print(f'  [iwara.tv] current URL after retry: {driver.current_url}')
 
     # If the React app shows an error page on first load, a refresh usually fixes it.
@@ -3359,25 +3409,14 @@ def _download_iwara_browser(driver, url: str, download_dir: str) -> bool:
         print(f'  [iwara.tv] got error page ({driver.title!r}), refreshing...')
         driver.refresh()
         time.sleep(5)
-
-    # Dismiss age gate if it appears on the video page.
-    try:
-        age_btn = driver.find_element(By.XPATH,
-            '//button[contains(normalize-space(.),"18") or '
-            'contains(normalize-space(.),"Yes") or '
-            'contains(normalize-space(.),"Enter") or '
-            'contains(normalize-space(.),"I am")]'
-        )
-        age_btn.click()
-        time.sleep(2)
-    except WebDriverException:
-        pass
+        _iwara_dismiss_adult_gate(driver)
 
     print(f'  [iwara.tv] page title after load: {driver.title!r}')
 
     # Collect all CDN download/view links rendered by the React app.
     links = driver.find_elements(By.XPATH,
-        '//a[contains(@href,".iwara.tv/download") or contains(@href,".iwara.tv/view")]'
+        '//a[contains(@href,".iwara.tv/download") or contains(@href,".iwara.tv/view") or '
+        'contains(@href,".iwara.ai/download") or contains(@href,".iwara.ai/view")]'
     )
 
     if not links:
@@ -3428,13 +3467,13 @@ def _download_iwara_browser(driver, url: str, download_dir: str) -> bool:
 
     cdn_headers: dict[str, str] = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Referer': 'https://www.iwara.tv/',
+        'Referer': f'https://{site}/',
     }
     return _direct_fetch(download_url, download_dir, '_iwara_temp', cdn_headers)
 
 
-def _iwara_login() -> str | None:
-    """POST credentials to the iwara API and return a Bearer token, or None."""
+def _iwara_login(site: str = 'www.iwara.tv') -> str | None:
+    """POST credentials to the iwara API (as *site*) and return a Bearer token, or None."""
     email = _get_secret('IWARA_EMAIL').strip()
     password = _get_secret('IWARA_PASSWORD').strip()
     if not email or not password:
@@ -3446,8 +3485,7 @@ def _iwara_login() -> str | None:
         headers={
             'Content-Type': 'application/json',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Origin': 'https://www.iwara.tv',
-            'Referer': 'https://www.iwara.tv/',
+            **_iwara_site_headers(site),
         },
         method='POST',
     )
@@ -3479,10 +3517,10 @@ def _download_iwara_api(_driver, url: str, download_dir: str) -> bool:
     X-Version secret that iwara has changed before — see download_iwara for why
     yt-dlp's native extractor is tried first.
     """
-    global _iwara_token
+    site = _iwara_site(url)
 
     try:
-        # URL format: https://www.iwara.tv/video/{id}/{optional-slug}
+        # URL format: https://www.iwara.tv/video/{id}/{optional-slug}  (same on iwara.ai)
         path_parts = urlparse(url).path.strip('/').split('/')
         if len(path_parts) < 2 or path_parts[0] != 'video':
             print('  [iwara.tv] unrecognised URL — expected /video/{id}/...')
@@ -3490,17 +3528,17 @@ def _download_iwara_api(_driver, url: str, download_dir: str) -> bool:
         video_id = path_parts[1]
 
         # Authenticate once per session.
-        if _iwara_token is None:
-            _iwara_token = _iwara_login()
-            if _iwara_token is None:
+        if site not in _iwara_tokens:
+            token = _iwara_login(site)
+            if token is None:
                 print('  [iwara.tv] login failed — set IWARA_EMAIL and IWARA_PASSWORD in .env')
                 return False
+            _iwara_tokens[site] = token
 
         api_headers: dict[str, str] = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Origin': 'https://www.iwara.tv',
-            'Referer': 'https://www.iwara.tv/',
-            'Authorization': f'Bearer {_iwara_token}',
+            **_iwara_site_headers(site),
+            'Authorization': f'Bearer {_iwara_tokens[site]}',
         }
 
         # Fetch video metadata.
@@ -3534,7 +3572,7 @@ def _download_iwara_api(_driver, url: str, download_dir: str) -> bool:
 
         cdn_headers: dict[str, str] = {
             'User-Agent': api_headers['User-Agent'],
-            'Referer': 'https://www.iwara.tv/',
+            'Referer': f'https://{site}/',
         }
 
         # The file-list endpoint validates requests via an X-Version header:
@@ -3754,7 +3792,7 @@ def _download_iwara_ytdlp(url: str, download_dir: str) -> bool:
 
 
 def download_iwara(driver, url: str, download_dir: str) -> bool:
-    """Download from iwara.tv, trying progressively more fragile fallbacks.
+    """Download from iwara.tv or iwara.ai (same account and backend), trying progressively more fragile fallbacks.
 
     1. yt-dlp's native extractor — actively maintained upstream, fixed for iwara
        in yt-dlp 2026.06.09 (make sure yt-dlp is kept up to date).
@@ -3763,9 +3801,13 @@ def download_iwara(driver, url: str, download_dir: str) -> bool:
     3. Browser automation — last resort if iwara changes its API/auth flow in a
        way neither of the above can follow.
     """
-    if _download_iwara_ytdlp(url, download_dir):
-        return True
-    print('  [iwara.tv] yt-dlp path failed — falling back to API client...')
+    if _iwara_site(url).endswith('iwara.tv'):
+        if _download_iwara_ytdlp(url, download_dir):
+            return True
+        print('  [iwara.tv] yt-dlp path failed — falling back to API client...')
+    else:
+        # yt-dlp's iwara extractor only matches iwara.tv links (its API calls carry no X-Site), so it cannot do these.
+        print('  [iwara.ai] yt-dlp has no extractor for this site — using the API client...')
     if _download_iwara_api(driver, url, download_dir):
         return True
     print('  [iwara.tv] API client failed — falling back to browser automation...')
@@ -5363,6 +5405,7 @@ DOMAIN_HANDLERS = {
     'hanime.tv':       download_hanimetv,
     'gofile.io':       download_gofile,
     'iwara.tv':        download_iwara,
+    'iwara.ai':        download_iwara,
     'pixeldrain.com':  download_pixeldrain,
     'rule34video.com': download_rule34video,
     'rule34.xxx':      download_rule34xxx,

@@ -696,7 +696,7 @@ def _configure_credentials() -> None:
                    comment="Allow pixeldrain downloads with no API key, subject to pixeldrain's ~6GB/day anonymous limit.")
 
     print()
-    print('iwara.tv  (required for 18+ content; leave blank to skip)')
+    print('iwara.tv and iwara.ai  (one account for both; required for 18+ content; leave blank to skip)')
     email = _ask('Email', current=_keyring_get('IWARA_EMAIL'))
     if email:
         _keyring_set('IWARA_EMAIL', email)
@@ -704,7 +704,7 @@ def _configure_credentials() -> None:
         if password:
             _keyring_set('IWARA_PASSWORD', password)
     else:
-        print('  Skipping iwara.tv.')
+        print('  Skipping iwara.')
 
     print()
     print('mega.nz  (only needed for private/account links; leave blank to skip)')
