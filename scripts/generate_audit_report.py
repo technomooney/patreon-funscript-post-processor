@@ -19,6 +19,7 @@ from pathlib import Path
 
 import creator_config
 import report_store
+import run_stats
 import folder_log as _flog
 
 
@@ -137,6 +138,10 @@ _CSV_META: dict[str, dict] = {
     'many_funscripts.csv':        {'title': 'Folders with Many Funscripts','path_cols': {'folder'},                        'order': 8},
     'mega_error6.csv':            {'title': 'Mega Error Log',              'path_cols': set(),                             'order': 9},
     'alt_video_review.csv':       {'title': 'Alt-Tagged Video Review',     'path_cols': {'folder'},                        'order': 10},
+    'run_history.csv':            {'title': 'Run History',                 'path_cols': set(),                             'order': 20},
+    'network_by_host.csv':        {'title': 'Network by Host (all runs)',  'path_cols': set(),                             'order': 21},
+    'latest_run_hosts.csv':       {'title': 'Latest Run by Host',          'path_cols': set(),                             'order': 22},
+    'slowest_links.csv':          {'title': 'Slowest Links (latest run)',  'path_cols': set(),                             'order': 23},
     'manual_folders.csv':         {'title': 'Skipped .manual Folders',     'path_cols': {'folder'},                        'order': 11},
     'consolidated_folders.csv':   {'title': 'Skipped .consolidated Folders','path_cols': {'folder'},                       'order': 12},
     'flagged_collection_redownloads.csv': {'title': 'Flagged Collection Redownloads', 'path_cols': {'folder'},              'order': 13},
@@ -150,6 +155,53 @@ _OUTCOME_COLS = {
     'uncertain': ('link', 'funscript_name', 'save_directory', 'domain', 'matched_video', 'match_score',
                   'attempts', 'last_attempt'),
 }
+
+
+def _mb(n) -> str:
+    return f'{(n or 0) / 1048576:.1f}'
+
+
+def _dur(seconds) -> str:
+    seconds = int(seconds or 0)
+    h, rem = divmod(seconds, 3600)
+    m, s_ = divmod(rem, 60)
+    return f'{h}h{m:02d}m{s_:02d}s' if h else (f'{m}m{s_:02d}s' if m else f'{s_}s')
+
+
+def _host_rows(hosts: list[dict]) -> list[dict]:
+    rows = []
+    for h in hosts:
+        seconds = h.get('seconds') or 0
+        rows.append({'host': h['host'], 'requests': h.get('requests') or 0, 'MB': _mb(h.get('bytes')),
+                     'time': _dur(seconds), 'avg KB/s': f"{(h.get('bytes') or 0) / 1024 / seconds:.0f}" if seconds else '',
+                     'ok': h.get('ok') or 0, '4xx': h.get('client_errors') or 0, '403': h.get('forbidden') or 0,
+                     '429/exit 6': h.get('rate_limited') or 0, '5xx': h.get('server_errors') or 0,
+                     'no answer': h.get('errors') or 0, 'slowest request': _dur(h.get('slowest_seconds'))})
+    return rows
+
+
+def _run_stats_sections(base: str) -> list[tuple[int, str, list[dict], str | None]]:
+    """Run history and network cost sections, from the library database."""
+    runs = run_stats.read_runs(base, 15)
+    if not runs:
+        return []
+    out = []
+    out.append((20, 'run_history.csv', [{
+        'started': r['started_at'], 'script': r['script'], 'status': r['status'], 'took': _dur(r['duration_s']),
+        'tasks': r['tasks'] if r['tasks'] is not None else '', 'links': r['links_seen'] if r['links_seen'] is not None else '',
+        'downloaded': r['downloaded'] if r['downloaded'] is not None else '', 'duplicates': r['duplicates'] if r['duplicates'] is not None else '',
+        'failed': r['failed'] if r['failed'] is not None else '', 'saved MB': _mb(r['bytes_saved']),
+        'requests': r['requests'] if r['requests'] is not None else '', 'transferred MB': _mb(r['bytes_transferred']),
+        'code': r['code_version'] or ''} for r in runs], 'database: run statistics'))
+    out.append((21, 'network_by_host.csv', _host_rows(run_stats.read_hosts(base)), 'database: network by host'))
+    latest = runs[0]['run_id']
+    out.append((22, 'latest_run_hosts.csv', _host_rows(run_stats.read_hosts(base, latest)), 'database: latest run by host'))
+    out.append((23, 'slowest_links.csv', [{
+        'link': l['url'], 'folder': l['folder'], 'host': l['host'], 'outcome': l['outcome'] or '',
+        'settled by': l['precheck_result'] or '', 'requests': l['requests'], 'MB': _mb(l['bytes']),
+        'pre-check': _dur(l['precheck_seconds']), 'download': _dur(l['download_seconds']), 'total': _dur(l['seconds'])}
+        for l in run_stats.read_links(base, latest, 15)], 'database: slowest links'))
+    return out
 
 
 def _csv_title(fname: str) -> str:
@@ -562,6 +614,8 @@ def generate(base: str) -> str:
                  for c in _OUTCOME_COLS[kind]}
                 for r in ({**o, 'link': o['url']} for o in report_store.outcomes(base, kind))]
         sections.append((_CSV_META[key]['order'], key, rows, f'database: {kind} links'))
+    for order, key, rows, label in _run_stats_sections(base):
+        sections.append((order, key, [{k: str(v) for k, v in r.items()} for r in rows], label))
     for name in report_store.report_names(base):
         key = f'{name}.csv'
         rows = [{k: ('' if v is None else str(v)) for k, v in r.items()} for r in report_store.read_report(base, name)]

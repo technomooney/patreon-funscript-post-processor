@@ -225,3 +225,16 @@ repeated, and if the settled wait stops working it climbs again.
 Every step is printed as a `[mega.nz] rate limit ...` line and saved in the machine-wide app database
 (`mega_ratelimit_events`: when, what happened, the wait, the longest that failed, the shortest that worked), so you can
 browse how the number settles. The current numbers are kept between runs.
+
+## Run statistics
+
+Every download run records what it asked of the network, so slowdowns and rate limits can be measured instead of guessed:
+requests, bytes, time and answers (ok, 4xx, 403, 429 or `mega-get` exit 6, 5xx, no answer) per host; per link, the
+requests and bytes it cost, how long the pre-check and the download took, and what settled the pre-check (name match,
+same-size shortcut, audio, visual, none). A run that is killed is still visible: it is marked `interrupted` by the next
+run. The numbers are in each library's database, shown as Run History, Network by Host and Slowest Links in the HTML
+audit report, and rolled up in the app database for comparing libraries.
+
+    python scripts/run_stats_report.py [--days N] [--library NAME] [--html FILE]
+
+prints (and optionally writes an HTML page of) the runs and the per-host totals across every library on this machine.

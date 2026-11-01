@@ -34,6 +34,7 @@ Libraries are not git repos, so a library's history must live inside it. Secrets
 | `downloader_external_links` | (downloader's own table, migration track `downloader` v1) links found outside the post, e.g. inside eroscripts threads: folder + url -> status/source | downloader |
 | `downloader_link_outcomes` | (downloader's own, track `downloader` v2) links that failed or need a look: HTTP status, reason, permanent flag, attempts (was failed_downloads.csv / uncertain_downloads.csv) | downloader |
 | `downloader_report_rows` | (downloader's own, track `downloader` v2) rows of every former CSV report, replaced whole per run, read by the HTML audit report | downloader |
+| `downloader_run_stats` / `downloader_host_stats` / `downloader_link_stats` | (downloader's own, track `downloader` v5) one row per download run (status, counts, bytes, settings, code fingerprint), per host in a run (requests, bytes, time, ok/4xx/403/429/5xx/no answer) and per link (cost, pre-check result and time, download time, outcome); app-wide rollups of the first two live in the app database (`run_rollup`, `host_rollup`) | downloader |
 | `markers` | `.manual` and similar hands-off markers | drift scan |
 | `drift` | differences between disk and recorded state | drift scan |
 
