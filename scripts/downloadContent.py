@@ -6335,34 +6335,24 @@ def _write_mega_error6_csv(base_path: str, mega_error6: list, report: str = 'meg
 
 
 def _write_manual_folders(base_path: str, manual_folders: list):
-    """Print and write the list of .manual folders to _reports/manual_folders.txt."""
+    """Print the .manual folders the scan skipped and keep the list as the 'manual_folders' report."""
+    report_store.replace_report(base_path, 'manual_folders', [{'folder': p} for p in manual_folders])
     if not manual_folders:
         return
-    txt_path = os.path.join(_reports_dir(base_path), 'manual_folders.txt')
-    with open(txt_path, 'w', encoding='utf-8') as f:
-        for path in manual_folders:
-            f.write(path + '\n')
     print(f"\nSkipped {len(manual_folders)} manual folder(s):")
     for path in manual_folders:
         print(f"  {path}")
-    print(f"  (list written to: {txt_path})")
 
 
 def _write_consolidated_folders(base_path: str, consolidated_folders: list, ignored: bool):
-    """Print and write the list of '.consolidated' folders (see
-    consolidate_packs.py) to _reports/consolidated_folders.txt — kept
-    separate from manual_folders.txt since these were skipped because an
-    automated decision emptied them, not because a person manually
+    """Keep the '.consolidated' folders (see consolidate_packs.py) as the 'consolidated_folders' report -- separate
+    from manual_folders since these were skipped because an automated decision emptied them, not because a person
     handled them the way a real '.manual' folder implies."""
+    report_store.replace_report(base_path, 'consolidated_folders', [{'folder': p} for p in consolidated_folders])
     if not consolidated_folders:
         return
-    txt_path = os.path.join(_reports_dir(base_path), 'consolidated_folders.txt')
-    with open(txt_path, 'w', encoding='utf-8') as f:
-        for path in consolidated_folders:
-            f.write(path + '\n')
     verb = 're-checked anyway' if ignored else 'skipped'
-    print(f"\n{verb.capitalize()} {len(consolidated_folders)} previously-consolidated folder(s) "
-          f"(list written to: {txt_path})")
+    print(f"\n{verb.capitalize()} {len(consolidated_folders)} previously-consolidated folder(s)")
 
 
 def _write_many_funscripts_csv(base_path: str, many_funscripts: list):

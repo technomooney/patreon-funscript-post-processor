@@ -137,6 +137,9 @@ _CSV_META: dict[str, dict] = {
     'many_funscripts.csv':        {'title': 'Folders with Many Funscripts','path_cols': {'folder'},                        'order': 8},
     'mega_error6.csv':            {'title': 'Mega Error Log',              'path_cols': set(),                             'order': 9},
     'alt_video_review.csv':       {'title': 'Alt-Tagged Video Review',     'path_cols': {'folder'},                        'order': 10},
+    'manual_folders.csv':         {'title': 'Skipped .manual Folders',     'path_cols': {'folder'},                        'order': 11},
+    'consolidated_folders.csv':   {'title': 'Skipped .consolidated Folders','path_cols': {'folder'},                       'order': 12},
+    'flagged_collection_redownloads.csv': {'title': 'Flagged Collection Redownloads', 'path_cols': {'folder'},              'order': 13},
 }
 
 

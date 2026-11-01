@@ -16,52 +16,27 @@ explicit request (2026-09-12): "add to an autodownload list then on next
 download the script will ask to download flagged collection videos and will
 default to no."
 
-One JSON file per base_path, at <base_path>/_reports/flagged_collection_
-redownloads.json — a list of {folder, stem, video_url, current_height,
+One report per library (flagged_collection_redownloads in the library database,
+so it also shows in the HTML audit report) — a list of {folder, stem, video_url, current_height,
 target_height, creator, flagged_at} entries, keyed for dedup purposes by
 (folder, stem) so re-extracting (or re-scanning) the same collection archive
 never piles up duplicate entries for a video already queued.
 """
-import json
 import os
 import time
 
-_FILENAME = 'flagged_collection_redownloads.json'
+import report_store
 
-
-def _reports_dir(base_path: str) -> str:
-    d = os.path.join(base_path, '_reports')
-    os.makedirs(d, exist_ok=True)
-    return d
-
-
-def _queue_path(base_path: str) -> str:
-    return os.path.join(_reports_dir(base_path), _FILENAME)
+_REPORT = 'flagged_collection_redownloads'
 
 
 def load(base_path: str) -> list[dict]:
-    """All currently-queued entries for *base_path*. [] if there's no queue
-    file yet or it can't be read."""
-    path = _queue_path(base_path)
-    if not os.path.isfile(path):
-        return []
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        return data if isinstance(data, list) else []
-    except (OSError, json.JSONDecodeError):
-        return []
+    """All currently-queued entries for *base_path*. [] if nothing is queued (or no library database yet)."""
+    return report_store.read_report(base_path, _REPORT)
 
 
 def _save(base_path: str, entries: list[dict]) -> None:
-    path = _queue_path(base_path)
-    tmp = path + '.tmp'
-    try:
-        with open(tmp, 'w', encoding='utf-8') as f:
-            json.dump(entries, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, path)
-    except OSError as e:
-        print(f'  [collection-queue] could not save {_FILENAME}: {e}')
+    report_store.replace_report(base_path, _REPORT, entries)
 
 
 def add(base_path: str, folder: str, stem: str, video_url: str,
