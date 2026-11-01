@@ -192,7 +192,7 @@ def _run_stats_sections(base: str) -> list[tuple[int, str, list[dict], str | Non
         'downloaded': r['downloaded'] if r['downloaded'] is not None else '', 'duplicates': r['duplicates'] if r['duplicates'] is not None else '',
         'failed': r['failed'] if r['failed'] is not None else '', 'saved MB': _mb(r['bytes_saved']),
         'requests': r['requests'] if r['requests'] is not None else '', 'transferred MB': _mb(r['bytes_transferred']),
-        'code': r['code_version'] or ''} for r in runs], 'database: run statistics'))
+        'code': r['code_version'] or '', 'note': r.get('note') or ''} for r in runs], 'database: run statistics'))
     out.append((21, 'network_by_host.csv', _host_rows(run_stats.read_hosts(base)), 'database: network by host'))
     latest = runs[0]['run_id']
     out.append((22, 'latest_run_hosts.csv', _host_rows(run_stats.read_hosts(base, latest)), 'database: latest run by host'))

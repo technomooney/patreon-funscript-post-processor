@@ -1,6 +1,6 @@
 """Download outcomes and report tables, stored in the library database instead of loose CSV files.
 
-Downloader-owned tables (migration track 'downloader' v2 to v5, see library_db.register_migration):
+Downloader-owned tables (migration track 'downloader' v2 to v6, see library_db.register_migration):
 
 * downloader_link_outcomes: one row per (folder, url) that failed or needs a human look, with WHY it failed (the
   HTTP status when we got one, a short reason, and whether the link is permanently dead so no run retries it).
@@ -86,7 +86,16 @@ _MIGRATION_V5 = [
     )""",
     "CREATE INDEX IF NOT EXISTS downloader_link_stats_host ON downloader_link_stats(host)",
 ]
-_MIGRATIONS = ((2, _MIGRATION_V2), (3, _MIGRATION_V3), (4, _MIGRATION_V4), (5, _MIGRATION_V5))
+# A heartbeat (so a run that died can be told from one that is just slow) and a note (the error of a crashed run).
+# The *_epoch columns are seconds since 1970: local-time text is ambiguous for an hour when the clocks change, so liveness
+# and ordering are decided from these and the text is only for reading.
+_MIGRATION_V6 = [
+    "ALTER TABLE downloader_run_stats ADD COLUMN updated_at TEXT",
+    "ALTER TABLE downloader_run_stats ADD COLUMN updated_epoch REAL",
+    "ALTER TABLE downloader_run_stats ADD COLUMN started_epoch REAL",
+    "ALTER TABLE downloader_run_stats ADD COLUMN note TEXT",
+]
+_MIGRATIONS = ((2, _MIGRATION_V2), (3, _MIGRATION_V3), (4, _MIGRATION_V4), (5, _MIGRATION_V5), (6, _MIGRATION_V6))
 
 KINDS = ('failed', 'uncertain')
 

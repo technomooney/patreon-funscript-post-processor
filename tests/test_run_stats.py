@@ -24,9 +24,7 @@ class RunStatsTests(unittest.TestCase):
         os.makedirs(self.post)
         self.app_db = os.path.join(base, 'app.db')
         self.col = net_stats.Collector()
-
-    def tearDown(self):
-        self._tmp.cleanup()
+        self.addCleanup(self._tmp.cleanup)           # registered first, so it runs after the finish() cleanups below
 
     def recorder(self, **kw):
         return run_stats.RunRecorder(self.root, kw.pop('script', 'downloadContent'), collector=self.col,
@@ -48,15 +46,152 @@ class RunStatsTests(unittest.TestCase):
         self.assertIn('"MAX_RESOLUTION": "1080"', row['settings_json'])
         self.assertEqual(self.app("select status, library_path from run_rollup"), [('running', self.root)])
 
-    def test_the_next_run_marks_a_run_that_never_finished_as_interrupted(self):
+    def backdate(self, run_id, seconds):
+        """Pretend a run last said it was alive `seconds` ago."""
+        then = time.time() - seconds
+        past = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(then))
+        con = sqlite3.connect(library_db.db_path(self.root))
+        con.execute('UPDATE downloader_run_stats SET updated_at=?, updated_epoch=? WHERE run_id=?', (past, then, run_id))
+        con.commit()
+        con.close()
+        return past
+
+    def test_a_run_that_stopped_saying_it_is_alive_is_marked_interrupted_by_the_next_run(self):
+        dead = self.recorder()
+        dead.start()
+        last_seen = self.backdate(dead.run_id, 600)               # killed ten minutes ago: no finish, no more heartbeats
+        time.sleep(1.01)
+        nxt = self.recorder()
+        nxt.start()
+        self.addCleanup(nxt.finish, 'completed')
+        rows = {r['run_id']: r for r in run_stats.read_runs(self.root)}
+        self.assertEqual(rows[dead.run_id]['status'], 'interrupted')
+        self.assertEqual(rows[dead.run_id]['ended_at'], last_seen)                # it ended when it was last seen
+        self.assertIn('no sign of life', rows[dead.run_id]['note'])
+        self.assertEqual(rows[nxt.run_id]['status'], 'running')
+        self.assertEqual(self.app("select status from run_rollup where run_id='%s'" % dead.run_id), [('interrupted',)])
+
+    def test_a_run_that_is_still_alive_in_another_terminal_is_left_alone(self):
+        live = self.recorder()
+        live.start()
+        self.addCleanup(live.finish, 'completed')
+        time.sleep(1.01)
+        other = self.recorder()
+        other.start()
+        self.addCleanup(other.finish, 'completed')
+        rows = {r['run_id']: r['status'] for r in run_stats.read_runs(self.root)}
+        self.assertEqual(rows[live.run_id], 'running')
+
+    def test_a_dead_run_reads_as_interrupted_even_before_any_next_run(self):
+        dead = self.recorder()
+        dead.start()
+        self.backdate(dead.run_id, 600)
+        (row,) = run_stats.read_runs(self.root)
+        self.assertEqual(row['status'], 'interrupted')
+        self.assertIn('no sign of life', row['note'])
+        self.assertIsNotNone(row['ended_at'])
+
+    def test_liveness_does_not_depend_on_the_local_clock_text(self):
+        """Local-time text is ambiguous for an hour when the clocks change; the verdict comes from epoch seconds."""
+        now = 1_800_000_000.0
+        self.assertFalse(run_stats._is_stale(now - 60, now))
+        self.assertTrue(run_stats._is_stale(now - 600, now))
+        self.assertTrue(run_stats._is_stale(None, now))
+        for tz in ('America/Denver', 'Europe/Berlin', 'UTC'):
+            old = os.environ.get('TZ')
+            os.environ['TZ'] = tz
+            time.tzset()
+            try:
+                self.assertFalse(run_stats._is_stale(now - 60, now), tz)
+                self.assertTrue(run_stats._is_stale(now - 600, now), tz)
+            finally:
+                if old is None:
+                    os.environ.pop('TZ', None)
+                else:
+                    os.environ['TZ'] = old
+                time.tzset()
+
+    def test_runs_sort_by_when_they_really_started(self):
+        a, b = self.recorder(), self.recorder()
+        a.start()
+        time.sleep(0.02)
+        b.start()
+        self.addCleanup(a.finish, 'completed')
+        self.addCleanup(b.finish, 'completed')
+        con = sqlite3.connect(library_db.db_path(self.root))
+        con.execute("UPDATE downloader_run_stats SET started_at='2026-11-01T01:30:00'")       # the repeated hour: same text
+        con.commit()
+        con.close()
+        self.assertEqual([r['run_id'] for r in run_stats.read_runs(self.root)], [b.run_id, a.run_id])
+
+    def test_a_fresh_running_row_still_reads_as_running(self):
+        live = self.recorder()
+        live.start()
+        self.addCleanup(live.finish, 'completed')
+        (row,) = run_stats.read_runs(self.root)
+        self.assertEqual(row['status'], 'running')
+
+    def test_the_heartbeat_keeps_a_long_quiet_run_alive_and_stops_when_it_finishes(self):
+        rec = run_stats.RunRecorder(self.root, 'downloadContent', collector=self.col, app_db_path=self.app_db, heartbeat_seconds=0.05)
+        rec.start()
+        first = run_stats.read_runs(self.root)[0]['updated_at']
+        time.sleep(1.2)                                                       # e.g. a long mega pause: no links finish
+        later = run_stats.read_runs(self.root)[0]
+        self.assertGreater(later['updated_at'], first)
+        self.assertGreaterEqual(later['duration_s'], 1.0)
+        rec.finish('completed', {})
+        self.assertFalse(rec._beat.is_alive())
+        done = run_stats.read_runs(self.root)[0]
+        time.sleep(0.3)
+        self.assertEqual(run_stats.read_runs(self.root)[0]['updated_at'], done['updated_at'])
+        self.assertEqual(done['status'], 'completed')
+
+    def test_counts_are_saved_with_every_flush_so_a_killed_run_keeps_them(self):
+        counts = {'tasks': 7, 'links_seen': 3, 'downloaded': 2, 'failed': 1, 'bytes_saved': 99}
+        rec = run_stats.RunRecorder(self.root, 'downloadContent', collector=self.col, app_db_path=self.app_db, counts_fn=lambda: counts)
+        rec.start()
+        self.col.record('a.example', status=200, nbytes=5, seconds=1)
+        for _ in range(run_stats.FLUSH_EVERY_LINKS):
+            rec.link_finished()                                                # ... and then the process is killed
+        (row,) = run_stats.read_runs(self.root)
+        self.assertEqual((row['tasks'], row['links_seen'], row['downloaded'], row['failed'], row['bytes_saved'], row['requests']),
+                         (7, 3, 2, 1, 99, 1))
+        self.assertEqual(self.app('select tasks, downloaded from run_rollup'), [(7, 2)])
+
+    def test_a_crash_is_recorded_with_its_error(self):
+        rec = self.recorder()
+        rec.start()
+        rec.finish('crashed', {'tasks': 2}, note='RuntimeError: disk gone')
+        (row,) = run_stats.read_runs(self.root)
+        self.assertEqual((row['status'], row['note'], row['tasks']), ('crashed', 'RuntimeError: disk gone', 2))
+        self.assertIsNotNone(row['ended_at'])
+
+    def test_pauses_count_in_the_run_time_but_not_in_the_per_host_request_time(self):
+        rec = self.recorder()
+        rec.start()
+        self.col.record('a.example', status=200, nbytes=1048576, seconds=2.0)        # a 2 s request ...
+        time.sleep(1.2)                                                               # ... and a pause (cooldown, waiting)
+        rec.finish('completed', {})
+        (run,) = run_stats.read_runs(self.root)
+        (host,) = run_stats.read_hosts(self.root, rec.run_id)
+        self.assertGreaterEqual(run['duration_s'], 1.2)
+        self.assertAlmostEqual(host['seconds'], 2.0)                                  # speed = bytes / this, unaffected by the pause
+
+    def test_an_interrupted_runs_flushed_numbers_still_count_in_the_totals(self):
         first = self.recorder()
         first.start()
+        self.col.record('a.example', status=200, nbytes=100, seconds=1)
+        first.flush()                                                                 # saved, then killed
+        self.backdate(first.run_id, 600)
         time.sleep(1.01)
         second = self.recorder()
-        second.start()
-        statuses = {r['run_id']: r['status'] for r in run_stats.read_runs(self.root)}
-        self.assertEqual(statuses[first.run_id], 'interrupted')
-        self.assertEqual(statuses[second.run_id], 'running')
+        second.start()                                                                # a new run starts with fresh counters
+        self.col.record('a.example', status=200, nbytes=50, seconds=1)
+        second.finish('completed', {})
+        self.assertEqual([h['bytes'] for h in run_stats.read_hosts(self.root, first.run_id)], [100])
+        self.assertEqual([h['bytes'] for h in run_stats.read_hosts(self.root, second.run_id)], [50])
+        (total,) = run_stats.read_hosts(self.root)
+        self.assertEqual((total['requests'], total['bytes']), (2, 150))                # the killed run still counts
 
     def test_finish_stores_status_counts_totals_hosts_and_links(self):
         rec = self.recorder()

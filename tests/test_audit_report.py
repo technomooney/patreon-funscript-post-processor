@@ -69,6 +69,16 @@ class AuditReportTests(unittest.TestCase):
         self.assertIn('>5.0<', html)                                                  # saved MB
         self.assertIn('data-copy="152"', html)                                        # 3 MB over 20.2 s = 152 KB/s
 
+    def test_a_crashed_run_shows_its_status_and_error(self):
+        import net_stats
+        rec = run_stats.RunRecorder(self.root, 'downloadContent', collector=net_stats.Collector(),
+                                    app_db_path=os.path.join(self._tmp.name, 'app.db'))
+        rec.start()
+        rec.finish('crashed', {'tasks': 2}, note='RuntimeError: disk gone')
+        html = generate_audit_report.generate(self.root)
+        self.assertIn('crashed', html)
+        self.assertIn('RuntimeError: disk gone', html)
+
     def test_no_run_sections_without_any_run(self):
         html = generate_audit_report.generate(self.root)
         self.assertNotIn('Run History', html)

@@ -14,6 +14,7 @@ Every write is best-effort: statistics must never stop a download.
 import hashlib
 import json
 import sys
+import threading
 import time
 import uuid
 
@@ -35,6 +36,20 @@ _HOST_COLS = ('requests', 'bytes', 'seconds', 'ok', 'redirects', 'client_errors'
               'server_errors', 'errors', 'slowest_seconds')
 _COUNT_KEYS = ('tasks', 'links_seen', 'downloaded', 'duplicates', 'failed', 'deferred', 'skipped', 'bytes_saved')
 FLUSH_EVERY_LINKS = 25
+HEARTBEAT_SECONDS = 30      # how often a live run says so; a 'running' row silent for 4 beats belongs to a dead run
+STALE_AFTER_SECONDS = 4 * HEARTBEAT_SECONDS
+
+
+def _stamp(ts: float | None = None) -> str:
+    return time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(ts if ts is not None else time.time()))
+
+
+def _is_stale(updated_epoch: float | None, now: float | None = None) -> bool:
+    """True when a running run has not said so for STALE_AFTER_SECONDS (or never did: a row from before heartbeats).
+    Judged on seconds since 1970, which a daylight-saving change cannot make ambiguous."""
+    if not updated_epoch:
+        return True
+    return (now if now is not None else time.time()) - updated_epoch > STALE_AFTER_SECONDS
 
 
 def code_version(*paths: str) -> str:
@@ -59,7 +74,8 @@ def _app_connect(path: str | None = None):
 
 class RunRecorder:
     def __init__(self, base: str, script: str, settings: dict | None = None, version: str = '',
-                 collector: net_stats.Collector | None = None, app_db_path: str | None = None):
+                 collector: net_stats.Collector | None = None, app_db_path: str | None = None,
+                 counts_fn=None, heartbeat_seconds: float = HEARTBEAT_SECONDS):
         self.base, self.script = base, script
         self.settings, self.version = settings or {}, version
         self.collector = collector or net_stats.collector
@@ -69,6 +85,10 @@ class RunRecorder:
         self._root: str | None = None
         self._links_since_flush = 0
         self._link_rows_written = 0
+        self.counts_fn = counts_fn                     # () -> counts so far, so a run that dies keeps its counts
+        self._heartbeat_seconds = heartbeat_seconds
+        self._stop = threading.Event()
+        self._beat: threading.Thread | None = None
 
     # -- lifecycle --------------------------------------------------------------------------------------------
     def start(self) -> str:
@@ -79,17 +99,58 @@ class RunRecorder:
             self._root = report_store.root_for(self.base)
             if self._root is None:
                 return self.run_id
+            dead: list[str] = []
             with library_db.db(self._root, write=True) as con:
-                con.execute("UPDATE downloader_run_stats SET status='interrupted' WHERE status='running'")
-                con.execute('INSERT INTO downloader_run_stats(run_id, script, started_at, status, code_version, settings_json) '
-                            "VALUES(?,?,?,?,?,?)",
-                            (self.run_id, self.script, time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(self.started)),
-                             'running', self.version, json.dumps(self.settings, ensure_ascii=False, sort_keys=True)))
+                # Runs still marked 'running' that stopped saying so are dead (killed, power loss...). A live run in
+                # another terminal keeps its heartbeat fresh and is left alone.
+                for row in con.execute("SELECT run_id, started_at, duration_s, updated_at, updated_epoch "
+                                       "FROM downloader_run_stats WHERE status='running'").fetchall():
+                    if _is_stale(row['updated_epoch']):
+                        dead.append(row['run_id'])
+                        last = row['updated_at'] or row['started_at']
+                        con.execute("UPDATE downloader_run_stats SET status='interrupted', ended_at=COALESCE(ended_at, ?), "
+                                    "note=COALESCE(note, 'no sign of life since the last save: killed, crashed hard or power loss') "
+                                    "WHERE run_id=?", (last, row['run_id']))
+                con.execute('INSERT INTO downloader_run_stats(run_id, script, started_at, started_epoch, status, code_version, '
+                            'settings_json, updated_at, updated_epoch) VALUES(?,?,?,?,?,?,?,?,?)',
+                            (self.run_id, self.script, _stamp(self.started), self.started, 'running', self.version,
+                             json.dumps(self.settings, ensure_ascii=False, sort_keys=True), _stamp(), time.time()))
             self._app_write(status='running', counts={})
+            self._app_mark_interrupted(dead)
+            self._beat = threading.Thread(target=self._heartbeat, daemon=True, name='run-stats-heartbeat')
+            self._beat.start()
         except Exception as e:
             print(f'  [run-stats] could not start the run record: {e}')
             self._root = None
         return self.run_id
+
+    def _heartbeat(self) -> None:
+        while not self._stop.wait(self._heartbeat_seconds):
+            self._touch()
+
+    def _touch(self) -> None:
+        if self._root is None:
+            return
+        try:
+            with library_db.db(self._root, write=True) as con:
+                con.execute('UPDATE downloader_run_stats SET updated_at=?, updated_epoch=?, duration_s=? WHERE run_id=? AND status=?',
+                            (_stamp(), time.time(), time.time() - self.started, self.run_id, 'running'))
+        except Exception:
+            pass
+
+    def _app_mark_interrupted(self, run_ids: list[str]) -> None:
+        if not run_ids:
+            return
+        try:
+            con = _app_connect(self.app_db_path)
+            try:
+                with con:
+                    con.executemany("UPDATE run_rollup SET status='interrupted' WHERE run_id=? AND status='running'",
+                                    [(r,) for r in run_ids])
+            finally:
+                con.close()
+        except Exception:
+            pass
 
     def link_finished(self) -> None:
         """Call as links finish; flushes to the databases every FLUSH_EVERY_LINKS of them."""
@@ -97,11 +158,13 @@ class RunRecorder:
         if self._links_since_flush >= FLUSH_EVERY_LINKS:
             self.flush()
 
-    def flush(self, counts: dict | None = None, status: str = 'running', ended: bool = False) -> None:
+    def flush(self, counts: dict | None = None, status: str = 'running', ended: bool = False, note: str | None = None) -> None:
         self._links_since_flush = 0
         if self._root is None:
             return
         try:
+            if counts is None and self.counts_fn is not None:
+                counts = self.counts_fn()
             hosts = self.collector.snapshot_hosts()
             links = self.collector.take_finished_links()
             total = self.collector.totals()
@@ -123,9 +186,12 @@ class RunRecorder:
                          link.precheck_result, link.outcome))
                     self._link_rows_written += 1
                 fields = {'requests': total.requests, 'bytes_transferred': total.bytes, 'request_seconds': total.seconds,
-                          'duration_s': time.time() - self.started, 'status': status}
+                          'duration_s': time.time() - self.started, 'status': status, 'updated_at': _stamp(),
+                          'updated_epoch': time.time()}
                 if ended:
-                    fields['ended_at'] = time.strftime('%Y-%m-%dT%H:%M:%S')
+                    fields['ended_at'] = _stamp()
+                if note:
+                    fields['note'] = note[:500]
                 for key in _COUNT_KEYS:
                     if key in counts:
                         fields[key] = counts[key]
@@ -135,10 +201,14 @@ class RunRecorder:
         except Exception as e:
             print(f'  [run-stats] could not save run statistics: {e}')
 
-    def finish(self, status: str, counts: dict | None = None, outcome_of=None) -> None:
-        """Close the run. *outcome_of(folder, url)* gives the outcome of the link still being worked on."""
+    def finish(self, status: str, counts: dict | None = None, outcome_of=None, note: str | None = None) -> None:
+        """Close the run. *outcome_of(folder, url)* gives the outcome of the link still being worked on; *note* says why a
+        run that did not complete ended (the error of a crash)."""
+        self._stop.set()
+        if self._beat is not None:
+            self._beat.join(timeout=2)
         self.collector.end_link(outcome_of)
-        self.flush(counts, status=status, ended=True)
+        self.flush(counts, status=status, ended=True, note=note)
 
     # -- app database -----------------------------------------------------------------------------------------
     def _app_write(self, status: str, counts: dict, hosts: dict | None = None, total=None, ended: bool = False) -> None:
@@ -175,7 +245,14 @@ def read_runs(base: str, limit: int = 20) -> list[dict]:
     if root is None:
         return []
     with library_db.db(root) as con:
-        return [dict(r) for r in con.execute('SELECT * FROM downloader_run_stats ORDER BY started_at DESC LIMIT ?', (limit,))]
+        rows = [dict(r) for r in con.execute('SELECT * FROM downloader_run_stats '
+                                             'ORDER BY COALESCE(started_epoch, 0) DESC, started_at DESC LIMIT ?', (limit,))]
+    for r in rows:
+        if r['status'] == 'running' and _is_stale(r.get('updated_epoch')):
+            r['status'] = 'interrupted'               # nothing has said otherwise since; the next run will record it
+            r['note'] = r.get('note') or 'no sign of life since the last save: killed, crashed hard or power loss'
+            r['ended_at'] = r['ended_at'] or r.get('updated_at') or r['started_at']
+    return rows
 
 
 def read_hosts(base: str, run_id: str | None = None) -> list[dict]:

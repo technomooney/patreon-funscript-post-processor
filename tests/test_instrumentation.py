@@ -186,7 +186,19 @@ class WholeRunTests(unittest.TestCase):
         self.assertEqual(con.execute('select status, tasks, links_seen, failed from run_rollup').fetchall(), [('completed', 1, 2, 2)])
         con.close()
 
-    def test_a_crash_inside_the_run_still_closes_the_record(self):
+    def run_and_expect(self, exc_type, **patches):
+        """Run with something raising exc_type from inside; returns the single run row."""
+        with contextlib.ExitStack() as stack:
+            for name, value in patches.items():
+                stack.enter_context(mock.patch.object(dc, name, **value))
+            try:
+                self.run_downloader(lambda d, u, f: False, ['https://example.com/v/1'])
+            except exc_type:
+                pass
+        (run,) = run_stats.read_runs(self.root)
+        return run
+
+    def test_ctrl_c_is_recorded_as_interrupted(self):
         def handler(driver, url, folder):
             raise KeyboardInterrupt
         try:
@@ -194,9 +206,42 @@ class WholeRunTests(unittest.TestCase):
         except KeyboardInterrupt:
             pass
         (run,) = run_stats.read_runs(self.root)
-        self.assertIn(run['status'], ('interrupted', 'stopped'))
+        self.assertEqual(run['status'], 'interrupted')
         self.assertIsNotNone(run['ended_at'])
 
+    def test_a_python_error_mid_run_is_recorded_as_crashed_with_its_error(self):
+        run = self.run_and_expect(RuntimeError, _cleanup_temp_files={'side_effect': RuntimeError('disk gone')})
+        self.assertEqual(run['status'], 'crashed')
+        self.assertEqual(run['note'], 'RuntimeError: disk gone')
+        self.assertIsNotNone(run['ended_at'])
+        self.assertEqual(run['tasks'], 1)                      # the counts so far are kept
+
+    def test_a_graceful_stop_is_recorded_as_stopped_not_completed(self):
+        def handler(driver, url, folder):
+            dc._stop_after_current.set()                       # the user's first Ctrl+C, in the middle of a link
+            return False
+        self.addCleanup(dc._stop_after_current.clear)
+        self.run_downloader(handler, ['https://example.com/v/1', 'https://example.com/v/2'])
+        (run,) = run_stats.read_runs(self.root)
+        self.assertEqual(run['status'], 'stopped')
+        self.assertEqual(run['links_seen'], 1)                 # the second link was never started
+        self.assertIsNotNone(run['ended_at'])
+
+    def test_a_run_killed_without_any_cleanup_is_picked_up_by_the_next_one(self):
+        # what a SIGKILL leaves behind: a 'running' row, a heartbeat that stopped, and whatever the last flush saved
+        rec = run_stats.RunRecorder(self.root, 'downloadContent', counts_fn=lambda: {'tasks': 9, 'downloaded': 4})
+        rec.start()
+        rec.flush()
+        rec._stop.set()                                         # the heartbeat dies with the process
+        con = sqlite3.connect(library_db.db_path(self.root))
+        con.execute("UPDATE downloader_run_stats SET updated_at='2020-01-01T00:00:00', updated_epoch=1577836800")
+        con.commit()
+        con.close()
+        self.run_downloader(lambda d, u, f: False, ['https://example.com/v/1'])
+        runs = {r['run_id']: r for r in run_stats.read_runs(self.root)}
+        killed = runs[rec.run_id]
+        self.assertEqual((killed['status'], killed['tasks'], killed['downloaded']), ('interrupted', 9, 4))
+        self.assertEqual(sorted(r['status'] for r in runs.values()), ['completed', 'interrupted'])
 
 if __name__ == '__main__':
     unittest.main()

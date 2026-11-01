@@ -7328,6 +7328,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
         base_path, script_name, version=run_stats.code_version(__file__),
         settings={k: os.getenv(k, '') for k in _RUN_SETTINGS if os.getenv(k) is not None})
     recorder.start()
+    run_error: BaseException | None = None
 
     # Same convention as collect_tasks' mega-password lookup and
     # extract_variant_archives.py itself: the lowercased top-level scanned
@@ -7365,6 +7366,8 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                 'failed': count('failed'), 'deferred': count('deferred_mega'),
                 'skipped': count('previously_done') + count('skipped_known_failure'),
                 'bytes_saved': sum(os.path.getsize(p) for p in newly_downloaded if os.path.isfile(p))}
+
+    recorder.counts_fn = _run_counts
 
     def _protected() -> set[str]:
         """Absolute paths of everything successfully saved so far this run --
@@ -7706,6 +7709,9 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
         else:
             completed_cleanly = True
 
+    except Exception as e:                      # not Ctrl+C: a crash. The finally below still closes the record.
+        run_error = e
+        raise
     except KeyboardInterrupt:
         interrupted_run = True
         print('\n\nInterrupted.')
@@ -7747,8 +7753,10 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
             signal.signal(signal.SIGINT, prev_sigint)
         action_log.finish()
         _probe_browser = None
-        recorder.finish('completed' if completed_cleanly else ('interrupted' if interrupted_run else 'stopped'),
-                        _run_counts(), _link_outcome)
+        recorder.finish('completed' if completed_cleanly else ('crashed' if run_error is not None else
+                                                                 ('interrupted' if interrupted_run else 'stopped')),
+                        _run_counts(), _link_outcome,
+                        note=f'{type(run_error).__name__}: {run_error}' if run_error is not None else None)
         driver.quit()
         # Close the Discord browser too, if _fetch_discord_password_cached ever
         # opened one this run — checked via sys.modules rather than a top-level
