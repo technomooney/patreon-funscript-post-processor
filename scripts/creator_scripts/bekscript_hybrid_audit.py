@@ -15,9 +15,9 @@ files, and a Discord channel that shares "secret" scripts the other two never ca
      funscript name; the ledger records what each secret post resolved to, or that it is still unresolved.
 
 The fetching steps reuse the existing Discord and pixeldrain sync plugins (only-what-is-new, journaled for undo
-by them). The audit itself is read-only: it writes only reports under _reports/ and rows in the library database.
+by them). The audit itself is read-only: it writes only reports and rows in the library database.
 """
-import csv
+import report_store
 import hashlib
 import json
 import os
@@ -203,17 +203,6 @@ def update_ledger(root: str, base_path: str, secrets: list[str], files: list[str
 # run
 # ---------------------------------------------------------------------------
 
-def _csv(base_path: str, name: str, header: list[str], rows: list[list]) -> str:
-    d = os.path.join(base_path, '_reports')
-    os.makedirs(d, exist_ok=True)
-    path = os.path.join(d, name)
-    with open(path, 'w', newline='', encoding='utf-8') as f:
-        w = csv.writer(f)
-        w.writerow(header)
-        w.writerows(rows)
-    return path
-
-
 def audit(base_path: str, root: str) -> dict:
     archive = archive_scripts(base_path)
     missing_dirs = [d for d in archive_dirs(base_path) if not os.path.isdir(os.path.join(base_path, d))]
@@ -222,9 +211,9 @@ def audit(base_path: str, root: str) -> dict:
     posts = scan_posts(base_path)
     missing = gaps(posts, archive)
     ledger = update_ledger(root, base_path, secret_posts(posts), discord_files(base_path))
-    gap_csv = _csv(base_path, 'hybrid_missing_from_archive.csv', ['post', 'script', 'reason', 'post links'],
+    gap_csv = report_store.replace_table(base_path, 'hybrid_missing_from_archive', ['post', 'script', 'reason', 'post links'],
                    [[g['post'], g['script'], g['reason'], ' '.join(g['links'])] for g in missing])
-    secret_csv = _csv(base_path, 'hybrid_secret_ledger.csv', ['post', 'status', 'discord files'],
+    secret_csv = report_store.replace_table(base_path, 'hybrid_secret_ledger', ['post', 'status', 'discord files'],
                       [[p, e['status'], ' | '.join(e['files'])] for p, e in sorted(ledger.items())])
     return {'archive_scripts': sum(len(v) for v in archive.values()),
             'patreon_scripts': sum(len(p['scripts']) for p in posts.values()),

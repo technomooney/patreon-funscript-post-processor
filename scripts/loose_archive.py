@@ -22,13 +22,13 @@ Per run:
                anything else                                         -> MOVED to <library>/_from_patreon/<post>/ so
                                                                         the library really holds everything
              Post folders keep description.json, images and the tool's own bookkeeping.
-  4. report  _reports/pixeldrain_archive_adopted.csv lists what was adopted and trashed.
+  4. report  the pixeldrain_archive_adopted report (library database) lists what was adopted and trashed.
 
 Opt-in per creator in creator_config.json (nothing here ever turns itself on):
     "pixeldrain_archive": {"dir": "!archive", "discord_channel": "archive", "latest_only": true}
 Everything is journaled for undo (the plugin's own undo journal).
 """
-import csv
+import report_store
 import hashlib
 import os
 import shutil
@@ -272,17 +272,6 @@ def fetch(base_path: str, cfg: dict, interactive: bool) -> None:
         ps.sync_urls(base_path, [s['url'] for s in sources], dest=cfg['dir'], interactive=interactive)
 
 
-def _write_csv(base_path: str, rows: list[list]) -> str:
-    d = os.path.join(base_path, '_reports')
-    os.makedirs(d, exist_ok=True)
-    path = os.path.join(d, 'pixeldrain_archive_adopted.csv')
-    with open(path, 'w', newline='', encoding='utf-8') as f:
-        w = csv.writer(f)
-        w.writerow(['post', 'file', 'result'])
-        w.writerows(rows)
-    return path
-
-
 def run(base_path: str, options: dict | None, script_id: str, cfg: dict | None = None) -> None:
     """The whole loose-archive run. *script_id* names the undo journal."""
     folder_log.ensure_library(base_path)
@@ -329,7 +318,7 @@ def run(base_path: str, options: dict | None, script_id: str, cfg: dict | None =
                 totals[k] += len(files)
                 rows += [[rel, f, k] for f in files]
         progress.clear()
-        csv_path = _write_csv(base_path, rows)
+        csv_path = report_store.replace_table(base_path, 'pixeldrain_archive_adopted', ['post', 'file', 'result'], rows)
         progress.say(f'  {totals["trashed"]} duplicate(s) trashed, {totals["adopted"]} file(s) moved into '
                      f'{cfg["dir"]}/{ADOPT_DIRNAME}/, {totals["left"]} unreadable script(s) left in place  ->  {csv_path}')
         if totals['better_than_archive']:

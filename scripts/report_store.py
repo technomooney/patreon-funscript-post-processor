@@ -197,3 +197,10 @@ def forget_many(base: str, pairs) -> None:
 def failed_links(base: str) -> set[str]:
     """Every URL currently listed as failed (the old failed_downloads.csv 'link' column)."""
     return {r['url'] for r in outcomes(base, 'failed')}
+
+
+def replace_table(base: str, name: str, header: list[str], rows: list[list]) -> str:
+    """replace_report() for a report built as a header plus plain row lists (what csv.writer was given).
+    Returns a short label for a "written to ..." message."""
+    replace_report(base, name, [dict(zip(header, r)) for r in rows])
+    return f"report '{name}' (library database)"

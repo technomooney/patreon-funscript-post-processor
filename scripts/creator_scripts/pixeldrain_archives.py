@@ -64,14 +64,14 @@ when an untried password exists (and only while the kept copy still
 matches pixeldrain's hash). An archive that matches pixeldrain's hash but
 that 7z reports as structurally damaged is 'broken' on pixeldrain itself
 and isn't retried. All of these are listed with their pixeldrain link in
-_reports/pixeldrain_unusable_links.csv; nothing is downloaded, and nothing
+the pixeldrain_unusable_links report in the library database; nothing is downloaded, and nothing
 is moved out of their posts, for them.
 
 This is a download-replacement script (REPLACES_DOWNLOAD): once the user
 sets download_script in Pize's creator_config.json, the normal download
 runs this instead. Every change goes into this script's own undo journal.
 """
-import csv
+import report_store
 import hashlib
 import json
 import os
@@ -1210,22 +1210,11 @@ def queue_under_res(base_path: str, lib: str, key: str, originals: list[str], cr
 # Reports
 # ---------------------------------------------------------------------------
 
-def _write_csv(base_path: str, name: str, header: list[str], rows: list[list]) -> str:
-    d = os.path.join(base_path, '_reports')
-    os.makedirs(d, exist_ok=True)
-    path = os.path.join(d, name)
-    with open(path, 'w', newline='', encoding='utf-8') as f:
-        w = csv.writer(f)
-        w.writerow(header)
-        w.writerows(rows)
-    return path
-
-
 UNUSABLE_STATUSES = ('locked', 'broken', 'gone', 'failed')
 
 
 def write_unusable_report(base_path: str, manifest: Manifest) -> dict[str, int]:
-    """_reports/pixeldrain_unusable_links.csv: every link that isn't done,
+    """The pixeldrain_unusable_links report (library database): every link that isn't done,
     with why -- locked (no password opens it yet, retried when a new one
     shows up), broken (damaged on pixeldrain itself, not retried), gone
     (deleted from pixeldrain, rechecked every GONE_RECHECK_DAYS days),
@@ -1239,12 +1228,9 @@ def write_unusable_report(base_path: str, manifest: Manifest) -> dict[str, int]:
         counts[st] += 1
         rows.append([st, url, e.get('archive_name', ''), e.get('locked_part', ''), '; '.join(e.get('posts', [])),
                      len(e.get('tried', [])), e.get('first_attempt', ''), e.get('last_attempt', '')])
-    _write_csv(base_path, 'pixeldrain_unusable_links.csv',
+    report_store.replace_table(base_path, 'pixeldrain_unusable_links',
                ['status', 'pixeldrain_url', 'archive', 'failing_part', 'posts', 'passwords_tried',
                 'first_attempt', 'last_attempt'], rows)
-    old = os.path.join(base_path, '_reports', 'pixeldrain_locked_archives.csv')
-    if os.path.isfile(old):
-        os.remove(old)  # superseded by the unified report
     return counts
 
 
@@ -1518,7 +1504,7 @@ def run(base_path: str, options: dict | None = None) -> None:
             for d in sorted(os.listdir(udir)):
                 for f in sorted(os.listdir(os.path.join(udir, d))):
                     rows.append([d, f])
-            path = _write_csv(base_path, 'pixeldrain_unmatched_post_files.csv', ['post', 'file'], rows)
+            path = report_store.replace_table(base_path, 'pixeldrain_unmatched_post_files', ['post', 'file'], rows)
             print(f'  review: {path}')
 
         # 7. Resolution check for every package.
@@ -1531,7 +1517,7 @@ def run(base_path: str, options: dict | None = None) -> None:
         counts = write_unusable_report(base_path, manifest)
         print(f'\nUnusable links: {counts["locked"]} locked (retried when a new password appears), '
               f'{counts["broken"]} broken on pixeldrain, {counts["gone"]} gone, '
-              f'{counts["failed"]} failed downloads (retried next run) — see _reports/pixeldrain_unusable_links.csv')
+              f'{counts["failed"]} failed downloads (retried next run) — see the pixeldrain_unusable_links report')
 
         # Redownload offer -- only entries for this library's own folders.
         lib_prefix = os.path.normpath(lib) + os.sep
