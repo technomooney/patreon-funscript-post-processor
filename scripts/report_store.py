@@ -164,7 +164,7 @@ def report_names(base: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Row helpers for the download run, and the one-time import of the old CSVs
+# Row helpers for the download run
 # ---------------------------------------------------------------------------
 
 def record_rows(base: str, rows: list[dict], kind: str = 'failed') -> int:
@@ -197,46 +197,3 @@ def forget_many(base: str, pairs) -> None:
 def failed_links(base: str) -> set[str]:
     """Every URL currently listed as failed (the old failed_downloads.csv 'link' column)."""
     return {r['url'] for r in outcomes(base, 'failed')}
-
-
-# Old CSV -> where it lives now. The prefix match covers the run-suffixed variants (failed_downloads_flagged_...).
-_LEGACY_OUTCOME_CSVS = (('failed_downloads', 'failed'), ('uncertain_downloads', 'uncertain'))
-_LEGACY_REPORT_CSVS = ('mega_error6', 'many_funscripts')
-
-
-def import_legacy_csvs(root: str) -> int:
-    """Import the CSVs this module replaced from <root>/_reports into the DB, then file them under
-    .library-data/legacy/_reports (so they are neither re-imported nor left loose). Returns how many files moved."""
-    import csv
-    import shutil
-    reports = os.path.join(root, '_reports')
-    if not os.path.isdir(reports) or _locate(root) is None:
-        return 0
-    moved = 0
-    for name in sorted(os.listdir(reports)):
-        stem, ext = os.path.splitext(name)
-        if ext.lower() != '.csv':
-            continue
-        outcome_kind = next((k for prefix, k in _LEGACY_OUTCOME_CSVS if stem.startswith(prefix)), None)
-        report = next((r for r in _LEGACY_REPORT_CSVS if stem.startswith(r)), None)
-        if outcome_kind is None and report is None:
-            continue
-        path = os.path.join(reports, name)
-        try:
-            with open(path, newline='', encoding='utf-8') as f:
-                rows = list(csv.DictReader(f))
-        except (OSError, csv.Error, UnicodeDecodeError):
-            continue
-        if outcome_kind:
-            record_rows(root, rows, outcome_kind)
-        else:
-            existing = read_report(root, stem)
-            replace_report(root, stem, existing + rows)
-        dest = library_db.data_dir(root, os.path.join('legacy', '_reports'))
-        os.makedirs(dest, exist_ok=True)
-        target = os.path.join(dest, name)
-        if os.path.exists(target):
-            target = os.path.join(dest, f'{stem}.{library_db._now().replace(":", "")}{ext}')
-        shutil.move(path, target)
-        moved += 1
-    return moved
