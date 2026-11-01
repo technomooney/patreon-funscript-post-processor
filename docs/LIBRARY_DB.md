@@ -32,6 +32,8 @@ Libraries are not git repos, so a library's history must live inside it. Secrets
 | `pixeldrain_links` | link id -> status/sha256/name/size/local file (was Pize `.manifest.json`) | downloader |
 | `discord_messages` | scanned Discord messages, processed flag, decoded links | downloader |
 | `downloader_external_links` | (downloader's own table, migration track `downloader` v1) links found outside the post, e.g. inside eroscripts threads: folder + url -> status/source | downloader |
+| `downloader_link_outcomes` | (downloader's own, track `downloader` v2) links that failed or need a look: HTTP status, reason, permanent flag, attempts (was failed_downloads.csv / uncertain_downloads.csv) | downloader |
+| `downloader_report_rows` | (downloader's own, track `downloader` v2) rows of every former CSV report, replaced whole per run, read by the HTML audit report | downloader |
 | `markers` | `.manual` and similar hands-off markers | drift scan |
 | `drift` | differences between disk and recorded state | drift scan |
 
