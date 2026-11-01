@@ -59,7 +59,7 @@ setup.bat
 Setup will:
 1. Create a Python virtual environment and install dependencies
 2. Download portable ffmpeg/ffprobe binaries
-3. Prompt for credentials (iwara.tv, mega.nz, pixeldrain, spankbang) — stored in OS keyring
+3. Prompt for credentials (iwara.tv, mega.nz, pixeldrain, spankbang, hanime.tv) — stored in OS keyring
 4. Configure settings (headless browser, max resolution, auto-dedup)
 5. Run a disk I/O benchmark to find the optimal thread count for deduplication
 
@@ -135,7 +135,8 @@ All settings live in `.env` (created by setup). Key options:
 | mega.nz | Requires MEGAcmd and optional account for private links |
 | pixeldrain.com | Optional API key for private files |
 | spankbang.com | Requires account credentials |
-| hanime1.me / hanime.tv | Via browser automation |
+| hanime1.me | Via browser automation |
+| hanime.tv | Via browser automation; requires account credentials (the download links are only shown to signed-in users) |
 | gofile.io | Public files |
 | rule34.xxx / rule34video.com | |
 | e621.net | |

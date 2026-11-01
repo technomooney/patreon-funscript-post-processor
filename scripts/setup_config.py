@@ -740,6 +740,17 @@ def _configure_credentials() -> None:
         print('  Skipping rule34video.com.')
 
     print()
+    print('hanime.tv  (required for downloads -- the download links are only shown to signed-in users; leave blank to skip)')
+    htv_email = _ask('Email', current=_keyring_get('HANIMETV_EMAIL'))
+    if htv_email:
+        _keyring_set('HANIMETV_EMAIL', htv_email)
+        htv_password = _ask_secret('Password', current=_keyring_get('HANIMETV_PASSWORD'))
+        if htv_password:
+            _keyring_set('HANIMETV_PASSWORD', htv_password)
+    else:
+        print('  Skipping hanime.tv.')
+
+    print()
     print('the-joi-database.com  (required for all videos/funscripts; leave blank to skip)')
     joidb_user = _ask('Username', current=_keyring_get('JOIDB_USERNAME'))
     if joidb_user:

@@ -3066,8 +3066,90 @@ def download_pixeldrain(_driver, url: str, download_dir: str, funscript_gate: bo
     return False
 
 
+_hanimetv_browser_logged_in: bool = False
+
+
+def _hanimetv_browser_login(driver) -> bool:
+    """Log into hanime.tv through its /login page. Returns True if signed in afterwards.
+
+    The download links are only reachable while signed in. The saved browser profile (browser_session) keeps the
+    session between runs: the header's SIGN IN link (a[href="/login"]) only exists for anonymous visitors, so
+    without it there is nothing to type. The form guards its Sign In button with a Cloudflare Turnstile widget
+    and keeps it disabled until that solves, so the click waits for the button to enable; in headless mode the
+    widget may never solve -- the message then says to try windowed mode.
+    """
+    global _hanimetv_browser_logged_in
+    if _hanimetv_browser_logged_in:
+        return True
+
+    driver.get('https://hanime.tv/')
+    time.sleep(2)
+    if not driver.find_elements(By.CSS_SELECTOR, 'a[href="/login"]'):
+        _hanimetv_browser_logged_in = True
+        return True
+
+    email = _get_secret('HANIMETV_EMAIL').strip()
+    password = _get_secret('HANIMETV_PASSWORD').strip()
+    if not email or not password:
+        return False
+
+    try:
+        driver.get('https://hanime.tv/login')
+        wait = WebDriverWait(driver, 15)
+
+        # Typed key by key: the form is a client-side island, so it only sees real input events.
+        email_field = wait.until(EC.visibility_of_element_located((By.ID, 'Email')))
+        email_field.click()
+        time.sleep(0.3)
+        email_field.clear()
+        for char in email:
+            email_field.send_keys(char)
+            time.sleep(0.05)
+
+        pw_field = driver.find_element(By.ID, 'Password')
+        pw_field.click()
+        time.sleep(0.3)
+        for char in password:
+            pw_field.send_keys(char)
+            time.sleep(0.05)
+
+        submit = driver.find_element(By.CSS_SELECTOR, 'form button[type="submit"]')
+        try:
+            WebDriverWait(driver, 60).until(lambda d: submit.is_enabled())
+        except WebDriverException:
+            print('  [hanime.tv] Sign In button never enabled -- the Cloudflare check did not solve '
+                  '(try BROWSER_HEADLESS=false)')
+            return False
+        time.sleep(0.5)
+        driver.execute_script('arguments[0].click()', submit)
+
+        try:
+            WebDriverWait(driver, 20).until(lambda d: '/login' not in urlparse(d.current_url).path)
+        except WebDriverException:
+            pass
+
+        if '/login' in urlparse(driver.current_url).path:
+            print('  [hanime.tv] login failed -- check HANIMETV_EMAIL/HANIMETV_PASSWORD')
+            return False
+
+        print('  [hanime.tv] browser login successful')
+        _hanimetv_browser_logged_in = True
+        return True
+    except Exception as e:
+        print(f'  [hanime.tv] browser login failed: {e}')
+        return False
+
+
 def download_hanimetv(driver, url: str, download_dir: str) -> bool:
-    """Navigate to a hanime.tv watch page and download via its pixeldrain-backed quality links."""
+    """Navigate to a hanime.tv watch page and download via its pixeldrain-backed quality links.
+
+    The download links need a signed-in account: log in first (HANIMETV_EMAIL/HANIMETV_PASSWORD, see
+    setup_config.py --credentials), and say so plainly when that is what is missing.
+    """
+    if not _hanimetv_browser_login(driver):
+        print('  [hanime.tv] downloads need a login -- set HANIMETV_EMAIL/HANIMETV_PASSWORD with '
+              'scripts/setup_config.py --credentials')
+        return False
     driver.get(url)
 
     try:
