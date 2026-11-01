@@ -95,7 +95,8 @@ class Collector:
 
     # -- recording -------------------------------------------------------------------------------------------
     def record(self, host: str, *, status: int | None = None, nbytes: int = 0, seconds: float = 0.0,
-               error: bool = False, kind: str = 'http', rate_limit_exit: bool = False) -> None:
+               error: bool = False, kind: str = 'http', rate_limit_exit: bool = False, attribute: bool = True) -> None:
+        """Note one request. *attribute* False keeps it off the current link (work done by another thread)."""
         with self._lock:
             stat = self.hosts.setdefault(host, HostStat())
             stat.requests += 1
@@ -103,7 +104,7 @@ class Collector:
             stat.seconds += seconds
             stat.slowest_seconds = max(stat.slowest_seconds, seconds)
             _classify(stat, status, error, kind, rate_limit_exit)
-            if self._current is not None:
+            if attribute and self._current is not None:
                 self._current.requests += 1
                 self._current.bytes += nbytes
                 self._current.seconds += seconds
@@ -153,6 +154,10 @@ class Collector:
                 link.outcome = outcome_of(link.folder, link.url) or link.outcome
             self.links.append(link)
             return link
+
+    def current_precheck_seconds(self) -> float:
+        with self._lock:
+            return self._current.precheck_seconds if self._current is not None else 0.0
 
     def take_finished_links(self) -> list[LinkStat]:
         with self._lock:
@@ -229,7 +234,8 @@ def urlopen(url, *args, **kwargs):
         collector.record(host, error=True, seconds=time.perf_counter() - started)
         raise
     elapsed = time.perf_counter() - started
-    collector.record(host, status=getattr(resp, 'status', None) or resp.getcode(), seconds=0.0)
+    status = getattr(resp, 'status', None)
+    collector.record(host, status=status if isinstance(status, int) else 200, seconds=0.0)
     collector.add_seconds(host, elapsed)
     return _CountingResponse(resp, host, time.perf_counter(), collector)
 
@@ -239,7 +245,7 @@ class _ProcessResult:
 
 
 @contextlib.contextmanager
-def timed_process(url_or_host: str, kind: str, rate_limit_exit: int | None = None):
+def timed_process(url_or_host: str, kind: str, rate_limit_exit: int | None = None, attribute: bool = True):
     """Time a separate network tool (mega-get, yt-dlp, ffmpeg, ffprobe) working on *url_or_host*.
 
         with timed_process(url, 'mega-get', rate_limit_exit=6) as run:
@@ -254,7 +260,7 @@ def timed_process(url_or_host: str, kind: str, rate_limit_exit: int | None = Non
     try:
         yield result
     finally:
-        elapsed = time.perf_counter() - started
-        collector.record(host, status=result.exit_code, seconds=elapsed, kind='process',
-                         error=result.exit_code is None,
-                         rate_limit_exit=rate_limit_exit is not None and result.exit_code == rate_limit_exit)
+        if host not in ('127.0.0.1', 'localhost', 'local'):   # the local relay (its remote fetches count against the real host) and local files
+            collector.record(host, status=result.exit_code, seconds=time.perf_counter() - started, kind='process',
+                             error=result.exit_code is None, attribute=attribute,
+                             rate_limit_exit=rate_limit_exit is not None and result.exit_code == rate_limit_exit)

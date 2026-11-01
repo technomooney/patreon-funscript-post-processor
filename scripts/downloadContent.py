@@ -34,7 +34,9 @@ import external_links
 import folder_log
 import library_db
 import report_store
+import net_stats
 import remote_cache_relay
+import run_stats
 import link_probe
 import link_probe_browser
 import mega_cooldown
@@ -1173,7 +1175,9 @@ def _video_quality(path_or_url: str, headers: dict[str, str] | None = None) -> d
             '-of', 'json', path_or_url]
     remote = path_or_url.startswith(('http://', 'https://'))
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=_scaled_timeout(30) if remote else 30)
+        with net_stats.timed_process(path_or_url if remote else 'local', 'ffprobe') as _run:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=_scaled_timeout(30) if remote else 30)
+            _run.exit_code = result.returncode
         data = json.loads(result.stdout)
         out: dict = {}
         streams = data.get('streams', [])
@@ -1285,7 +1289,7 @@ def _remote_range_bytes(url: str, headers: dict[str, str], start: int, length: i
         req_headers = dict(headers)
         req_headers['Range'] = f'bytes={start}-{start + length - 1}'
         req = urllib.request.Request(url, headers=req_headers)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with net_stats.urlopen(req, timeout=timeout) as resp:
             if resp.status == 200 and start > 0:
                 _range_note = 'the server ignored the Range header (answered 200 with the start of the file)'
                 return None
@@ -1358,7 +1362,7 @@ def _remote_full_hash(url: str, headers: dict[str, str]) -> str | None:
     """
     try:
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with net_stats.urlopen(req, timeout=60) as resp:
             h = hashlib.sha256()
             while True:
                 block = resp.read(1 << 20)  # 1 MB
@@ -1507,7 +1511,9 @@ def _remote_video_duration(url: str, headers: dict[str, str]) -> float | None:
     cmd += ['-show_entries', 'format=duration',
             '-of', 'default=noprint_wrappers=1:nokey=1', url]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=_DURATION_PROBE_TIMEOUT)
+        with net_stats.timed_process(url, 'ffprobe') as _run:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=_DURATION_PROBE_TIMEOUT)
+            _run.exit_code = result.returncode
     except subprocess.TimeoutExpired:
         _duration_probe_note = f'ffprobe timed out after {_DURATION_PROBE_TIMEOUT}s'
         return None
@@ -1542,7 +1548,9 @@ def _stream_frame(url: str, headers: dict[str, str], timestamp: str) -> bytes | 
             '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'gray',
             '-vf', 'scale=32:32', 'pipe:1']
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=_scaled_timeout(60))
+        with net_stats.timed_process(url, 'ffmpeg') as _run:
+            result = subprocess.run(cmd, capture_output=True, timeout=_scaled_timeout(60))
+            _run.exit_code = result.returncode
         if result.returncode == 0 and len(result.stdout) == 32 * 32:
             return result.stdout
     except (subprocess.SubprocessError, OSError):
@@ -1717,7 +1725,7 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
     head_name: str | None = None
     try:
         req = urllib.request.Request(url, headers=headers, method='HEAD')
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with net_stats.urlopen(req, timeout=15) as resp:
             content_length = int(resp.headers.get('Content-Length', 0))
             head_name = _name_from_response(resp, url)
     except urllib.error.HTTPError as e:
@@ -1912,8 +1920,32 @@ def _precheck_av_stages(url: str, headers: dict[str, str], url_dur: float, conte
 _pending_name_hint: str | None = None
 
 
-def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: dict[str, str],
-                   override_name: str | None = None) -> bool:
+_PRECHECK_CATEGORIES = (('already exists', 'name match'), ('hash match', 'hash match'), ('chunk match', 'chunk match'),
+                        ('partial content', 'partial match'), ('identical to existing', 'size shortcut'),
+                        ('audio fingerprint', 'audio match'), ('visually similar', 'visual match'))
+
+
+def _precheck_category(reason: str | None) -> str:
+    """What settled the pre-check, as a short label for the statistics."""
+    if reason is None:
+        return 'no match'
+    text = reason.lower()
+    return next((label for prefix, label in _PRECHECK_CATEGORIES if text.startswith(prefix)), 'other')
+
+
+def _direct_fetch(*args, **kwargs) -> bool:
+    """_direct_fetch_inner, with the time it spent downloading (pre-check excluded) noted against the current link."""
+    started = time.perf_counter()
+    pre_before = net_stats.collector.current_precheck_seconds()
+    try:
+        return _direct_fetch_inner(*args, **kwargs)
+    finally:
+        pre = net_stats.collector.current_precheck_seconds() - pre_before
+        net_stats.collector.note(download_seconds=max(0.0, time.perf_counter() - started - pre))
+
+
+def _direct_fetch_inner(video_url: str, download_dir: str, temp_prefix: str, headers: dict[str, str],
+                        override_name: str | None = None) -> bool:
     """Download *video_url* straight to *download_dir* using urllib, no browser needed.
 
     Writes to a .part file while in progress so that wait_for_download ignores
@@ -1936,7 +1968,10 @@ def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: 
     # Pre-download duplicate check: HEAD + ffprobe remote duration.
     # Zero bandwidth cost — we only proceed with the full download if nothing
     # similar already exists in download_dir.
+    _pre_started = time.perf_counter()
     skip_reason = _precheck_url(video_url, headers, download_dir)
+    net_stats.collector.note(precheck_seconds=time.perf_counter() - _pre_started,
+                             precheck_result=_precheck_category(skip_reason))
     if skip_reason:
         print(f'  [pre-check] skipping — {skip_reason}')
         _last_download_skipped = True
@@ -1945,7 +1980,7 @@ def _direct_fetch(video_url: str, download_dir: str, temp_prefix: str, headers: 
     writing_path = os.path.join(download_dir, f'{temp_prefix}.part')
     req = urllib.request.Request(video_url, headers=headers)
     try:
-        response_cm = urllib.request.urlopen(req)
+        response_cm = net_stats.urlopen(req)
     except urllib.error.HTTPError as e:
         fetch_diagnostics.log_fetch_failure(video_url, headers, e)
         raise
@@ -2083,7 +2118,7 @@ def _gofile_website_token(driver) -> str:
             'https://gofile.io/dist/js/global.js',
             headers={'User-Agent': 'Mozilla/5.0'},
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with net_stats.urlopen(req, timeout=10) as resp:
             js = resp.read().decode('utf-8', errors='replace')
         m = re.search(r'websiteToken\s*[=:]\s*["\']([^"\']{4,})', js)
         if m:
@@ -2122,7 +2157,7 @@ def download_gofile(driver, url: str, download_dir: str) -> bool:
             data=b'',
             headers={'User-Agent': 'Mozilla/5.0', 'Content-Type': 'application/json'},
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with net_stats.urlopen(req, timeout=10) as resp:
             acct = json.loads(resp.read())
         guest_token = acct['data']['token']
     except Exception as e:
@@ -2147,7 +2182,7 @@ def download_gofile(driver, url: str, download_dir: str) -> bool:
                 'Authorization': f'Bearer {guest_token}',
             },
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with net_stats.urlopen(req, timeout=15) as resp:
             meta = json.loads(resp.read())
     except Exception as e:
         print(f'  [gofile.io] API error fetching metadata: {e}')
@@ -3095,7 +3130,7 @@ def _expand_pixeldrain_list(url: str) -> list[str]:
 
     def _fetch(headers: dict[str, str]) -> list[str]:
         req = urllib.request.Request(api_url, headers=headers)
-        with urllib.request.urlopen(req) as resp:
+        with net_stats.urlopen(req) as resp:
             data = json.loads(resp.read())
         files = data.get('files', [])
         if not files:
@@ -3159,7 +3194,7 @@ def _pixeldrain_filesystem_stat(fs_path: str) -> dict | None:
             f'https://pixeldrain.com/api/filesystem/{fs_path}?stat',
             headers={'Referer': 'https://pixeldrain.com/'},
         )
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with net_stats.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read())
     except Exception:
         return None
@@ -3205,7 +3240,7 @@ def _pixeldrain_filesystem_funscript_gate(api_url: str, download_dir: str) -> st
         print(f'  [pixeldrain.com] found a matching funscript in the share ({name}) — fetching it too...')
         try:
             req = urllib.request.Request(child_url, headers={'Referer': 'https://pixeldrain.com/'})
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with net_stats.urlopen(req, timeout=30) as resp:
                 content = resp.read()
             dest = os.path.join(download_dir, name)
             if not os.path.exists(dest):
@@ -3682,7 +3717,7 @@ def _iwara_login(site: str = 'www.iwara.tv') -> str | None:
     )
     for attempt in range(3):
         try:
-            with urllib.request.urlopen(req) as resp:
+            with net_stats.urlopen(req) as resp:
                 result = json.loads(resp.read())
                 return result.get('token')
         except urllib.error.HTTPError as e:
@@ -3738,7 +3773,7 @@ def _download_iwara_api(_driver, url: str, download_dir: str) -> bool:
                 f'https://api.iwara.tv/video/{video_id}',
                 headers=api_headers,
             )
-            with urllib.request.urlopen(meta_req) as resp:
+            with net_stats.urlopen(meta_req) as resp:
                 video_meta = json.loads(resp.read())
         except urllib.error.HTTPError as e:
             body = e.read().decode('utf-8', errors='replace')
@@ -3783,7 +3818,7 @@ def _download_iwara_api(_driver, url: str, download_dir: str) -> bool:
         # Fetch the quality list — requires Authorization + X-Version.
         try:
             fl_req = urllib.request.Request(file_list_url, headers=fl_headers)
-            with urllib.request.urlopen(fl_req) as resp:
+            with net_stats.urlopen(fl_req) as resp:
                 content_type = resp.headers.get('Content-Type', '')
                 raw = resp.read()
         except urllib.error.HTTPError as e:
@@ -4250,7 +4285,7 @@ def download_yandex_disk(_driver, url: str, download_dir: str) -> bool:
         req = urllib.request.Request(api_url, headers={
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         })
-        with urllib.request.urlopen(req) as resp:
+        with net_stats.urlopen(req) as resp:
             data = json.loads(resp.read())
 
         download_url = data.get('href')
@@ -4747,7 +4782,9 @@ class _MegaWorker:
 
         try:
             _mega_cooldown.begin_attempt()
-            result = _run_mega_get_polling(cmd, job['download_dir'])
+            with net_stats.timed_process(job['link'], 'mega-get', _MEGA_RATE_LIMIT_EXIT, attribute=False) as _run:
+                result = _run_mega_get_polling(cmd, job['download_dir'])
+                _run.exit_code = result.returncode
         except OSError as e:
             self._log(f'{job["basename"]}: OS error: {e}')
             self._results.put({'success': False, 'link': job['link'],
@@ -4903,11 +4940,13 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
         _mega_cooldown.begin_attempt()
         _set_status(f'  [mega.nz] downloading — timeout {_MEGA_TIMEOUT // 60} min...')
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True, text=True, timeout=_MEGA_TIMEOUT,
-                creationflags=_MEGA_WIN_FLAGS,
-            )
+            with net_stats.timed_process(url, 'mega-get', _MEGA_RATE_LIMIT_EXIT) as _run:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True, text=True, timeout=_MEGA_TIMEOUT,
+                    creationflags=_MEGA_WIN_FLAGS,
+                )
+                _run.exit_code = result.returncode
         except subprocess.TimeoutExpired:
             _last_mega_filename_hint = _mega_filename_hint(download_dir, before)
             print(f'  [mega.nz] download timed out after {_MEGA_TIMEOUT // 60} min (file: {_last_mega_filename_hint})')
@@ -5502,7 +5541,9 @@ def _ytdlp_cmd() -> list[str] | None:
 def _run_ytdlp_download(cmd: list[str], url: str) -> subprocess.CompletedProcess:
     """Run a yt-dlp download with stderr captured (progress stays live on stdout), echo what it said, and on failure
     keep its own explanation of why for the report. This run is the only request made for the link."""
-    result = subprocess.run(cmd, timeout=3600, stderr=subprocess.PIPE, text=True)
+    with net_stats.timed_process(url, 'yt-dlp') as _run:
+        result = subprocess.run(cmd, timeout=3600, stderr=subprocess.PIPE, text=True)
+        _run.exit_code = result.returncode
     if result.stderr:
         print(result.stderr, end='' if result.stderr.endswith('\n') else '\n', file=sys.stderr)
     if result.returncode != 0:
@@ -6736,6 +6777,10 @@ def _best_video_match(folder: str) -> tuple[str, float]:
     return best_file, best_score
 
 
+# The settings recorded with every run's statistics (never a secret: only these named, behaviour-shaping ones).
+_RUN_SETTINGS = ('MAX_RESOLUTION', 'SKIP_KNOWN_FAILURES', 'MEGA_RETRY_MINUTES', 'MEGA_MAX_WAIT_MINUTES', 'BROWSER_HEADLESS',
+                 'BROWSER_PERSISTENT_PROFILE', 'PROTECT_AV1', 'FORCE_RERUN', 'SKIP_TITLE_KEYWORDS')
+
 # Set by find_and_download while its browser is up: reads what that (logged-in) browser is showing for a failed link
 # on a gated site -- it never navigates, the handler already loaded the page.
 _probe_browser = None
@@ -7279,6 +7324,11 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
     # _save_downloaded()'s and the AV-replace block's action_log.record() calls.
     action_log.start(script_name, base_path)
 
+    recorder = run_stats.RunRecorder(
+        base_path, script_name, version=run_stats.code_version(__file__),
+        settings={k: os.getenv(k, '') for k in _RUN_SETTINGS if os.getenv(k) is not None})
+    recorder.start()
+
     # Same convention as collect_tasks' mega-password lookup and
     # extract_variant_archives.py itself: the lowercased top-level scanned
     # folder name, since description.json carries no creator field of its own.
@@ -7301,6 +7351,20 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
     total = len(tasks)
     global _last_fetch_original_name, _last_download_skipped
     completed_cleanly = False
+    interrupted_run = False
+
+    def _link_outcome(folder_: str, url_: str) -> str | None:
+        return link_statuses.get(folder_, {}).get(url_)
+
+    def _run_counts() -> dict:
+        statuses = [st for per in link_statuses.values() for st in per.values()]
+        count = statuses.count
+        return {'tasks': total, 'links_seen': len(statuses),
+                'downloaded': count('downloaded') + count('replaced_better_quality'),
+                'duplicates': count('skipped_duplicate') + count('skipped_av_similar'),
+                'failed': count('failed'), 'deferred': count('deferred_mega'),
+                'skipped': count('previously_done') + count('skipped_known_failure'),
+                'bytes_saved': sum(os.path.getsize(p) for p in newly_downloaded if os.path.isfile(p))}
 
     def _protected() -> set[str]:
         """Absolute paths of everything successfully saved so far this run --
@@ -7396,6 +7460,8 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                     break
                 _last_fetch_original_name = None   # reset before each attempt
                 _note_failure(None)
+                net_stats.collector.begin_link(folder, link, _link_outcome)   # also finishes the previous link
+                recorder.link_finished()
                 fetch_diagnostics.reset_capture()
                 _last_download_skipped = False
 
@@ -7641,6 +7707,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
             completed_cleanly = True
 
     except KeyboardInterrupt:
+        interrupted_run = True
         print('\n\nInterrupted.')
         if mega_worker is not None:
             _leave_mega_for_later(mega_worker.abort())
@@ -7680,6 +7747,8 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
             signal.signal(signal.SIGINT, prev_sigint)
         action_log.finish()
         _probe_browser = None
+        recorder.finish('completed' if completed_cleanly else ('interrupted' if interrupted_run else 'stopped'),
+                        _run_counts(), _link_outcome)
         driver.quit()
         # Close the Discord browser too, if _fetch_discord_password_cached ever
         # opened one this run — checked via sys.modules rather than a top-level

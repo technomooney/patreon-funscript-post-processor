@@ -72,6 +72,7 @@ sets download_script in Pize's creator_config.json, the normal download
 runs this instead. Every change goes into this script's own undo journal.
 """
 import report_store
+import net_stats
 import hashlib
 import json
 import os
@@ -349,7 +350,7 @@ def remote_info(url: str) -> dict | str | None:
         return None
     req = dc.urllib.request.Request(f'https://pixeldrain.com/api/file/{_file_id(url)}/info', headers=headers)
     try:
-        with dc.urllib.request.urlopen(req, timeout=30) as resp:
+        with net_stats.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
     except dc.urllib.error.HTTPError as e:
         return 'gone' if e.code == 404 else None

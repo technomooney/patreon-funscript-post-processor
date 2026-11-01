@@ -5,6 +5,7 @@ away: the per-file name/size/sha256 that pixeldrain's list and info endpoints re
 lazily so importing this module is cheap and test-friendly.
 """
 import hashlib
+import net_stats
 import json
 import os
 import re
@@ -41,7 +42,7 @@ def _get_json(api_url: str, label: str):
 
     def fetch(h):
         req = dc.urllib.request.Request(api_url, headers=h)
-        with dc.urllib.request.urlopen(req, timeout=30) as resp:
+        with net_stats.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())
 
     try:

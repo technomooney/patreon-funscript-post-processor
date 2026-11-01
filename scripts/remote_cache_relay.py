@@ -23,6 +23,8 @@ import threading
 import urllib.error
 import urllib.request
 
+import net_stats
+
 BLOCK = 128 * 1024            # remote data is fetched and remembered in blocks of this size
 SERVE_CHUNK = 1024 * 1024     # a response is produced piece by piece, so a client that stops early costs nothing more
 POLL_INTERVAL = 0.02          # serve_forever's tick: shutdown() waits for one, and the default (0.5 s) made every close slow
@@ -39,7 +41,7 @@ def default_fetch(url: str, headers: dict, start: int, end: int, timeout: float 
     req = urllib.request.Request(url, headers={**headers, 'Range': f'bytes={start}-{end}'})
     want = end - start + 1
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with net_stats.urlopen(req, timeout=timeout) as resp:
             if resp.status != 206 and not (resp.status == 200 and start == 0):
                 raise RemoteError(f'the server ignored the Range header (HTTP {resp.status})')
             data = bytearray()

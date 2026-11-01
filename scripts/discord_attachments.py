@@ -9,6 +9,7 @@ and left alone, never overwritten.
 Files land flat in <creator>/<dir>; only the extensions wanted are taken (a post's screenshots are skipped).
 """
 import os
+import net_stats
 import re
 import time
 import urllib.error
@@ -53,7 +54,7 @@ def download(url: str, dest: str) -> int:
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
     tmp = dest + '.part'
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp, open(tmp, 'wb') as f:
+        with net_stats.urlopen(req, timeout=60) as resp, open(tmp, 'wb') as f:
             total = int(resp.headers.get('Content-Length') or 0)
             done = 0
             while True:
