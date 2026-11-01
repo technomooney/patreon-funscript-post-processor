@@ -651,6 +651,10 @@ def _stripped_test_type_browser(browser: str) -> str:
     everything else untouched. Cached on disk and only rewritten if the
     target browser path changes.
 
+    The wrapper also sends the browser's stdout/stderr to /dev/null: uc starts it with pipes nobody reads, and once
+    the pipe buffer fills (hours into a run) the browser blocks on a log write and freezes completely — seen live,
+    main process stuck in anon_pipe_write.
+
     Windows isn't covered — the crash is in crashpad's ELF-specific snapshot
     code (Linux/macOS only), so Windows builds aren't expected to hit it.
     """
@@ -680,7 +684,9 @@ def _stripped_test_type_browser(browser: str) -> str:
         '  esac\n'
         '  args="$args \\"$a\\""\n'
         'done\n'
-        f'eval exec "{browser}" $args\n'
+        '# undetected_chromedriver gives the browser stdout/stderr pipes it never reads, plus --log-level=0; once the\n'
+        '# 64 KB pipe buffer fills the browser blocks on its next log write and the whole UI freezes. Discard it.\n'
+        f'eval exec "{browser}" $args >/dev/null 2>&1\n'
     )
     try:
         if not os.path.isfile(wrapper_path) or open(wrapper_path).read() != script:
