@@ -329,6 +329,9 @@ class RemoteMp4DurationTests(unittest.TestCase):
         self.assertIsNone(self.duration(self.FTYP + (0).to_bytes(4, 'big') + b'mdat' + bytes(20)))   # size 0 before a moov
         self.assertIsNone(self.duration(self.FTYP))                                                    # ends without a moov
 
+    def test_a_fragmented_mp4_with_no_stored_duration_is_not_reported_as_zero_seconds(self):
+        self.assertIsNone(self.duration(self.FTYP + box(b'moov', mvhd(0, 1000) + bytes(10))))
+
     def test_zero_timescale_and_unknown_version_give_none(self):
         self.assertIsNone(self.duration(self.FTYP + box(b'moov', mvhd(1000, 0) + bytes(10))))
         bad = bytearray(self.FTYP + box(b'moov', mvhd(1000, 1000) + bytes(10)))

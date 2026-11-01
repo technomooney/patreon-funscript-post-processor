@@ -1419,7 +1419,8 @@ def _mvhd_duration(body: bytes | None) -> float | None:
         duration = int.from_bytes(body[32:40], 'big')
     else:
         return None
-    return duration / timescale if timescale else None
+    # A fragmented MP4 (streaming style) records 0 here and keeps its real length in the fragments: not an answer.
+    return duration / timescale if timescale and duration > 0 else None
 
 
 def _remote_mp4_duration(url: str, headers: dict[str, str]) -> float | None:
