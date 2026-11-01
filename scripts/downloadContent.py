@@ -1266,22 +1266,35 @@ def _quality_is_replacement_candidate(remote_q: dict, local_q: dict,
     return False
 
 
+# Why the last _remote_range_bytes() returned nothing, for the pre-check's explanation.
+_range_note: str = ''
+
+
 def _remote_range_bytes(url: str, headers: dict[str, str], start: int, length: int) -> bytes | None:
     """Fetch a byte range from *url* using an HTTP Range request.
 
     Returns the raw bytes on success, or None if Range requests are not
-    supported or the request fails.
+    supported or the request fails; _range_note then says why.
     """
+    global _range_note
+    _range_note = ''
     try:
         req_headers = dict(headers)
         req_headers['Range'] = f'bytes={start}-{start + length - 1}'
         req = urllib.request.Request(url, headers=req_headers)
         with urllib.request.urlopen(req, timeout=30) as resp:
+            if resp.status == 200 and start > 0:
+                _range_note = 'the server ignored the Range header (answered 200 with the start of the file)'
+                return None
             if resp.status not in (206, 200):
+                _range_note = f'unexpected HTTP status {resp.status}'
                 return None
             return resp.read(length)
-    except (urllib.error.URLError, OSError):
-        return None
+    except urllib.error.HTTPError as e:
+        _range_note = f'HTTP {e.code}'
+    except (urllib.error.URLError, OSError) as e:
+        _range_note = f'{type(e).__name__}: {e}'
+    return None
 
 
 def _remote_partial_match(url: str, headers: dict[str, str], content_length: int,
@@ -1550,15 +1563,19 @@ def _sampled_identical(url: str, headers: dict[str, str], content_length: int,
         print(f'  [pre-check] fetching chunk {i + 1}/{n_chunks}...', end='\r', flush=True)
         data = _remote_range_bytes(url, headers, off, chunk)
         if data is None:
+            print(f'  [pre-check] sampled reads not possible ({_range_note or "no answer"}) -- cannot compare bytes', flush=True)
             return None
         remote_chunks.append(data)
     for entry, full in candidates:
         try:
             with open(full, 'rb') as f:
-                if all(f.seek(off) is not None and f.read(len(rc)) == rc for off, rc in zip(offsets, remote_chunks)):
-                    return entry, full
+                differs = next((i + 1 for i, (off, rc) in enumerate(zip(offsets, remote_chunks))
+                                if f.seek(off) is None or f.read(len(rc)) != rc), None)
         except OSError:
             continue
+        if differs is None:
+            return entry, full
+        print(f'  [pre-check] {_safe(entry)}: sampled block {differs}/{n_chunks} differs -- not the same bytes', flush=True)
     return None
 
 
@@ -1600,6 +1617,9 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
     size_str = f'{content_length / 1024 / 1024:.1f} MB' if content_length else 'unknown size'
     print(f'  [pre-check] HEAD: {size_str}{f", name: {_safe(head_name)}" if head_name else ""}', flush=True)
 
+    if not content_length:
+        print('  [pre-check] the server gave no size, so the same-size shortcut is skipped', flush=True)
+
     if head_name:
         name_path = os.path.join(download_dir, head_name)
         if os.path.isfile(name_path) and not _is_temp_file(head_name):
@@ -1619,6 +1639,7 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
                 size_matched.append((entry, full))
 
         if size_matched:
+            print(f'  [pre-check] same size to the byte as: {", ".join(_safe(e) for e, _ in size_matched)}', flush=True)
             if content_length <= _HASH_MAX_BYTES:
                 # Small file: download the full remote content and compare SHA-256.
                 print('  [pre-check] downloading for hash comparison...', end='\r', flush=True)
