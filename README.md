@@ -116,7 +116,7 @@ All settings live in `.env` (created by setup). Key options:
 | `BROWSER_HEADLESS` | `true` | Run Brave in headless mode. Set to `false` if sites block automation |
 | `BROWSER_NO_SANDBOX` | `false` | Keep Chromium's `--no-sandbox` flag. Off by default so the sandbox stays on (and Brave shows no warning banner); set `true` when running as root or in a container |
 | `MAX_RESOLUTION` | `1080` | Maximum download resolution |
-| `SKIP_KNOWN_FAILURES` | `false` | Skip links listed in `failed_downloads.csv` |
+| `SKIP_KNOWN_FAILURES` | `false` | Skip links recorded as failed in the library database |
 | `DEDUP_VERBOSE` | `false` | Print one line per file during dedup. Warning: very noisy on large libraries |
 | `TRASH_RETENTION_DAYS` | `14` | Days a soft-deleted (dedup) file stays in `.trash` before permanent removal. Separate from the one-run-deep "undo last action" journal |
 | `PROTECT_AV1_FROM_REPLACE` | `false` | Never let the "same content, strictly smaller file" download-replace rule swap a local AV1 video for a non-AV1 one. Enable after an AV1 library transcode: an already-heavily-compressed source can be smaller than its own transparent AV1 re-encode, and without this a re-download would trash the AV1 and restore the original |
@@ -150,7 +150,7 @@ All settings live in `.env` (created by setup). Key options:
 
 | File | Description |
 |------|-------------|
-| `failed_downloads.csv` | Links that could not be downloaded |
+| (library database) | Failed and uncertain links, with reason and HTTP status, are in `downloader_link_outcomes`; other reports are shown in the HTML audit report |
 | `_reports/garbled_names.csv` | Garbled filename fix results |
 | `_reports/funscript_renames.csv` | Funscript extension fix results |
 | `_reports/funscript_video_matches.csv` | Funscript-to-video match results (renamed + uncertain) |

@@ -1,6 +1,5 @@
 import base64
 import concurrent.futures
-import csv
 import queue
 import tempfile
 import threading
@@ -34,6 +33,7 @@ import collection_redownload_queue
 import external_links
 import folder_log
 import library_db
+import report_store
 import browser_defaults
 import browser_session
 import funscript_utils
@@ -6294,33 +6294,24 @@ def _reports_dir(base_path: str) -> str:
     return d
 
 
-def _write_failures_csv(base_path: str, failures: list, filename: str = 'failed_downloads.csv'):
-    """Write failed download entries to _reports/<filename>."""
+def _write_failures_csv(base_path: str, failures: list):
+    """Record failed download entries in the library database (report_store)."""
     if not failures:
         return
-    csv_path = os.path.join(_reports_dir(base_path), filename)
-    # Ensure all rows have a 'filename' key (older entries may not)
     for row in failures:
         row.setdefault('filename', 'unknown')
-    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=['link', 'filename', 'funscript_name', 'save_directory', 'domain'])
-        writer.writeheader()
-        writer.writerows(failures)
-    print(f"\nFailed downloads ({len(failures)}) written to: {csv_path}")
+    n = report_store.record_rows(base_path, failures, 'failed')
+    print(f"\nFailed downloads ({len(failures)}) recorded in the library database ({n} stored).")
 
 
-def _write_mega_error6_csv(base_path: str, mega_error6: list, filename: str = 'mega_error6.csv'):
-    """Write mega.nz links that failed with exit 6 to _reports/<filename>."""
+def _write_mega_error6_csv(base_path: str, mega_error6: list, report: str = 'mega_error6'):
+    """Store mega.nz links that failed with exit 6 as the *report* report (replaced each run)."""
     if not mega_error6:
         return
-    csv_path = os.path.join(_reports_dir(base_path), filename)
     for row in mega_error6:
         row.setdefault('filename', 'unknown')
-    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=['link', 'filename', 'funscript_name', 'save_directory'])
-        writer.writeheader()
-        writer.writerows(mega_error6)
-    print(f"\nMEGA error-6 links ({len(mega_error6)}) written to: {csv_path}")
+    report_store.replace_report(base_path, report, mega_error6)
+    print(f"\nMEGA error-6 links ({len(mega_error6)}) recorded in the library database (report '{report}').")
 
 
 def _write_manual_folders(base_path: str, manual_folders: list):
@@ -6355,15 +6346,11 @@ def _write_consolidated_folders(base_path: str, consolidated_folders: list, igno
 
 
 def _write_many_funscripts_csv(base_path: str, many_funscripts: list):
-    """Write folders with 3+ main funscripts to _reports/many_funscripts.csv."""
+    """Store folders with 3+ main funscripts as the 'many_funscripts' report."""
     if not many_funscripts:
         return
-    csv_path = os.path.join(_reports_dir(base_path), 'many_funscripts.csv')
-    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=['folder', 'count', 'funscripts'])
-        writer.writeheader()
-        writer.writerows(many_funscripts)
-    print(f"\nFolders with 3+ funscripts ({len(many_funscripts)}) written to: {csv_path}")
+    report_store.replace_report(base_path, 'many_funscripts', many_funscripts)
+    print(f"\nFolders with 3+ funscripts ({len(many_funscripts)}) recorded in the library database.")
 
 
 _FOLDER_TITLE_RE = re.compile(r'^\[\d+]\s+\d{4}-\d{2}-\d{2}\s+(.+)$')
@@ -6443,18 +6430,12 @@ def _triage_failure(entry: dict, folder: str,
     failures.append(entry)
 
 
-def _write_uncertain_csv(base_path: str, uncertain: list, filename: str = 'uncertain_downloads.csv'):
-    """Write uncertain download entries to _reports/<filename>."""
+def _write_uncertain_csv(base_path: str, uncertain: list):
+    """Record uncertain download entries in the library database (report_store)."""
     if not uncertain:
         return
-    csv_path = os.path.join(_reports_dir(base_path), filename)
-    fieldnames = ['link', 'funscript_name', 'save_directory', 'domain',
-                  'matched_video', 'match_score']
-    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(uncertain)
-    print(f"\nUncertain downloads ({len(uncertain)}) written to: {csv_path}")
+    n = report_store.record_rows(base_path, uncertain, 'uncertain')
+    print(f"\nUncertain downloads ({len(uncertain)}) recorded in the library database ({n} stored).")
 
 
 def _find_existing_by_hash(folder: str, file_hash: str, exclude: str) -> str | None:
@@ -6651,26 +6632,9 @@ class ProgressTracker:
             pass
 
 
-def _load_known_failures(base_path: str) -> tuple[set[str], list[dict]]:
-    """Read failed_downloads.csv and return (link_set, full_rows).
-
-    link_set is used for fast membership checks during download.
-    full_rows is the original data to re-emit at the end so no info is lost.
-    Returns empty structures when the file is absent or unreadable.
-    """
-    csv_path = os.path.join(_reports_dir(base_path), 'failed_downloads.csv')
-    if not os.path.isfile(csv_path):
-        return set(), []
-    links: set[str] = set()
-    rows: list[dict] = []
-    try:
-        with open(csv_path, newline='', encoding='utf-8') as f:
-            for row in csv.DictReader(f):
-                links.add(row['link'])
-                rows.append(row)
-    except (OSError, KeyError):
-        pass
-    return links, rows
+def _load_known_failures(base_path: str) -> set[str]:
+    """URLs listed as failed in the library database, for fast membership checks during download."""
+    return report_store.failed_links(base_path)
 
 
 def collect_tasks_from_funscript_metadata(base_path: str) -> tuple[list, list]:
@@ -6771,7 +6735,7 @@ def find_and_download_from_funscript_metadata(
     tasks, failures = collect_tasks_from_funscript_metadata(base_path)
     if not tasks:
         print("No funscripts with a usable video_url and no existing video found.")
-        _write_failures_csv(base_path, failures, filename='failed_downloads_funscript_metadata.csv')
+        _write_failures_csv(base_path, failures)
         return
     find_and_download(
         base_path, tasks=tasks, failures=failures,
@@ -6915,11 +6879,15 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
     # Load known failures so they can be skipped (SKIP_KNOWN_FAILURES=true).
     skip_known = os.getenv('SKIP_KNOWN_FAILURES', 'false').strip().lower() not in ('false', '0', 'no')
     known_failure_links: set[str] = set()
-    known_failure_rows: list[dict] = []
     if skip_known:
-        known_failure_links, known_failure_rows = _load_known_failures(base_path)
+        known_failure_links = _load_known_failures(base_path)
         if known_failure_links:
             print(f'[skip-known-failed-url] {len(known_failure_links)} previously-failed link(s) will be skipped.')
+    # Links proven dead for good (taken down) are never worth another attempt, whatever SKIP_KNOWN_FAILURES says.
+    known_dead = report_store.known_dead_links(base_path)
+    if known_dead:
+        known_failure_links |= known_dead
+        print(f'[skip-dead-url] {len(known_dead)} permanently dead link(s) will be skipped.')
 
     if prebuilt:
         failures = failures or []
@@ -6935,7 +6903,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
 
     if not tasks:
         print("No valid download tasks found.")
-        _write_failures_csv(base_path, failures, filename=f'failed_downloads{report_suffix}.csv')
+        _write_failures_csv(base_path, failures)
         if flagged_entries and redownload_flagged:
             _run_flagged_collection_redownloads(base_path, flagged_entries, resume=resume, auto_confirm=auto_confirm)
         return
@@ -7385,18 +7353,15 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
             if _logged:
                 print(f'\n[folder_log] {_logged} folder(s) logged as complete.')
             tracker.clear()
-        # Re-emit skipped known failures so the CSV is never stripped of info.
-        # Exclude any that were actually downloaded successfully this session.
-        if known_failure_rows:
-            succeeded_links = {
-                link for folder_links in tracker._done.values() for link in folder_links
-            }
-            for row in known_failure_rows:
-                if row['link'] not in succeeded_links:
-                    failures.append(row)
-        _write_failures_csv(base_path, failures, filename=f'failed_downloads{report_suffix}.csv')
-        _write_mega_error6_csv(base_path, mega_error6, filename=f'mega_error6{report_suffix}.csv')
-        _write_uncertain_csv(base_path, uncertain, filename=f'uncertain_downloads{report_suffix}.csv')
+        # Links that got a result this run (downloaded, duplicate, ...) are no longer failures: drop their old
+        # outcome rows, then record this run's failures. Skipped-known and deferred links keep what they had.
+        _still_open = {(r.get('link'), r.get('save_directory')) for r in failures + uncertain}
+        report_store.forget_many(base_path, [
+            (url, fld) for fld, per in link_statuses.items() for url, st in per.items()
+            if st not in ('skipped_known_failure', 'deferred_mega') and (url, fld) not in _still_open])
+        _write_failures_csv(base_path, failures)
+        _write_mega_error6_csv(base_path, mega_error6, report=f'mega_error6{report_suffix}')
+        _write_uncertain_csv(base_path, uncertain)
         _write_many_funscripts_csv(base_path, many_funscripts)
         _write_playlist(base_path, newly_downloaded)
 

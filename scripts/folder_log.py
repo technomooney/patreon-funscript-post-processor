@@ -54,6 +54,10 @@ def _migrate_legacy(root: str) -> None:
     if done:
         print(f'[library] migrated old logs in {root}: {done["runs"]} run record(s), {done["links"]} pixeldrain '
               f'link(s), {done["files"]} file identity row(s)')
+    import report_store
+    csvs = report_store.import_legacy_csvs(root)
+    if csvs:
+        print(f'[library] imported {csvs} old report CSV file(s) from {root}/_reports into the library database')
 
 
 _checked_parents: set[str] = set()

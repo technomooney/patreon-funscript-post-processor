@@ -70,6 +70,36 @@ class ReportStoreTests(unittest.TestCase):
         report_store.replace_report(self.root, 'many_funscripts', [])
         self.assertEqual(report_store.report_names(self.root), [])
 
+    def test_import_legacy_csvs_moves_files_and_is_idempotent(self):
+        rep = os.path.join(self.root, '_reports')
+        os.makedirs(rep)
+        with open(os.path.join(rep, 'failed_downloads.csv'), 'w', encoding='utf-8', newline='') as f:
+            f.write('link,filename,funscript_name,save_directory,domain\n'
+                    f'http://x/1,unknown,a,{self.post},x\n')
+        with open(os.path.join(rep, 'uncertain_downloads_flagged.csv'), 'w', encoding='utf-8', newline='') as f:
+            f.write('link,funscript_name,save_directory,domain,matched_video,match_score\n'
+                    f'http://x/2,b,{self.post},x,v.mp4,0.4\n')
+        with open(os.path.join(rep, 'many_funscripts.csv'), 'w', encoding='utf-8', newline='') as f:
+            f.write('folder,count,funscripts\n/p,3,"a; b; c"\n')
+        with open(os.path.join(rep, 'funscript_check.csv'), 'w', encoding='utf-8') as f:
+            f.write('folder\n')   # a CSV nobody converted yet: must stay put
+        self.assertEqual(report_store.import_legacy_csvs(self.root), 3)
+        self.assertEqual([r['url'] for r in report_store.outcomes(self.root, 'failed')], ['http://x/1'])
+        (unc,) = report_store.outcomes(self.root, 'uncertain')
+        self.assertEqual((unc['matched_video'], unc['match_score']), ('v.mp4', 0.4))
+        self.assertEqual(report_store.read_report(self.root, 'many_funscripts')[0]['count'], '3')
+        self.assertEqual(os.listdir(rep), ['funscript_check.csv'])
+        self.assertEqual(report_store.import_legacy_csvs(self.root), 0)
+        self.assertEqual(len(report_store.outcomes(self.root)), 2)
+
+    def test_record_rows_and_forget_many(self):
+        rows = [{'link': 'http://x/1', 'save_directory': self.post, 'domain': 'x', 'funscript_name': 'a'},
+                {'link': 'http://x/2', 'save_directory': self.post}, {'save_directory': self.post}]
+        self.assertEqual(report_store.record_rows(self.root, rows), 2)
+        self.assertEqual(report_store.failed_links(self.root), {'http://x/1', 'http://x/2'})
+        report_store.forget_many(self.root, [('http://x/1', self.post)])
+        self.assertEqual(report_store.failed_links(self.root), {'http://x/2'})
+
 
 if __name__ == '__main__':
     unittest.main()

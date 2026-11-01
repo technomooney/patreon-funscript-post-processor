@@ -601,11 +601,11 @@ def main():
                comment='Suppress MEGAcmd console popup on Windows. Set to false to see MEGAcmd output for debugging.')
 
     skip_known = _ask_bool(
-        'Skip links listed in failed_downloads.csv? (true/false)',
+        'Skip links listed as failed in the library database? (true/false)',
         current=_read_env('SKIP_KNOWN_FAILURES').lower() not in ('', 'false', '0', 'no'),
     )
     _write_env('SKIP_KNOWN_FAILURES', 'true' if skip_known else 'false',
-               comment='Skip previously-failed links from failed_downloads.csv. Original CSV entries are preserved.')
+               comment='Skip previously-failed links recorded in the library database (downloader_link_outcomes).')
 
     protect_av1 = _ask_bool(
         'Never replace a local AV1 video with a non-AV1 one? (true/false)\n'
