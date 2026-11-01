@@ -52,7 +52,7 @@ class _PrecheckBase(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def range_bytes(self, url, headers, start, length):
+    def range_bytes(self, url, headers, start, length, timeout=30):
         self.range_calls += 1
         with open(self.remote_path, 'rb') as f:
             f.seek(start)
@@ -76,6 +76,7 @@ class PrecheckSameSizeVideoTests(_PrecheckBase):
     def test_identical_file_with_a_different_name_is_skipped_without_the_duration_probe(self):
         reason = self.run_precheck()
         self.assertIn("identical to existing 1_Hour_Of_Futa's_Cumming.mp4", reason)
+        self.assertIn('start, end and sampled blocks match', reason)
         self.assertEqual(self.range_calls, dc._VIDEO_SAMPLE_CHUNKS)      # a dozen small reads, not a hundred
         self.assertEqual(self.duration_calls, 0)
 
@@ -92,7 +93,7 @@ class PrecheckSameSizeVideoTests(_PrecheckBase):
         self.assertEqual(self.duration_calls, 1)
 
     def test_a_server_without_ranged_reads_falls_back_to_the_old_behaviour(self):
-        self.assertIsNone(self.run_precheck(range_bytes=lambda *a: None))
+        self.assertIsNone(self.run_precheck(range_bytes=lambda *a, **k: None))
         self.assertEqual(self.duration_calls, 1)
 
     def test_a_different_size_never_asks_for_samples(self):
@@ -112,6 +113,74 @@ class PrecheckSameSizeVideoTests(_PrecheckBase):
         self.assertEqual(self.range_calls, 6)
 
 
+class SlowCdnTests(_PrecheckBase):
+    """The real case: the CDN answers the start and end of a big file at once but a read deep inside can hang."""
+    def slow_middle(self, hang_from=2, only=None):
+        calls = []
+
+        def fake(url, headers, start, length, timeout=30):
+            calls.append(start)
+            index = round(start * (dc._VIDEO_SAMPLE_CHUNKS - 1) / (SIZE - CHUNK))
+            if (only is None and 1 <= index <= dc._VIDEO_SAMPLE_CHUNKS - 2) or (only is not None and index in only):
+                dc._range_note = 'TimeoutError: The read operation timed out'
+                return None
+            return self.range_bytes(url, headers, start, length, timeout)
+        fake.calls = calls
+        return fake
+
+    def run_with(self, fake):
+        out = io.StringIO()
+        with mock.patch.object(dc.urllib.request, 'urlopen', side_effect=lambda *a, **k: FakeHead(SIZE)), \
+                mock.patch.object(dc, '_name_from_response', return_value='x_1080p.mp4'), \
+                mock.patch.object(dc, '_remote_range_bytes', fake), \
+                mock.patch.object(dc, '_remote_video_duration', self.duration), \
+                contextlib.redirect_stdout(out):
+            return dc._precheck_url('https://cdn.example/x.mp4', {}, self.dir), out.getvalue()
+
+    def test_some_slow_middle_blocks_are_skipped_and_the_rest_still_settle_it(self):
+        result, text = self.run_with(self.slow_middle(only={3, 4, 7, 8}))
+        self.assertIn('identical to existing', result)
+        self.assertIn('4 slow block(s) skipped; comparing the 8 read', text)
+        self.assertEqual(self.duration_calls, 0)
+
+    def test_ends_are_read_first_so_a_slow_middle_cannot_hide_them(self):
+        fake = self.slow_middle()
+        result, _ = self.run_with(fake)
+        self.assertIsNone(result)                    # only the 2 ends were readable: fewer than the 4 required
+        self.assertEqual(fake.calls[:2], [0, SIZE - CHUNK])
+
+    def test_exactly_the_minimum_is_enough(self):
+        result, _ = self.run_with(self.slow_middle(only={2, 3, 4, 5, 6, 7, 8, 9}))     # ends + blocks 1 and 10 = 4
+        self.assertIn('identical to existing', result)
+
+    def test_an_unreadable_first_or_last_block_gives_up(self):
+        for index in (0, dc._VIDEO_SAMPLE_CHUNKS - 1):
+            result, text = self.run_with(self.slow_middle(only={index}))
+            self.assertIsNone(result)
+            self.assertIn('sampled reads not possible', text)
+
+    def test_a_differing_block_among_those_read_still_means_not_identical(self):
+        remote_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(remote_dir.cleanup)
+        other = os.path.join(remote_dir.name, 'remote.bin')
+        shutil.copyfile(self.local, other)
+        with open(other, 'r+b') as f:
+            f.seek(self._offset(5, dc._VIDEO_SAMPLE_CHUNKS) + 7)
+            f.write(b'\x00\x01')
+        self.remote_path = other
+        result, text = self.run_with(self.slow_middle(only={2}))
+        self.assertIsNone(result)
+        self.assertIn('sampled block 6/12 differs', text)
+
+    def test_sampling_stops_after_the_time_budget_and_judges_by_what_it_has(self):
+        clock = iter([0, 0, 0, 0, 0, 0, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100])
+        with mock.patch.object(dc.time, 'time', side_effect=lambda: next(clock, 100)):
+            fake = self.slow_middle(only=set())
+            result, text = self.run_with(fake)
+        self.assertIn('identical to existing', result)
+        self.assertLess(len(fake.calls), dc._VIDEO_SAMPLE_CHUNKS)
+
+
 class PrecheckExplainsItselfTests(_PrecheckBase):
     def run_and_capture(self, **kw):
         out = io.StringIO()
@@ -128,7 +197,7 @@ class PrecheckExplainsItselfTests(_PrecheckBase):
         self.assertIn("same size to the byte as: 1_Hour_Of_Futa's_Cumming.mp4", text)
 
     def test_says_when_the_sampled_reads_are_refused_and_why(self):
-        def refuse(url, headers, start, length):
+        def refuse(url, headers, start, length, timeout=30):
             dc._range_note = 'HTTP 403'
             return None
         result, text = self.run_and_capture(range_bytes=refuse)
@@ -182,6 +251,7 @@ class RangeNoteTests(unittest.TestCase):
 class DurationProbeNoteTests(unittest.TestCase):
     def probe(self, **run_kwargs):
         with mock.patch.object(dc.shutil, 'which', return_value='/usr/bin/ffprobe'), \
+                mock.patch.object(dc, '_remote_mp4_duration', return_value=None), \
                 mock.patch.object(dc.subprocess, 'run', **run_kwargs):
             return dc._remote_video_duration('https://cdn.example/x.mp4', {'Referer': 'r'})
 
@@ -191,8 +261,8 @@ class DurationProbeNoteTests(unittest.TestCase):
         self.assertEqual(dc._duration_probe_note, '')
 
     def test_a_timeout_is_named(self):
-        self.assertIsNone(self.probe(side_effect=dc.subprocess.TimeoutExpired('ffprobe', 30)))
-        self.assertEqual(dc._duration_probe_note, 'ffprobe timed out after 30s')
+        self.assertIsNone(self.probe(side_effect=dc.subprocess.TimeoutExpired('ffprobe', dc._DURATION_PROBE_TIMEOUT)))
+        self.assertEqual(dc._duration_probe_note, f'ffprobe timed out after {dc._DURATION_PROBE_TIMEOUT}s')
 
     def test_an_ffprobe_error_shows_its_last_line(self):
         done = mock.Mock(stdout='', stderr='noise\nServer returned 403 Forbidden (access denied)\n', returncode=1)
@@ -200,9 +270,84 @@ class DurationProbeNoteTests(unittest.TestCase):
         self.assertEqual(dc._duration_probe_note, 'ffprobe error: Server returned 403 Forbidden (access denied)')
 
     def test_missing_ffprobe_is_named(self):
-        with mock.patch.object(dc.shutil, 'which', return_value=None):
+        with mock.patch.object(dc.shutil, 'which', return_value=None), \
+                mock.patch.object(dc, '_remote_mp4_duration', return_value=None):
             self.assertIsNone(dc._remote_video_duration('u', {}))
         self.assertEqual(dc._duration_probe_note, 'ffprobe not installed')
+
+
+def box(kind: bytes, payload: bytes = b'', large: bool = False) -> bytes:
+    if large:
+        return (1).to_bytes(4, 'big') + kind + (16 + len(payload)).to_bytes(8, 'big') + payload
+    return (8 + len(payload)).to_bytes(4, 'big') + kind + payload
+
+
+def mvhd(duration: int, timescale: int, version: int = 0) -> bytes:
+    if version == 0:
+        body = bytes([0, 0, 0, 0]) + (0).to_bytes(4, 'big') * 2 + timescale.to_bytes(4, 'big') + duration.to_bytes(4, 'big')
+    else:
+        body = bytes([1, 0, 0, 0]) + (0).to_bytes(8, 'big') * 2 + timescale.to_bytes(4, 'big') + duration.to_bytes(8, 'big')
+    return box(b'mvhd', body + bytes(60))        # the rest of the real box (rate, volume, matrix, ...)
+
+
+class RemoteMp4DurationTests(unittest.TestCase):
+    """The duration comes from a few tiny ranged reads of the movie header, whatever the file size."""
+    def serve(self, data, supports_ranges=True):
+        self.reads = []
+
+        def fake(url, headers, start, length, timeout=30):
+            self.reads.append((start, length))
+            if not supports_ranges:
+                return None
+            return data[start:start + length] or None
+        return fake
+
+    def duration(self, data, **kw):
+        with mock.patch.object(dc, '_remote_range_bytes', self.serve(data, **kw)):
+            return dc._remote_mp4_duration('https://cdn.example/x.mp4', {})
+
+    FTYP = box(b'ftyp', b'isom' + bytes(4) + b'isomiso2')
+
+    def test_index_first(self):
+        data = self.FTYP + box(b'moov', mvhd(3600005, 1000) + bytes(500)) + box(b'mdat', bytes(1000))
+        self.assertAlmostEqual(self.duration(data), 3600.005)
+        self.assertEqual(len(self.reads), 3)                       # ftyp header, moov header, mvhd
+        self.assertLessEqual(sum(n for _, n in self.reads), 16 + 16 + 160)
+
+    def test_index_last_is_found_by_jumping_over_the_media_data(self):
+        data = self.FTYP + box(b'free') + box(b'mdat', bytes(50_000)) + box(b'moov', mvhd(90, 30) + bytes(100))
+        self.assertAlmostEqual(self.duration(data), 3.0)
+        self.assertTrue(all(n <= 160 for _, n in self.reads))      # never reads the media data
+
+    def test_64_bit_header_and_64_bit_box_sizes(self):
+        data = self.FTYP + box(b'mdat', bytes(2000), large=True) + box(b'moov', mvhd(7_200_000, 1000, version=1) + bytes(40))
+        self.assertAlmostEqual(self.duration(data), 7200.0)
+
+    def test_not_an_mp4_or_no_range_support_or_damage_gives_none(self):
+        self.assertIsNone(self.duration(b'RIFF' + bytes(100) + b'AVI '))
+        self.assertIsNone(self.duration(self.FTYP + box(b'moov', mvhd(1000, 1000)), supports_ranges=False))
+        self.assertIsNone(self.duration(self.FTYP + (0).to_bytes(4, 'big') + b'mdat' + bytes(20)))   # size 0 before a moov
+        self.assertIsNone(self.duration(self.FTYP))                                                    # ends without a moov
+
+    def test_zero_timescale_and_unknown_version_give_none(self):
+        self.assertIsNone(self.duration(self.FTYP + box(b'moov', mvhd(1000, 0) + bytes(10))))
+        bad = bytearray(self.FTYP + box(b'moov', mvhd(1000, 1000) + bytes(10)))
+        bad[len(self.FTYP) + 8 + 8] = 7                            # mvhd version byte
+        self.assertIsNone(self.duration(bytes(bad)))
+
+    def test_the_main_probe_uses_the_header_and_never_starts_ffprobe(self):
+        data = self.FTYP + box(b'moov', mvhd(317_500, 1000) + bytes(100))
+        with mock.patch.object(dc, '_remote_range_bytes', self.serve(data)), \
+                mock.patch.object(dc.subprocess, 'run', side_effect=AssertionError('ffprobe must not run')):
+            self.assertAlmostEqual(dc._remote_video_duration('https://cdn.example/x.mp4', {}), 317.5)
+
+    def test_non_mp4_falls_back_to_ffprobe(self):
+        done = mock.Mock(stdout='12.5\n', stderr='', returncode=0)
+        with mock.patch.object(dc, '_remote_range_bytes', self.serve(b'\x1aE\xdf\xa3' + bytes(100))), \
+                mock.patch.object(dc.shutil, 'which', return_value='/usr/bin/ffprobe'), \
+                mock.patch.object(dc.subprocess, 'run', return_value=done) as run:
+            self.assertEqual(dc._remote_video_duration('https://cdn.example/x.mkv', {}), 12.5)
+        run.assert_called_once()
 
 
 if __name__ == '__main__':

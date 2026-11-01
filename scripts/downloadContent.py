@@ -1270,7 +1270,8 @@ def _quality_is_replacement_candidate(remote_q: dict, local_q: dict,
 _range_note: str = ''
 
 
-def _remote_range_bytes(url: str, headers: dict[str, str], start: int, length: int) -> bytes | None:
+def _remote_range_bytes(url: str, headers: dict[str, str], start: int, length: int,
+                        timeout: float = 30) -> bytes | None:
     """Fetch a byte range from *url* using an HTTP Range request.
 
     Returns the raw bytes on success, or None if Range requests are not
@@ -1282,7 +1283,7 @@ def _remote_range_bytes(url: str, headers: dict[str, str], start: int, length: i
         req_headers = dict(headers)
         req_headers['Range'] = f'bytes={start}-{start + length - 1}'
         req = urllib.request.Request(url, headers=req_headers)
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             if resp.status == 200 and start > 0:
                 _range_note = 'the server ignored the Range header (answered 200 with the start of the file)'
                 return None
@@ -1403,18 +1404,66 @@ def _remote_audio_fingerprint(url: str, headers: dict[str, str]) -> list[int] | 
 
 # Why the last _remote_video_duration() came back empty, for the pre-check's "duration unavailable" line.
 _duration_probe_note: str = ''
-_DURATION_PROBE_TIMEOUT = 30
+_DURATION_PROBE_TIMEOUT = 90   # a 1.9 GB file on a busy CDN took 35 s; the old 30 s gave up on it
+
+
+def _mvhd_duration(body: bytes | None) -> float | None:
+    """Duration in seconds from the start of a moov box's contents, whose first child is normally the mvhd header."""
+    if not body or len(body) < 40 or body[4:8] != b'mvhd':
+        return None
+    if body[8] == 0:       # version 0: 32-bit creation/modification times, timescale, duration
+        timescale = int.from_bytes(body[20:24], 'big')
+        duration = int.from_bytes(body[24:28], 'big')
+    elif body[8] == 1:     # version 1: 64-bit times and duration
+        timescale = int.from_bytes(body[28:32], 'big')
+        duration = int.from_bytes(body[32:40], 'big')
+    else:
+        return None
+    return duration / timescale if timescale else None
+
+
+def _remote_mp4_duration(url: str, headers: dict[str, str]) -> float | None:
+    """Duration of a remote MP4/MOV read straight from its movie header, with a handful of tiny ranged reads.
+
+    The file is a list of boxes, each starting with its size and type. Walk them from the start (ftyp, then possibly
+    free/wide, mdat or moov) with 16-byte reads, jump over the big ones by their declared size, and read the first
+    160 bytes inside moov, where the mvhd header holds the timescale and duration. A few hundred bytes in total,
+    however large the file; ffprobe needed the whole 5 MB index of a 1 hour video and 30+ seconds. None when it is
+    not an MP4 or the server cannot do ranged reads.
+    """
+    pos = 0
+    for hop in range(12):
+        head = _remote_range_bytes(url, headers, pos, 16, timeout=15)
+        if not head or len(head) < 8:
+            return None
+        size, kind = int.from_bytes(head[:4], 'big'), head[4:8]
+        header_len = 8
+        if size == 1:
+            if len(head) < 16:
+                return None
+            size, header_len = int.from_bytes(head[8:16], 'big'), 16
+        if hop == 0 and kind != b'ftyp':
+            return None                      # not an MP4/MOV container
+        if kind == b'moov':
+            return _mvhd_duration(_remote_range_bytes(url, headers, pos + header_len, 160, timeout=15))
+        if size < 8:                         # 0 = "to the end of the file", anything else is damage
+            return None
+        pos += size
+    return None
 
 
 def _remote_video_duration(url: str, headers: dict[str, str]) -> float | None:
-    """Probe a remote URL with ffprobe to get its duration without downloading the file.
+    """Duration of a remote video without downloading it.
 
-    ffprobe streams only the first few KB needed to identify the container and
-    read the duration field from the header — far cheaper than a full download.
-    Returns None if ffprobe is unavailable or the probe fails; _duration_probe_note then says why.
+    MP4/MOV files (nearly everything here) are read directly from their movie header with a few tiny ranged reads,
+    independent of file size. Anything else falls back to ffprobe, which reads only the first few MB it needs to
+    identify the container (its default probe size). Returns None if neither works; _duration_probe_note then says why.
     """
     global _duration_probe_note
     _duration_probe_note = ''
+    seconds = _remote_mp4_duration(url, headers)
+    if seconds is not None:
+        return seconds
     ffprobe = shutil.which('ffprobe')
     if ffprobe is None:
         _duration_probe_note = 'ffprobe not installed'
@@ -1548,29 +1597,57 @@ def _decide_skip_or_replace(match_path: str, url: str, headers: dict[str, str],
 
 
 _VIDEO_SAMPLE_CHUNKS = 12   # small ranged reads for a same-size video: few requests, still spread over the whole file
+_VIDEO_MIN_BLOCKS = 4       # of those, how many must have been read (and all must match) for a verdict
+_SAMPLE_READ_TIMEOUT = 10   # seconds for one block; a read deep inside a big file can sit cold on a CDN for a long time
+_SAMPLE_TOTAL_SECONDS = 45  # stop sampling after this long and judge by the blocks read so far
 
 
 def _sampled_identical(url: str, headers: dict[str, str], content_length: int,
-                       candidates: list[tuple[str, str]], n_chunks: int) -> tuple[str, str] | None:
+                       candidates: list[tuple[str, str]], n_chunks: int,
+                       min_blocks: int | None = None) -> tuple[str, str] | None:
     """The first of *candidates* ((name, path) pairs, all exactly *content_length* bytes) whose bytes equal the remote
-    file's at *n_chunks* evenly spaced 64 KB samples from the first block to the last, or None when none match or the
-    server does not support ranged reads. Costs *n_chunks* small requests, however many candidates there are."""
+    file's at up to *n_chunks* evenly spaced 64 KB samples from the first block to the last, or None when none match,
+    the server cannot do ranged reads, or too few blocks could be read. Costs at most *n_chunks* small requests, however
+    many candidates there are.
+
+    With *min_blocks* None every sample must be readable. Otherwise the first and last blocks are required and a slow
+    or failing one in between is skipped, as long as at least *min_blocks* were read in total and none of them differs:
+    the exact size plus matching start and end blocks already settles it, the rest is extra assurance."""
     chunk = 64 * 1024
     n_chunks = max(2, n_chunks)
     offsets = [round(i * (content_length - chunk) / (n_chunks - 1)) for i in range(n_chunks)]
-    remote_chunks: list[bytes] = []
-    for i, off in enumerate(offsets):
-        print(f'  [pre-check] fetching chunk {i + 1}/{n_chunks}...', end='\r', flush=True)
-        data = _remote_range_bytes(url, headers, off, chunk)
+    strict = min_blocks is None
+    need = n_chunks if strict else max(2, min(min_blocks, n_chunks))
+    order = [0, n_chunks - 1] + list(range(1, n_chunks - 1))      # the fast, decisive ends first
+    started = time.time()
+    read: dict[int, bytes] = {}
+    skipped = 0
+    for step, i in enumerate(order):
+        if not strict and step >= 2 and time.time() - started > _SAMPLE_TOTAL_SECONDS:
+            skipped += len(order) - step
+            break
+        print(f'  [pre-check] fetching block {len(read) + 1}/{n_chunks}...', end='\r', flush=True)
+        data = _remote_range_bytes(url, headers, offsets[i], chunk,
+                                   timeout=30 if strict else _SAMPLE_READ_TIMEOUT)
         if data is None:
-            print(f'  [pre-check] sampled reads not possible ({_range_note or "no answer"}) -- cannot compare bytes', flush=True)
-            return None
-        remote_chunks.append(data)
+            if strict or i in (0, n_chunks - 1):
+                print(f'  [pre-check] sampled reads not possible ({_range_note or "no answer"}) -- cannot compare bytes',
+                      flush=True)
+                return None
+            skipped += 1
+            continue
+        read[i] = data
+    if len(read) < need:
+        print(f'  [pre-check] only {len(read)} of {n_chunks} blocks could be read (need {need}) -- cannot compare bytes',
+              flush=True)
+        return None
+    if skipped:
+        print(f'  [pre-check] {skipped} slow block(s) skipped; comparing the {len(read)} read', flush=True)
     for entry, full in candidates:
         try:
             with open(full, 'rb') as f:
-                differs = next((i + 1 for i, (off, rc) in enumerate(zip(offsets, remote_chunks))
-                                if f.seek(off) is None or f.read(len(rc)) != rc), None)
+                differs = next((i + 1 for i in sorted(read) if f.seek(offsets[i]) is None or f.read(len(read[i])) != read[i]),
+                               None)
         except OSError:
             continue
         if differs is None:
@@ -1674,10 +1751,11 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
                     # the remote duration, which some CDNs will not let ffprobe read; a handful of small ranged
                     # reads decides it without that. Identical size and identical samples across the whole file
                     # means the same file, so there is nothing to compare for quality and no need to download.
-                    matched = _sampled_identical(url, headers, content_length, size_matched, _VIDEO_SAMPLE_CHUNKS)
+                    matched = _sampled_identical(url, headers, content_length, size_matched, _VIDEO_SAMPLE_CHUNKS,
+                                                 min_blocks=_VIDEO_MIN_BLOCKS)
                     if matched:
                         return (f'identical to existing {_safe(matched[0])} '
-                                f'(same size, {_VIDEO_SAMPLE_CHUNKS} sampled blocks match)')
+                                f'(same size, start, end and sampled blocks match)')
 
     # --- 1b. Partial content probe for large non-video files (no size match) ---
     # For files > 50 MB where we couldn't match by name or size, sample the
