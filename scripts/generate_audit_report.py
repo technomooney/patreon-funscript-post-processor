@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 import creator_config
+import report_store
 import folder_log as _flog
 
 
@@ -141,6 +142,15 @@ _CSV_META: dict[str, dict] = {
 }
 
 
+# Columns shown for the link outcomes kept in the database, in display order.
+_OUTCOME_COLS = {
+    'failed': ('link', 'funscript_name', 'save_directory', 'domain', 'reason', 'http_status', 'permanent',
+               'attempts', 'last_attempt'),
+    'uncertain': ('link', 'funscript_name', 'save_directory', 'domain', 'matched_video', 'match_score',
+                  'attempts', 'last_attempt'),
+}
+
+
 def _csv_title(fname: str) -> str:
     meta = _CSV_META.get(fname)
     if meta:
@@ -187,7 +197,7 @@ def _status_cls(status: str) -> str:
     return 'st-other'
 
 
-def _render_csv_section(fname: str, rows: list[dict], base: str) -> str:
+def _render_csv_section(fname: str, rows: list[dict], base: str, label: str | None = None) -> str:
     if not rows:
         return ''
 
@@ -244,7 +254,7 @@ def _render_csv_section(fname: str, rows: list[dict], base: str) -> str:
         f'<summary class="rpt-sum">'
         f'<span class="rpt-title">{_e(title)}</span>'
         f'<span class="rpt-badges">{badge_html}</span>'
-        f'<span class="rpt-fname">{_e(fname)}</span>'
+        f'<span class="rpt-fname">{_e(label or fname)}</span>'
         f'</summary>'
         f'<div class="rpt-body">'
         f'<table class="rpt-tbl"><thead><tr>{th}</tr></thead>'
@@ -564,10 +574,23 @@ def generate(base: str) -> str:
     except OSError:
         csv_files = []
 
-    report_parts: list[str] = []
+    # Reports as (order, key, rows, label): the remaining loose CSVs, then the ones kept in the library database.
+    sections: list[tuple[int, str, list[dict], str | None]] = []
     for fname in csv_files:
-        rows = _read_csv_report(os.path.join(rdir, fname))
-        chunk = _render_csv_section(fname, rows, base)
+        sections.append((_CSV_META.get(fname, {}).get('order', 99), fname,
+                         _read_csv_report(os.path.join(rdir, fname)), None))
+    for kind, key in (('failed', 'failed_downloads.csv'), ('uncertain', 'uncertain_downloads.csv')):
+        rows = [{c: ('' if r.get(c) is None else str(r.get(c)))
+                 for c in _OUTCOME_COLS[kind]}
+                for r in ({**o, 'link': o['url']} for o in report_store.outcomes(base, kind))]
+        sections.append((_CSV_META[key]['order'], key, rows, f'database: {kind} links'))
+    for name in report_store.report_names(base):
+        key = f'{name}.csv'
+        rows = [{k: ('' if v is None else str(v)) for k, v in r.items()} for r in report_store.read_report(base, name)]
+        sections.append((_CSV_META.get(key, {}).get('order', 99), key, rows, f'database: {name}'))
+    report_parts: list[str] = []
+    for _order, key, rows, label in sorted(sections, key=lambda t: (t[0], t[1])):
+        chunk = _render_csv_section(key, rows, base, label)
         if chunk:
             report_parts.append(chunk)
 
