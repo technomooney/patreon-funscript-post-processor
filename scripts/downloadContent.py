@@ -34,6 +34,7 @@ import external_links
 import folder_log
 import library_db
 import report_store
+import remote_cache_relay
 import link_probe
 import link_probe_browser
 import mega_cooldown
@@ -1407,6 +1408,7 @@ def _remote_audio_fingerprint(url: str, headers: dict[str, str]) -> list[int] | 
 # read the whole index before it can seek or probe, and the index grows with the video's length (~86 KB per minute in this
 # library: about 5 MB for an hour, 15 MB for three hours), so the time those runs need grows with it too.
 _remote_index_bytes: int = 0
+_remote_index_span: tuple[int, int] | None = None   # (offset, size) of that index in the remote file
 _SLOWEST_SEEN_BYTES_PER_SEC = 85 * 1024    # slowest throughput measured from the rule34video CDN (it rate limits)
 _MAX_SCALED_TIMEOUT = 600
 
@@ -1470,8 +1472,9 @@ def _remote_mp4_duration(url: str, headers: dict[str, str]) -> float | None:
         if hop == 0 and kind != b'ftyp':
             return None                      # not an MP4/MOV container
         if kind == b'moov':
-            global _remote_index_bytes
+            global _remote_index_bytes, _remote_index_span
             _remote_index_bytes = size
+            _remote_index_span = (pos, size)
             return _mvhd_duration(_remote_range_bytes(url, headers, pos + header_len, 160, timeout=15))
         if size < 8:                         # 0 = "to the end of the file", anything else is damage
             return None
@@ -1486,9 +1489,10 @@ def _remote_video_duration(url: str, headers: dict[str, str]) -> float | None:
     independent of file size. Anything else falls back to ffprobe, which reads only the first few MB it needs to
     identify the container (its default probe size). Returns None if neither works; _duration_probe_note then says why.
     """
-    global _duration_probe_note, _remote_index_bytes
+    global _duration_probe_note, _remote_index_bytes, _remote_index_span
     _duration_probe_note = ''
     _remote_index_bytes = 0
+    _remote_index_span = None
     seconds = _remote_mp4_duration(url, headers)
     if seconds is not None:
         return seconds
@@ -1808,6 +1812,14 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
         return None  # can't probe — proceed with download
     print(f'  [pre-check] remote duration: {url_dur:.1f}s')
 
+    return _precheck_av(url, headers, download_dir, url_dur, content_length)
+
+
+def _precheck_av(url: str, headers: dict[str, str], download_dir: str, url_dur: float, content_length: int) -> str | None:
+    """Steps 3-4 of the pre-check (audio fingerprint, visual sampling) for a remote video whose duration is known.
+
+    For an MP4 these run ffmpeg/ffprobe several times, and every run would read the whole index again from a CDN that
+    throttles. So the index is fetched ONCE into a local relay (remote_cache_relay) and all the runs read from that."""
     duration_candidates: list[str] = []
     for entry in os.listdir(download_dir):
         if _is_temp_file(entry):
@@ -1825,6 +1837,31 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
         print('  [pre-check] no duration match — proceeding with download', flush=True)
         return None  # no duration match — proceed with download
 
+    relay = None
+    if _remote_index_span and content_length > 0:
+        print(f'  [pre-check] reading the index once ({_remote_index_span[1] / 1048576:.1f} MB)...', flush=True)
+        relay = remote_cache_relay.CacheRelay(url, headers, content_length, _remote_index_span)
+        local_url = relay.start()
+        if local_url:
+            url, headers = local_url, {}
+        else:
+            relay = None
+            print('  [pre-check] could not cache the index -- reading it directly', flush=True)
+    global _remote_index_bytes
+    held_index_bytes = _remote_index_bytes
+    if relay is not None:
+        _remote_index_bytes = 0     # the index is local now: normal frame count and limits, not the big-index ones
+    try:
+        return _precheck_av_stages(url, headers, url_dur, content_length, duration_candidates)
+    finally:
+        _remote_index_bytes = held_index_bytes
+        if relay is not None:
+            print(f'  [pre-check] remote reads for these checks: {relay.summary()}', flush=True)
+            relay.close()
+
+
+def _precheck_av_stages(url: str, headers: dict[str, str], url_dur: float, content_length: int,
+                        duration_candidates: list[str]) -> str | None:
     # --- 3. Audio fingerprint ---
     # Stream 120 s of audio from the remote URL through fpcalc (~2.6 MB).
     # Confirms or eliminates duration candidates before the more expensive
