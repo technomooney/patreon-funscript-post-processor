@@ -75,6 +75,70 @@ class PageTests(unittest.TestCase):
             self.assertIsNone(link_probe.probe(R34))
 
 
+class ApiSiteTests(unittest.TestCase):
+    def verdict(self, url, status, body):
+        with mock.patch.object(link_probe, '_get_json', return_value=(status, body)):
+            return link_probe.probe(url)
+
+    def test_pixeldrain_only_not_found_is_permanent(self):
+        nf = {'success': False, 'value': 'not_found'}
+        self.assertEqual(self.verdict('https://pixeldrain.com/u/AbCd1234', 404, nf),
+                         ('pixeldrain_not_found', 404, True))
+        self.assertTrue(self.verdict('https://pixeldrain.com/l/AbCd1234', 404, nf).permanent)
+        self.assertFalse(self.verdict('https://pixeldrain.com/u/AbCd1234', 200, {'success': True}).permanent)
+        for status, body in ((429, {'value': 'too_many'}), (403, {'value': 'forbidden'}), (500, None), (None, None)):
+            self.assertFalse(self.verdict('https://pixeldrain.com/u/AbCd1234', status, body).permanent)
+
+    def test_pixeldrain_filesystem_links_are_not_probed(self):
+        self.assertIsNone(link_probe.probe('https://pixeldrain.com/d/AbCd1234/some/path'))
+
+    def test_yandex(self):
+        url = 'https://disk.yandex.com/d/abc'
+        self.assertEqual(self.verdict(url, 404, {'error': 'NotFoundError'}), ('yandex_not_found', 404, True))
+        self.assertFalse(self.verdict(url, 429, {'error': 'TooManyRequestsError'}).permanent)
+        self.assertFalse(self.verdict(url, 200, {'type': 'dir'}).permanent)
+
+
+class YtdlpTierTests(unittest.TestCase):
+    def test_explicit_removals_are_permanent(self):
+        for text in ('ERROR: [Eporner] x: Unable to download webpage: HTTP Error 404: Not Found (caused by <HTTPError 404>)',
+                     'ERROR: [site] This video has been removed by the uploader',
+                     'ERROR: [site] 12: Video does not exist',
+                     'ERROR: [generic] Got HTTP Error 410: Gone'):
+            self.assertTrue(link_probe.classify_ytdlp_error(text).permanent, text)
+
+    def test_walls_and_unclear_errors_never_are(self):
+        for text in ('ERROR: [generic] Got HTTP Error 403 caused by Cloudflare anti-bot challenge',
+                     'ERROR: [site] This video is private. Log in to view it (HTTP Error 404)',
+                     'ERROR: [site] Sign in to confirm your age',
+                     'ERROR: [site] members-only content has been removed from your plan',
+                     'ERROR: Unsupported URL: https://x/y',
+                     'ERROR: [Piracy] This website is no longer supported',
+                     'ERROR: [site] Unable to download webpage: HTTP Error 429: Too Many Requests',
+                     'ERROR: [site] This video is not available in your country (HTTP Error 404)',
+                     'ERROR: something nobody has seen before', ''):
+            self.assertFalse(link_probe.classify_ytdlp_error(text).permanent, text)
+
+    def test_status_is_extracted(self):
+        v = link_probe.classify_ytdlp_error('ERROR: x: HTTP Error 404: Not Found')
+        self.assertEqual((v.reason, v.http_status), ('ytdlp_http_404', 404))
+
+    def test_used_for_unknown_and_ungated_domains_only_when_ytdlp_is_given(self):
+        with mock.patch.object(link_probe, '_probe_ytdlp', return_value=link_probe.Verdict('r', 404, True)) as run:
+            self.assertIsNone(link_probe.probe('https://example.com/v/1'))
+            self.assertTrue(link_probe.probe('https://example.com/v/1', ['yt-dlp']).permanent)
+            self.assertTrue(link_probe.probe('https://www.eporner.com/video-x/y/', ['yt-dlp']).permanent)
+            self.assertEqual(run.call_count, 2)
+
+    def test_gated_hosts_never_reach_any_probe(self):
+        with mock.patch.object(link_probe, '_probe_ytdlp', side_effect=AssertionError), \
+                mock.patch.object(link_probe, '_get_json', side_effect=AssertionError), \
+                mock.patch.object(link_probe, '_http_status', side_effect=AssertionError):
+            for url in ('https://www.iwara.tv/video/x/y', 'https://hanime.tv/videos/hentai/x', 'https://joi.moe/x',
+                        'https://the-joi-database.com/x', 'https://discuss.eroscripts.com/t/x/1', 'https://gofile.io/d/x'):
+                self.assertIsNone(link_probe.probe(url, ['yt-dlp']), url)
+
+
 class GatedSitesTests(unittest.TestCase):
     def test_iwara_is_never_probed(self):
         # anonymous iwara answers 404 for login-only videos exactly as for deleted ones: no usable signal

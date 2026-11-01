@@ -6422,7 +6422,7 @@ def _triage_failure(entry: dict, folder: str,
         print(f'  [skip-fail] existing video "{_safe(matched_file)}" '
               f'matches folder title ({int(score * 100)}%) — not logged as failure')
         return
-    link_probe.classify_entry(entry)   # reason / HTTP status / permanently-dead, for the report and future skips
+    link_probe.classify_entry(entry, _ytdlp_cmd())   # reason / HTTP status / permanently-dead, for the report and future skips
     if entry.get('permanent'):
         print(f'  [dead-link] {entry.get("reason")} ({entry.get("http_status")}) -- will not be retried')
     if score >= _MATCH_UNCERTAIN:
@@ -7007,7 +7007,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                      f'(full mega worker output: {mega_worker._log_path})'], outcome='failed (background)')
                 failures.append(link_probe.classify_entry(
                     {'link': res['link'], 'funscript_name': res['basename'], 'filename': hint,
-                     'save_directory': res['download_dir'], 'domain': 'mega.nz'}))
+                     'save_directory': res['download_dir'], 'domain': 'mega.nz'}, _ytdlp_cmd()))
                 if res.get('exit_code') == _MEGA_RATE_LIMIT_EXIT:
                     mega_error6.append({'link': res['link'], 'funscript_name': res['basename'],
                                         'filename': hint, 'save_directory': res['download_dir']})
