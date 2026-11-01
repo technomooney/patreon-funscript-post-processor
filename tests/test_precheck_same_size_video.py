@@ -108,5 +108,31 @@ class PrecheckSameSizeVideoTests(unittest.TestCase):
         self.assertEqual(match[0], "1_Hour_Of_Futa's_Cumming.mp4")
         self.assertEqual(self.range_calls, 6)
 
+class DurationProbeNoteTests(unittest.TestCase):
+    def probe(self, **run_kwargs):
+        with mock.patch.object(dc.shutil, 'which', return_value='/usr/bin/ffprobe'), \
+                mock.patch.object(dc.subprocess, 'run', **run_kwargs):
+            return dc._remote_video_duration('https://cdn.example/x.mp4', {'Referer': 'r'})
+
+    def test_success_returns_the_duration_and_no_note(self):
+        done = mock.Mock(stdout='317.5\n', stderr='', returncode=0)
+        self.assertEqual(self.probe(return_value=done), 317.5)
+        self.assertEqual(dc._duration_probe_note, '')
+
+    def test_a_timeout_is_named(self):
+        self.assertIsNone(self.probe(side_effect=dc.subprocess.TimeoutExpired('ffprobe', 30)))
+        self.assertEqual(dc._duration_probe_note, 'ffprobe timed out after 30s')
+
+    def test_an_ffprobe_error_shows_its_last_line(self):
+        done = mock.Mock(stdout='', stderr='noise\nServer returned 403 Forbidden (access denied)\n', returncode=1)
+        self.assertIsNone(self.probe(return_value=done))
+        self.assertEqual(dc._duration_probe_note, 'ffprobe error: Server returned 403 Forbidden (access denied)')
+
+    def test_missing_ffprobe_is_named(self):
+        with mock.patch.object(dc.shutil, 'which', return_value=None):
+            self.assertIsNone(dc._remote_video_duration('u', {}))
+        self.assertEqual(dc._duration_probe_note, 'ffprobe not installed')
+
+
 if __name__ == '__main__':
     unittest.main()

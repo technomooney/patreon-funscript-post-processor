@@ -1388,15 +1388,23 @@ def _remote_audio_fingerprint(url: str, headers: dict[str, str]) -> list[int] | 
         return None
 
 
+# Why the last _remote_video_duration() came back empty, for the pre-check's "duration unavailable" line.
+_duration_probe_note: str = ''
+_DURATION_PROBE_TIMEOUT = 30
+
+
 def _remote_video_duration(url: str, headers: dict[str, str]) -> float | None:
     """Probe a remote URL with ffprobe to get its duration without downloading the file.
 
     ffprobe streams only the first few KB needed to identify the container and
     read the duration field from the header — far cheaper than a full download.
-    Returns None if ffprobe is unavailable or the probe fails.
+    Returns None if ffprobe is unavailable or the probe fails; _duration_probe_note then says why.
     """
+    global _duration_probe_note
+    _duration_probe_note = ''
     ffprobe = shutil.which('ffprobe')
     if ffprobe is None:
+        _duration_probe_note = 'ffprobe not installed'
         return None
     cmd = [ffprobe, '-v', 'error']
     if headers:
@@ -1405,10 +1413,19 @@ def _remote_video_duration(url: str, headers: dict[str, str]) -> float | None:
     cmd += ['-show_entries', 'format=duration',
             '-of', 'default=noprint_wrappers=1:nokey=1', url]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        text = result.stdout.strip()
-        return float(text) if text else None
-    except (subprocess.SubprocessError, OSError, ValueError):
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=_DURATION_PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        _duration_probe_note = f'ffprobe timed out after {_DURATION_PROBE_TIMEOUT}s'
+        return None
+    except (subprocess.SubprocessError, OSError) as e:
+        _duration_probe_note = f'ffprobe could not run: {e}'
+        return None
+    text = result.stdout.strip()
+    try:
+        return float(text)
+    except ValueError:
+        err = (result.stderr or '').strip().splitlines()
+        _duration_probe_note = (f'ffprobe error: {err[-1][:120]}' if err else 'ffprobe returned no duration')
         return None
 
 
@@ -1658,7 +1675,7 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
     _set_status('  [pre-check] probing remote duration...')
     url_dur = _remote_video_duration(url, headers)
     if url_dur is None:
-        print('  [pre-check] duration unavailable — proceeding with download')
+        print(f'  [pre-check] duration unavailable ({_duration_probe_note or "unknown reason"}) — proceeding with download')
         return None  # can't probe — proceed with download
     print(f'  [pre-check] remote duration: {url_dur:.1f}s')
 
