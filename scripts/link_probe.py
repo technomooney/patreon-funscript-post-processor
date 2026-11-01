@@ -7,6 +7,9 @@ is NOT permanent: a wrong "dead" verdict would hide a good link forever, a wrong
 Only domains where the answer is trustworthy are probed:
 * mega.nz: the public API answers a bare error number for a file/folder that does not exist (-9), is blocked by
   MEGA (-16) or has expired (-8), instantly -- the same code `mega-get` exits with, without waiting on it.
+* NOT iwara.tv, on purpose: its API answers an anonymous request for a login-only video with the same 404
+  (errors.notFound) as for a video that does not exist, and its pages are a single-page app that returns 200 for
+  anything. Without a logged-in session there is no signal, so it must stay unprobed.
 * rule34video.com: a removed video returns a real HTTP 404. A bot-looking User-Agent gets 403 from DDoS-Guard, so
   a browser UA is sent and a 403 is reported as "blocked", never as dead.
 """

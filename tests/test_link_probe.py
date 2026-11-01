@@ -75,6 +75,13 @@ class PageTests(unittest.TestCase):
             self.assertIsNone(link_probe.probe(R34))
 
 
+class GatedSitesTests(unittest.TestCase):
+    def test_iwara_is_never_probed(self):
+        # anonymous iwara answers 404 for login-only videos exactly as for deleted ones: no usable signal
+        with mock.patch.object(link_probe, '_http_status', side_effect=AssertionError('must not request')):
+            self.assertIsNone(link_probe.probe('https://www.iwara.tv/video/dJSZxsS1Cxvusg/mmd'))
+
+
 class ClassifyEntryTests(unittest.TestCase):
     def test_adds_fields_only_when_probed(self):
         with mock.patch.object(link_probe, '_http_status', return_value=(404, NOT_FOUND_BODY)):
