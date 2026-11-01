@@ -6577,7 +6577,13 @@ class ProgressTracker:
     completed link.  A link is "completed" when it was successfully downloaded,
     found to be a duplicate/AV-similar file, or pre-checked as already present
     — i.e. it does not need to be attempted again.  Genuine failures are NOT
-    marked done so they are retried on the next run.
+    marked done, so a post that is still being worked on retries them.
+
+    A post (folder) is also recorded once every one of its links has been
+    attempted.  A resume then skips that post outright, failed links and all,
+    instead of re-fetching the failures: the failure rows are stored with it so
+    the reports still list them.  Posts are retried by the next fresh run, which
+    starts a new session.
     """
 
     _FILENAME = '.download_progress.json'
@@ -6585,6 +6591,7 @@ class ProgressTracker:
     def __init__(self, base_path: str):
         self._path = os.path.join(base_path, self._FILENAME)
         self._done: dict[str, set[str]] = {}   # folder → set of completed link URLs
+        self._processed: dict[str, dict] = {}  # folder → {'failures': [...], 'uncertain': [...]} report rows
         self._load()
 
     def _load(self):
@@ -6592,12 +6599,17 @@ class ProgressTracker:
             try:
                 with open(self._path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                self._done = {k: set(v) for k, v in data.items()}
-            except (OSError, json.JSONDecodeError, ValueError):
+                if data.get('version') == 2:
+                    self._done = {k: set(v) for k, v in data.get('links', {}).items()}
+                    self._processed = dict(data.get('folders', {}))
+                else:   # first format: just {folder: [links]}
+                    self._done = {k: set(v) for k, v in data.items()}
+            except (OSError, json.JSONDecodeError, ValueError, AttributeError):
                 self._done = {}
+                self._processed = {}
 
     def has_progress(self) -> bool:
-        return bool(self._done)
+        return bool(self._done or self._processed)
 
     def is_done(self, folder: str, link: str) -> bool:
         return link in self._done.get(folder, set())
@@ -6606,17 +6618,32 @@ class ProgressTracker:
         self._done.setdefault(folder, set()).add(link)
         self._save()
 
+    def is_folder_done(self, folder: str) -> bool:
+        return folder in self._processed
+
+    def folder_rows(self, folder: str) -> tuple[list[dict], list[dict]]:
+        """The (failures, uncertain) report rows stored when *folder* was finished."""
+        entry = self._processed.get(folder, {})
+        return list(entry.get('failures', [])), list(entry.get('uncertain', []))
+
+    def mark_folder_done(self, folder: str, failures: list[dict], uncertain: list[dict]):
+        self._processed[folder] = {'failures': failures, 'uncertain': uncertain}
+        self._save()
+
     def _save(self):
         tmp = self._path + '.tmp'
         try:
             with open(tmp, 'w', encoding='utf-8') as f:
-                json.dump({k: list(v) for k, v in self._done.items()}, f, indent=2)
+                json.dump({'version': 2,
+                           'links': {k: list(v) for k, v in self._done.items()},
+                           'folders': self._processed}, f, indent=2)
             os.replace(tmp, self._path)
         except Exception as e:
             print(f'  [progress] could not save progress: {e}')
 
     def clear(self):
         self._done = {}
+        self._processed = {}
         try:
             if os.path.exists(self._path):
                 os.remove(self._path)
@@ -6931,7 +6958,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
 
     print(f"\nFound {len(tasks)} folder(s) to process:")
     for t in tasks:
-        print(f"  {_safe(t['basename'])}")
+        print(f"  {_safe(t['basename'])}" + (' [already processed]' if tracker.is_folder_done(t['folder']) else ''))
         for link in t['links']:
             status = ' [done]' if tracker.is_done(t['folder'], link) else ''
             print(f"    -> {link}{status}")
@@ -7026,6 +7053,18 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
             current_folder = folder
 
             _drain_mega_results()
+            if tracker.is_folder_done(folder):
+                # Every link of this post was attempted before the interruption: don't touch the failures again,
+                # just carry their report rows over (this run rewrites the CSVs from its own lists).
+                prev_failures, prev_uncertain = tracker.folder_rows(folder)
+                have = {(r.get('link'), r.get('save_directory')) for r in failures}
+                failures.extend(r for r in prev_failures if (r.get('link'), r.get('save_directory')) not in have)
+                have = {(r.get('link'), r.get('save_directory')) for r in uncertain}
+                uncertain.extend(r for r in prev_uncertain if (r.get('link'), r.get('save_directory')) not in have)
+                for link in links:
+                    link_statuses.setdefault(folder, {})[link] = 'previously_done'
+                print(f"\n[{task_idx}/{total}] {_safe(basename)} — already processed, skipping")
+                continue
             print(f"\n[{task_idx}/{total}] {_safe(basename)}")
             _cleanup_temp_files(folder, base_path, protected=_protected())
 
@@ -7035,6 +7074,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
 
             saved_for_folder = 0
             n_links = len(links)
+            folder_deferred = False
             for link_idx, link in enumerate(links, start=1):
                 if _stop_after_current.is_set():
                     break
@@ -7138,6 +7178,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                     tracker.mark_done(folder, link)
 
                 if _link_deferred:
+                    folder_deferred = True
                     link_statuses.setdefault(folder, {})[link] = 'deferred_mega'
                     continue  # mega retry handed off to background worker
 
@@ -7247,6 +7288,14 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                         # need to AV-compare its own video against whatever
                         # this archive bundles.
                         _extract_archive_inline(saved_path, creator_key, base_path)
+
+            # Every link attempted: a resume skips this post whatever failed. Not when the run was stopped partway
+            # through it, nor when a mega retry is still queued in memory (an interruption would lose that retry).
+            if not _stop_after_current.is_set() and not folder_deferred:
+                tracker.mark_folder_done(
+                    folder,
+                    [r for r in failures if r.get('save_directory') == folder],
+                    [r for r in uncertain if r.get('save_directory') == folder])
 
             _cleanup_temp_files(folder, base_path, protected=_protected())
 
