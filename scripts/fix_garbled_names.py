@@ -29,7 +29,6 @@ Usage
   --dry-run   show what would be renamed without making any changes
 """
 
-import csv
 import difflib
 import json
 import os
@@ -40,6 +39,7 @@ import action_log
 import markers
 import creator_config
 import folder_log
+import report_store
 
 # Suffixes that indicate a filename was truncated at a URL / filesystem limit.
 _TRUNCATION_SUFFIXES = ('....', '...', '\u2026')
@@ -245,12 +245,6 @@ def process(root_dir: str, dry_run: bool, skip_folders: set[str] | None = None) 
                                    'strategy': strategy, 'status': f'error: {e}'})
 
     return report
-
-
-def _reports_dir(root: str) -> str:
-    path = os.path.join(root, '_reports')
-    os.makedirs(path, exist_ok=True)
-    return path
 
 
 def _is_funscript_content(path: str) -> bool:
@@ -744,13 +738,9 @@ def run(root: str, dry_run: bool) -> None:
     media_label = 'would be renamed' if dry_run else 'renamed'
     media_count = sum(1 for r in media_report if r['status'] in ('renamed', 'would rename'))
     print(f'\nDone. {media_count} file(s) {media_label}.')
+    report_store.replace_report(root, 'media_renames', media_report)
     if media_report:
-        media_csv = os.path.join(_reports_dir(root), 'media_renames.csv')
-        with open(media_csv, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=['old_path', 'new_path', 'status'])
-            writer.writeheader()
-            writer.writerows(media_report)
-        print(f'Report written to: {media_csv}')
+        print('Report stored in the library database: media_renames')
 
     print()
     print('--- Misnamed funscript fix (wrong/missing .funscript extension) ---')
@@ -758,13 +748,9 @@ def run(root: str, dry_run: bool) -> None:
     fs_label = 'would be renamed' if dry_run else 'renamed'
     fs_count = sum(1 for r in fs_report if r['status'] in ('renamed', 'would rename'))
     print(f'\nDone. {fs_count} funscript(s) {fs_label}.')
+    report_store.replace_report(root, 'funscript_renames', fs_report)
     if fs_report:
-        report_path = os.path.join(_reports_dir(root), 'funscript_renames.csv')
-        with open(report_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=['old_path', 'new_path', 'status'])
-            writer.writeheader()
-            writer.writerows(fs_report)
-        print(f'Report written to: {report_path}')
+        print('Report stored in the library database: funscript_renames')
 
     print()
     print('--- Garbled filename fix ---')
@@ -777,13 +763,9 @@ def run(root: str, dry_run: bool) -> None:
         print()
         print('No files matched.  For CJK mojibake (e.g. Iwara files), re-run')
         print('downloadContent.py — it now renames garbled duplicates automatically.')
+    report_store.replace_report(root, 'garbled_names', garbled_report)
     if garbled_report:
-        csv_path = os.path.join(_reports_dir(root), 'garbled_names.csv')
-        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=['old_path', 'new_path', 'strategy', 'status'])
-            writer.writeheader()
-            writer.writerows(garbled_report)
-        print(f'Report written to: {csv_path}')
+        print('Report stored in the library database: garbled_names')
     if failed:
         print(f'\n{len(failed)} file(s) skipped or errored — see report for details.')
 
@@ -794,13 +776,9 @@ def run(root: str, dry_run: bool) -> None:
     vm_renamed = sum(1 for r in vm_report if r['status'] in ('renamed', 'would rename'))
     vm_uncertain = sum(1 for r in vm_report if r['status'].startswith('uncertain'))
     print(f'\nDone. {vm_renamed} funscript(s) {vm_label}, {vm_uncertain} uncertain (see report).')
+    report_store.replace_report(root, 'funscript_video_matches', vm_report)
     if vm_report:
-        vm_csv = os.path.join(_reports_dir(root), 'funscript_video_matches.csv')
-        with open(vm_csv, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=['funscript', 'suggested', 'video', 'score', 'status'])
-            writer.writeheader()
-            writer.writerows(vm_report)
-        print(f'Report written to: {vm_csv}')
+        print('Report stored in the library database: funscript_video_matches')
 
     # Log per-folder (skip dry-run and already-done folders).
     if not dry_run:

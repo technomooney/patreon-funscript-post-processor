@@ -16,13 +16,11 @@ protected_dirs (creator_config.py) -- it changes nothing there.
 
 Usage
 -----
-  python check_funscripts.py [directory] [--csv]
+  python check_funscripts.py [directory]
 
   directory   defaults to current working directory
-  --csv       write a full report to funscript_check.csv in the scanned directory
 """
 
-import csv
 import json
 import os
 import re
@@ -32,6 +30,7 @@ from pathlib import Path
 import action_log
 import creator_config
 import folder_log
+import report_store
 from downloadContent import _is_temp_file, _video_duration
 
 # ---------------------------------------------------------------------------
@@ -650,7 +649,7 @@ def resolve_alt_tagged_videos(root_dir: str) -> tuple[int, int]:
     back its real name (see the section comment above). Renames are recorded
     via action_log (undoable, same as everything else in this project);
     whatever can't be resolved with confidence is written to
-    _reports/alt_video_review.csv instead of being touched or guessed at.
+    the alt_video_review report (library database) instead of being touched or guessed at.
     Returns (resolved_count, unresolved_count).
     """
     folder_log.ensure_library(root_dir)
@@ -689,15 +688,11 @@ def resolve_alt_tagged_videos(root_dir: str) -> tuple[int, int]:
                 renamed=[{'from': it['file'], 'to': it['renamed_to']} for it in items],
             )
 
+    report_store.replace_report(root_dir, 'alt_video_review', [
+        {k: r.get(k, '') for k in ('folder', 'file', 'suggestion', 'score', 'note')} for r in unresolved])
     if unresolved:
-        csv_path = os.path.join(_reports_dir(root_dir), 'alt_video_review.csv')
-        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=['folder', 'file', 'suggestion', 'score', 'note'])
-            writer.writeheader()
-            for r in unresolved:
-                writer.writerow({k: r.get(k, '') for k in ('folder', 'file', 'suggestion', 'score', 'note')})
         print(f'\n[alt-video] {len(unresolved)} "[altN]" video(s) could not be confidently resolved '
-              f'-- written to {csv_path} for manual review.')
+              f'-- stored in the library database (report alt_video_review) for manual review.')
 
     return len(resolved), len(unresolved)
 
@@ -797,15 +792,8 @@ def _print_results(results: list[FolderResult]):
         print(f'\n  {total_unmatched} video(s) missing funscripts across {unmatched_folders} folder(s).')
 
 
-def _reports_dir(root: str) -> str:
-    path = os.path.join(root, '_reports')
-    os.makedirs(path, exist_ok=True)
-    return path
-
-
-def _write_csv(root_dir: str, results: list[FolderResult]):
-    csv_path = os.path.join(_reports_dir(root_dir), 'funscript_check.csv')
-    fieldnames = ['folder', 'issue', 'file', 'suggestion', 'score', 'duration_match', 'renamed_to']
+def _write_report(root_dir: str, results: list[FolderResult]):
+    """Store the findings as the 'funscript_check' report (replaced whole, cleared when there is nothing)."""
     rows = []
     for r in results:
         for item in r.renamed:
@@ -839,17 +827,13 @@ def _write_csv(root_dir: str, results: list[FolderResult]):
                 'folder': r.folder, 'issue': 'funscript_without_video', 'file': '; '.join(item['scripts']),
                 'suggestion': '', 'score': '', 'duration_match': '', 'renamed_to': '',
             })
-    if not rows:
-        return
-    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-    print(f'  Report written to: {csv_path}')
+    report_store.replace_report(root_dir, 'funscript_check', rows)
+    if rows:
+        print('  Report stored in the library database: funscript_check')
 
 
 def run(root: str, do_rename: bool) -> list[FolderResult]:
-    """scan() plus the undo journaling, printing, and CSV report -- no
+    """scan() plus the undo journaling, printing, and stored report -- no
     prompts. Used directly by run_unattended.py; the __main__ block below
     is just the interactive wrapper that collects *root*/*do_rename* first.
     """
@@ -858,7 +842,7 @@ def run(root: str, do_rename: bool) -> list[FolderResult]:
         action_log.start('check_funscripts', root)
     results = scan(root, do_rename=do_rename)
     _print_results(results)
-    _write_csv(root, results)
+    _write_report(root, results)
     if do_rename:
         action_log.finish()
     print()
