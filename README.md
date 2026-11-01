@@ -117,7 +117,7 @@ All settings live in `.env` (created by setup). Key options:
 | `BROWSER_NO_SANDBOX` | `false` | Keep Chromium's `--no-sandbox` flag. Off by default so the sandbox stays on (and Brave shows no warning banner); set `true` when running as root or in a container |
 | `MAX_RESOLUTION` | `1080` | Maximum download resolution |
 | `SKIP_KNOWN_FAILURES` | `false` | Skip links recorded as failed in the library database |
-| `MEGA_RETRY_MINUTES` | `5,15,30,60` | How long every mega download pauses after MEGA rate-limits it (exit 6), escalating with each repeat; the last value repeats. MEGA publishes no figure, so tune it |
+| `MEGA_RETRY_MINUTES` | `5,15,30,60` | Steps the mega rate-limit search climbs through when it has no data (see below) |
 | `MEGA_MAX_WAIT_MINUTES` | `120` | How long the end of a run waits for rate-limited mega links before leaving them for a later run (they are skipped until their retry time, then retried automatically) |
 | `DEDUP_VERBOSE` | `false` | Print one line per file during dedup. Warning: very noisy on large libraries |
 | `TRASH_RETENTION_DAYS` | `14` | Days a soft-deleted (dedup) file stays in `.trash` before permanent removal. Separate from the one-run-deep "undo last action" journal |
@@ -212,3 +212,16 @@ Use at your own risk.
 ## Credits
 
 Originally created by Marty M. Evolved and heavily influenced through collaborative development with [Claude](https://claude.ai) (Anthropic).
+
+## Mega rate limits
+
+MEGA does not publish how long its "too many requests" limit (mega-get exit 6) lasts, so the downloader works it out.
+After an exit 6 every mega download pauses (other sites keep going). It waits 5 minutes and tries again; if it is still
+limited it climbs to 15, then 30, then 60 minutes until one works. Once a wait is known to work, the next limit tests
+between the longest wait that failed and the shortest that worked (for example 5 failed and 15 worked, so 10, then 13,
+then 14 minutes) until the two are within a minute, and then uses that wait. Waits already known to fail are not
+repeated, and if the settled wait stops working it climbs again.
+
+Every step is printed as a `[mega.nz] rate limit ...` line and saved in the machine-wide app database
+(`mega_ratelimit_events`: when, what happened, the wait, the longest that failed, the shortest that worked), so you can
+browse how the number settles. The current numbers are kept between runs.

@@ -3,12 +3,24 @@ import signal
 import sys
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts'))
 import downloadContent as dc
+import mega_cooldown
 
 
-class MegaWorkerAbortTests(unittest.TestCase):
+class _PausedMega(unittest.TestCase):
+    """MEGA is rate limited for the next hour, so a queued job just waits (and never runs a real mega-get)."""
+    def setUp(self):
+        cd = mega_cooldown.Cooldown([3600])
+        cd.hit()
+        p = mock.patch.object(dc, '_mega_cooldown', cd)
+        p.start()
+        self.addCleanup(p.stop)
+
+
+class MegaWorkerAbortTests(_PausedMega):
     def test_abort_drops_queued_retries_and_stops_quickly(self):
         w = dc._MegaWorker()
         w._thread.start()                       # skip start(): it would open a terminal window
@@ -23,7 +35,7 @@ class MegaWorkerAbortTests(unittest.TestCase):
         self.assertEqual(w.drain_results(), [])
 
 
-class MegaWorkerWaitTests(unittest.TestCase):
+class MegaWorkerWaitTests(_PausedMega):
     def test_wait_all_gives_up_after_its_timeout_and_reports_it(self):
         w = dc._MegaWorker()
         w._thread.start()

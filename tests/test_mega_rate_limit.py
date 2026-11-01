@@ -23,7 +23,7 @@ class ForegroundTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.dir = self._tmp.name
-        self.cd = mega_cooldown.Cooldown([60, 120])
+        self.cd = mega_cooldown.Cooldown([300, 900])
         for p in (mock.patch.object(dc, '_mega_cooldown', self.cd),
                   mock.patch.object(dc.shutil, 'which', return_value='/usr/bin/mega-get'),
                   mock.patch.object(dc, '_mega_ensure_login', return_value=True),
@@ -49,26 +49,43 @@ class ForegroundTests(unittest.TestCase):
                 dc.download_mega(None, URL, self.dir)
         run.assert_not_called()
 
-    def test_repeated_limits_escalate(self):
+    def test_a_limit_right_after_a_pause_means_that_wait_was_not_enough(self):
         with mock.patch.object(dc.subprocess, 'run', return_value=finished(6)):
-            for _ in range(2):
-                self.cd._until = 0          # pretend the pause ran out
-                with self.assertRaises(dc.MegaRateLimitedError):
-                    dc.download_mega(None, URL, self.dir)
-        self.assertEqual(self.cd._level, 2)
+            with self.assertRaises(dc.MegaRateLimitedError):
+                dc.download_mega(None, URL, self.dir)            # first limit: tests a 5 minute pause
+            self.cd._until = 0                                    # the pause ran out
+            self.cd._hit_at -= 300
+            with self.assertRaises(dc.MegaRateLimitedError):
+                dc.download_mega(None, URL, self.dir)            # still limited
+        self.assertEqual(self.cd.bad, 300)
+        self.assertEqual(round(self.cd.remaining()), 900)         # so it now waits the next level
 
-    def test_success_clears_the_pause(self):
+    def test_success_clears_the_pause_and_records_the_wait_that_worked(self):
         self.cd.hit()
         self.cd._until = 0
+        self.cd._hit_at -= 300
         with mock.patch.object(dc.subprocess, 'run', return_value=finished(0)):
             self.assertTrue(dc.download_mega(None, URL, self.dir))
-        self.assertEqual((self.cd.remaining(), self.cd._level), (0, 0))
+        self.assertEqual(self.cd.good, 300)
+        self.assertEqual(self.cd.remaining(), 0)
 
-    def test_a_dead_link_is_a_failure_not_a_rate_limit(self):
+    def test_a_dead_link_is_a_failure_not_a_rate_limit_and_shows_the_limit_has_cleared(self):
+        self.cd.hit()
+        self.cd._until = 0
+        self.cd._hit_at -= 300
         with mock.patch.object(dc.subprocess, 'run', return_value=finished(9, stderr='Failed to get public node: Not found')):
             self.assertFalse(dc.download_mega(None, URL, self.dir))
         self.assertEqual(self.cd.remaining(), 0)
+        self.assertEqual(self.cd.good, 300)             # MEGA answered normally, so that wait was enough
         self.assertEqual((dc._last_failure.reason, dc._last_failure.permanent), ('mega_not_found', True))
+
+    def test_a_timeout_or_stall_says_nothing_about_the_limit(self):
+        self.cd.hit()
+        self.cd._until = 0
+        for code in (-1, 1, 2):
+            with mock.patch.object(dc.subprocess, 'run', return_value=finished(code)):
+                dc.download_mega(None, URL, self.dir)
+        self.assertIsNone(self.cd.good)                 # still waiting for a real answer
 
     def test_only_one_mega_get_runs_at_a_time(self):
         started = threading.Event()
