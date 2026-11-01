@@ -1170,8 +1170,9 @@ def _video_quality(path_or_url: str, headers: dict[str, str] | None = None) -> d
     cmd += ['-select_streams', 'v:0',
             '-show_entries', 'stream=width,height,bit_rate,codec_name:format=bit_rate',
             '-of', 'json', path_or_url]
+    remote = path_or_url.startswith(('http://', 'https://'))
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=_scaled_timeout(30) if remote else 30)
         data = json.loads(result.stdout)
         out: dict = {}
         streams = data.get('streams', [])
@@ -1393,13 +1394,36 @@ def _remote_audio_fingerprint(url: str, headers: dict[str, str]) -> list[int] | 
                                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         if ffmpeg_proc.stdout:
             ffmpeg_proc.stdout.close()
-        fpcalc_out, _ = fpcalc_proc.communicate(timeout=180)
+        fpcalc_out, _ = fpcalc_proc.communicate(timeout=_scaled_timeout(180))
         ffmpeg_proc.wait(timeout=30)
         data = json.loads(fpcalc_out.decode())
         fp = data.get('fingerprint')
         return fp if isinstance(fp, list) else None
     except (subprocess.SubprocessError, OSError, json.JSONDecodeError):
         return None
+
+
+# Size in bytes of the last remote MP4's index (moov box), 0 when unknown. Every ffmpeg/ffprobe run on a remote MP4 has to
+# read the whole index before it can seek or probe, and the index grows with the video's length (~86 KB per minute in this
+# library: about 5 MB for an hour, 15 MB for three hours), so the time those runs need grows with it too.
+_remote_index_bytes: int = 0
+_SLOWEST_SEEN_BYTES_PER_SEC = 85 * 1024    # slowest throughput measured from the rule34video CDN (it rate limits)
+_MAX_SCALED_TIMEOUT = 600
+
+
+def _scaled_timeout(base_seconds: int) -> int:
+    """*base_seconds*, extended to cover reading the remote index at the slowest speed seen, plus half the base again."""
+    needed = int(_remote_index_bytes / _SLOWEST_SEEN_BYTES_PER_SEC) + base_seconds // 2
+    return min(_MAX_SCALED_TIMEOUT, max(base_seconds, needed))
+
+
+def _frame_samples_for_index() -> int:
+    """How many frames the visual check takes. Each one re-reads the whole index, so a big index gets fewer."""
+    if _remote_index_bytes > 10 * 1024 * 1024:
+        return 3
+    if _remote_index_bytes > 3 * 1024 * 1024:
+        return 4
+    return 8
 
 
 # Why the last _remote_video_duration() came back empty, for the pre-check's "duration unavailable" line.
@@ -1446,6 +1470,8 @@ def _remote_mp4_duration(url: str, headers: dict[str, str]) -> float | None:
         if hop == 0 and kind != b'ftyp':
             return None                      # not an MP4/MOV container
         if kind == b'moov':
+            global _remote_index_bytes
+            _remote_index_bytes = size
             return _mvhd_duration(_remote_range_bytes(url, headers, pos + header_len, 160, timeout=15))
         if size < 8:                         # 0 = "to the end of the file", anything else is damage
             return None
@@ -1460,8 +1486,9 @@ def _remote_video_duration(url: str, headers: dict[str, str]) -> float | None:
     independent of file size. Anything else falls back to ffprobe, which reads only the first few MB it needs to
     identify the container (its default probe size). Returns None if neither works; _duration_probe_note then says why.
     """
-    global _duration_probe_note
+    global _duration_probe_note, _remote_index_bytes
     _duration_probe_note = ''
+    _remote_index_bytes = 0
     seconds = _remote_mp4_duration(url, headers)
     if seconds is not None:
         return seconds
@@ -1511,7 +1538,7 @@ def _stream_frame(url: str, headers: dict[str, str], timestamp: str) -> bytes | 
             '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'gray',
             '-vf', 'scale=32:32', 'pipe:1']
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=60)
+        result = subprocess.run(cmd, capture_output=True, timeout=_scaled_timeout(60))
         if result.returncode == 0 and len(result.stdout) == 32 * 32:
             return result.stdout
     except (subprocess.SubprocessError, OSError):
@@ -1523,14 +1550,16 @@ def _remote_visually_similar(url: str, headers: dict[str, str],
                               url_dur: float, local_path: str) -> bool:
     """Return True if the remote video at *url* is visually similar to *local_path*.
 
-    Samples one frame every 15 seconds (capped at 8 samples), starting from
+    Samples one frame every 15 seconds (capped at 8 samples, fewer when the remote index is large: every sample
+    re-reads it), starting from
     ~5 % of the video duration so opening-title frames are avoided.  Each
     sample downloads only the data around that seek point via HTTP Range
     requests.  At least 75 % of sampled frames must match for a True result.
     """
     timestamps: list[str] = []
     t = max(url_dur * 0.05, 2.0)
-    while t < url_dur * 0.92 and len(timestamps) < 8:
+    max_frames = _frame_samples_for_index()
+    while t < url_dur * 0.92 and len(timestamps) < max_frames:
         timestamps.append(_format_ts(t))
         t += 15.0
     if not timestamps:

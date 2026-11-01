@@ -353,5 +353,64 @@ class RemoteMp4DurationTests(unittest.TestCase):
         run.assert_called_once()
 
 
+class LongVideoIndexTests(unittest.TestCase):
+    """A 3 hour video has a ~15 MB index that every ffmpeg run must read at CDN speed: limits and frame counts follow."""
+    MB = 1024 * 1024
+
+    def setUp(self):
+        self.addCleanup(setattr, dc, '_remote_index_bytes', dc._remote_index_bytes)
+
+    def at(self, index_mb):
+        dc._remote_index_bytes = int(index_mb * self.MB)
+
+    def test_short_videos_keep_the_original_limits_and_eight_frames(self):
+        self.at(0.4)
+        self.assertEqual((dc._scaled_timeout(60), dc._scaled_timeout(180), dc._scaled_timeout(30)), (60, 180, 30))
+        self.assertEqual(dc._frame_samples_for_index(), 8)
+
+    def test_an_hour_long_index_still_fits_the_old_frame_limit_barely_and_takes_four_frames(self):
+        self.at(5.2)
+        self.assertGreaterEqual(dc._scaled_timeout(60), 90)         # ~63 s to read at the slowest speed seen
+        self.assertEqual(dc._frame_samples_for_index(), 4)
+
+    def test_three_hour_index_gets_minutes_not_a_minute_and_three_frames(self):
+        self.at(15.5)
+        self.assertGreaterEqual(dc._scaled_timeout(60), 190)        # 15.5 MB / 85 KB/s = 187 s to read, plus margin
+        self.assertGreaterEqual(dc._scaled_timeout(180), 270)
+        self.assertEqual(dc._frame_samples_for_index(), 3)
+
+    def test_the_limit_is_capped(self):
+        self.at(200)
+        self.assertEqual(dc._scaled_timeout(60), dc._MAX_SCALED_TIMEOUT)
+
+    def test_the_mp4_walker_records_the_index_size_and_a_new_probe_resets_it(self):
+        data = RemoteMp4DurationTests.FTYP + box(b'moov', mvhd(10_800_000, 1000) + bytes(3000)) + box(b'mdat', b'')
+        with mock.patch.object(dc, '_remote_range_bytes', RemoteMp4DurationTests().serve(data)):
+            self.assertAlmostEqual(dc._remote_video_duration('https://cdn.example/x.mp4', {}), 10800.0)
+        self.assertEqual(dc._remote_index_bytes, 8 + len(mvhd(10_800_000, 1000)) + 3000)
+        with mock.patch.object(dc, '_remote_range_bytes', lambda *a, **k: None), \
+                mock.patch.object(dc.shutil, 'which', return_value=None):
+            dc._remote_video_duration('https://cdn.example/y.mp4', {})
+        self.assertEqual(dc._remote_index_bytes, 0)
+
+    def test_the_frame_stage_uses_the_scaled_limit_and_the_reduced_count(self):
+        self.at(15.5)
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen['timeout'] = kw.get('timeout')
+            return mock.Mock(returncode=1, stdout=b'')
+        with mock.patch.object(dc.shutil, 'which', return_value='/usr/bin/ffmpeg'), \
+                mock.patch.object(dc.subprocess, 'run', fake_run):
+            dc._stream_frame('https://cdn.example/x.mp4', {}, '00:09:00')
+        self.assertGreaterEqual(seen['timeout'], 190)
+        frames = []
+        with mock.patch.object(dc, '_stream_frame', side_effect=lambda u, h, ts: frames.append(ts)), \
+                mock.patch.object(dc, '_video_frame_hash', return_value=None), \
+                contextlib.redirect_stdout(io.StringIO()):
+            dc._remote_visually_similar('https://cdn.example/x.mp4', {}, 3 * 3600.0, '/nonexistent.mp4')
+        self.assertEqual(len(frames), 3)
+
+
 if __name__ == '__main__':
     unittest.main()
