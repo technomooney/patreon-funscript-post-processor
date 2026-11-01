@@ -3278,12 +3278,12 @@ def _iwara_dismiss_adult_gate(driver, timeout: float = 3.0) -> bool:
     while time.time() < deadline:
         try:
             if not driver.find_elements(By.XPATH, _IWARA_ADULT_GATE_BUTTON):
-                print('  [iwara.tv] confirmed "I am over 18"')
+                print('  [iwara] confirmed "I am over 18"')
                 return True
         except WebDriverException:
             return False
         time.sleep(0.25)
-    print('  [iwara.tv] clicked "I am over 18" but the warning is still showing')
+    print('  [iwara] clicked "I am over 18" but the warning is still showing')
     return False
 
 
@@ -3295,7 +3295,7 @@ def _iwara_browser_login(driver, site: str = 'www.iwara.tv') -> bool:
     email    = _get_secret('IWARA_EMAIL').strip()
     password = _get_secret('IWARA_PASSWORD').strip()
     if not email or not password:
-        print('  [iwara.tv] no credentials — set IWARA_EMAIL and IWARA_PASSWORD via setup_credentials.py')
+        print('  [iwara] no credentials — set IWARA_EMAIL and IWARA_PASSWORD via setup_credentials.py')
         return False
 
     for attempt in range(3):
@@ -3305,12 +3305,12 @@ def _iwara_browser_login(driver, site: str = 'www.iwara.tv') -> bool:
         page_src = driver.page_source.lower()
         if 'too many requests' in page_src or '429' in driver.title:
             wait = [1, 5, 10][attempt]
-            print(f'  [iwara.tv] rate-limited on login page — waiting {wait}s before retry {attempt + 1}/3...')
+            print(f'  [iwara] rate-limited on login page — waiting {wait}s before retry {attempt + 1}/3...')
             time.sleep(wait)
             continue
         break
     else:
-        print('  [iwara.tv] login page rate-limited after 3 attempts')
+        print('  [iwara] login page rate-limited after 3 attempts')
         return False
 
     _iwara_dismiss_adult_gate(driver)
@@ -3361,24 +3361,24 @@ def _iwara_browser_login(driver, site: str = 'www.iwara.tv') -> bool:
                 page_src = driver.page_source.lower()
                 if 'too many requests' in page_src or '429' in page_src:
                     wait = [1, 5, 10][submit_attempt]
-                    print(f'  [iwara.tv] rate-limited after submit — waiting {wait}s before retry {submit_attempt + 1}/3...')
+                    print(f'  [iwara] rate-limited after submit — waiting {wait}s before retry {submit_attempt + 1}/3...')
                     time.sleep(wait)
                     continue
                 # Not a rate-limit — just failed.
-                print(f'  [iwara.tv] login did not redirect — still on: {driver.current_url}')
-                print(f'  [iwara.tv] page title: {driver.title!r}')
+                print(f'  [iwara] login did not redirect — still on: {driver.current_url}')
+                print(f'  [iwara] page title: {driver.title!r}')
                 return False
             break
         else:
-            print('  [iwara.tv] login submit rate-limited after 3 attempts')
+            print('  [iwara] login submit rate-limited after 3 attempts')
             return False
 
-        print('  [iwara.tv] browser login successful')
+        print('  [iwara] browser login successful')
 
         _iwara_browser_logged_in.add(site)
         return True
     except Exception as e:
-        print(f'  [iwara.tv] browser login failed: {e}')
+        print(f'  [iwara] browser login failed: {e}')
         return False
 
 
@@ -3392,26 +3392,26 @@ def _download_iwara_browser(driver, url: str, download_dir: str) -> bool:
     driver.get(url)
     time.sleep(5)
     _iwara_dismiss_adult_gate(driver)
-    print(f'  [iwara.tv] navigated to video — current URL: {driver.current_url}')
+    print(f'  [iwara] navigated to video — current URL: {driver.current_url}')
 
     # If the SPA redirected us away from the video path (e.g. to home/search),
     # navigate again — the session cookie is usually fully set by now.
     video_path = urlparse(url).path
     if urlparse(driver.current_url).path != video_path:
-        print('  [iwara.tv] unexpected redirect, retrying navigation...')
+        print('  [iwara] unexpected redirect, retrying navigation...')
         driver.get(url)
         time.sleep(5)
         _iwara_dismiss_adult_gate(driver)
-        print(f'  [iwara.tv] current URL after retry: {driver.current_url}')
+        print(f'  [iwara] current URL after retry: {driver.current_url}')
 
     # If the React app shows an error page on first load, a refresh usually fixes it.
     if 'error' in driver.title.lower():
-        print(f'  [iwara.tv] got error page ({driver.title!r}), refreshing...')
+        print(f'  [iwara] got error page ({driver.title!r}), refreshing...')
         driver.refresh()
         time.sleep(5)
         _iwara_dismiss_adult_gate(driver)
 
-    print(f'  [iwara.tv] page title after load: {driver.title!r}')
+    print(f'  [iwara] page title after load: {driver.title!r}')
 
     # Collect all CDN download/view links rendered by the React app.
     links = driver.find_elements(By.XPATH,
@@ -3422,7 +3422,7 @@ def _download_iwara_browser(driver, url: str, download_dir: str) -> bool:
     if not links:
         # Print all hrefs to help diagnose the correct selector.
         all_hrefs = [el.get_attribute('href') for el in driver.find_elements(By.XPATH, '//a[@href]')]
-        print('  [iwara.tv] no CDN links found — all hrefs on page:')
+        print('  [iwara] no CDN links found — all hrefs on page:')
         for _href in all_hrefs:
             print(f'    {_href}')
         return False
@@ -3463,7 +3463,7 @@ def _download_iwara_browser(driver, url: str, download_dir: str) -> bool:
         download_url = 'https:' + download_url
 
     label = f'{chosen_res}p' if chosen_res not in (0, 9999) else ('source' if chosen_res == 9999 else 'preview')
-    print(f'  [iwara.tv] browser found {label}: {download_url}')
+    print(f'  [iwara] browser found {label}: {download_url}')
 
     cdn_headers: dict[str, str] = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -3498,15 +3498,15 @@ def _iwara_login(site: str = 'www.iwara.tv') -> str | None:
             body = e.read().decode('utf-8', errors='replace')
             if e.code == 429:
                 wait = [1, 5, 10][attempt]
-                print(f'  [iwara.tv] rate-limited (429) — waiting {wait}s before retry {attempt + 1}/3...')
+                print(f'  [iwara] rate-limited (429) — waiting {wait}s before retry {attempt + 1}/3...')
                 time.sleep(wait)
                 continue
-            print(f'  [iwara.tv] login failed: HTTP {e.code} — {body}')
+            print(f'  [iwara] login failed: HTTP {e.code} — {body}')
             return None
         except Exception as e:
-            print(f'  [iwara.tv] login failed: {e}')
+            print(f'  [iwara] login failed: {e}')
             return None
-    print('  [iwara.tv] login failed after 3 attempts (rate limited)')
+    print('  [iwara] login failed after 3 attempts (rate limited)')
     return None
 
 
@@ -3523,7 +3523,7 @@ def _download_iwara_api(_driver, url: str, download_dir: str) -> bool:
         # URL format: https://www.iwara.tv/video/{id}/{optional-slug}  (same on iwara.ai)
         path_parts = urlparse(url).path.strip('/').split('/')
         if len(path_parts) < 2 or path_parts[0] != 'video':
-            print('  [iwara.tv] unrecognised URL — expected /video/{id}/...')
+            print('  [iwara] unrecognised URL — expected /video/{id}/...')
             return False
         video_id = path_parts[1]
 
@@ -3531,7 +3531,7 @@ def _download_iwara_api(_driver, url: str, download_dir: str) -> bool:
         if site not in _iwara_tokens:
             token = _iwara_login(site)
             if token is None:
-                print('  [iwara.tv] login failed — set IWARA_EMAIL and IWARA_PASSWORD in .env')
+                print('  [iwara] login failed — set IWARA_EMAIL and IWARA_PASSWORD in .env')
                 return False
             _iwara_tokens[site] = token
 
@@ -3552,22 +3552,22 @@ def _download_iwara_api(_driver, url: str, download_dir: str) -> bool:
         except urllib.error.HTTPError as e:
             body = e.read().decode('utf-8', errors='replace')
             if e.code == 401:
-                print('  [iwara.tv] 401 Unauthorized — credentials may be wrong.')
+                print('  [iwara] 401 Unauthorized — credentials may be wrong.')
                 print('  Re-run setup_credentials.py to update them.')
             elif e.code == 403:
-                print('  [iwara.tv] 403 Forbidden — token rejected.')
+                print('  [iwara] 403 Forbidden — token rejected.')
                 print('  Re-run setup_credentials.py to update your credentials.')
             elif e.code == 404:
-                print('  [iwara.tv] 404 — video not found or account lacks access.')
+                print('  [iwara] 404 — video not found or account lacks access.')
             else:
-                print(f'  [iwara.tv] HTTP {e.code} fetching video metadata: {body}')
+                print(f'  [iwara] HTTP {e.code} fetching video metadata: {body}')
             return False
 
         # fileUrl is an API endpoint that returns a JSON array of quality options.
         # file    is the raw upload metadata (height, size, etc.).
         file_list_url = video_meta.get('fileUrl') or ''
         if not file_list_url:
-            print(f'  [iwara.tv] no fileUrl in metadata — keys: {list(video_meta.keys())}')
+            print(f'  [iwara] no fileUrl in metadata — keys: {list(video_meta.keys())}')
             return False
 
         cdn_headers: dict[str, str] = {
@@ -3597,21 +3597,21 @@ def _download_iwara_api(_driver, url: str, download_dir: str) -> bool:
                 raw = resp.read()
         except urllib.error.HTTPError as e:
             body = e.read().decode('utf-8', errors='replace')
-            print(f'  [iwara.tv] HTTP {e.code} fetching quality list: {body}')
+            print(f'  [iwara] HTTP {e.code} fetching quality list: {body}')
             return False
 
         try:
             files: list[dict] = json.loads(raw)
         except json.JSONDecodeError:
-            print(f'  [iwara.tv] quality list response is not JSON ({content_type}): {raw[:200]!r}')
+            print(f'  [iwara] quality list response is not JSON ({content_type}): {raw[:200]!r}')
             return False
 
         if not isinstance(files, list) or not files:
-            print(f'  [iwara.tv] unexpected quality list: {files!r}')
+            print(f'  [iwara] unexpected quality list: {files!r}')
             return False
 
         available = [f.get('name') for f in files]
-        print(f'  [iwara.tv] available qualities: {available}')
+        print(f'  [iwara] available qualities: {available}')
 
         # Pick the best quality within MAX_RESOLUTION.
         # Names are e.g. "preview", "360", "540", "720", "1080", "Source".
@@ -3645,7 +3645,7 @@ def _download_iwara_api(_driver, url: str, download_dir: str) -> bool:
         # Prefer view URL — some CDNs serve the file on view and metadata on download.
         download_url = src.get('view') or src.get('download') or ''
         if not download_url:
-            print(f'  [iwara.tv] no URL in chosen quality: {chosen}')
+            print(f'  [iwara] no URL in chosen quality: {chosen}')
             return False
 
         # URLs are protocol-relative (//host/path) — prepend https:.
@@ -3653,12 +3653,12 @@ def _download_iwara_api(_driver, url: str, download_dir: str) -> bool:
             download_url = 'https:' + download_url
 
         res_label = chosen.get('name', '?')
-        print(f'  [iwara.tv] downloading {res_label}...')
+        print(f'  [iwara] downloading {res_label}...')
 
         return _direct_fetch(download_url, download_dir, '_iwara_temp', cdn_headers)
 
     except Exception as e:
-        print(f'  [iwara.tv] handler error: {e}')
+        print(f'  [iwara] handler error: {e}')
 
     return False
 
@@ -3760,16 +3760,16 @@ def _download_iwara_ytdlp(url: str, download_dir: str) -> bool:
     metadata = _iwara_ytdlp_metadata(ytdlp_prefix, url, auth_args)
     formats = (metadata or {}).get('formats') or []
     if not formats:
-        print('  [iwara.tv/yt-dlp] could not list formats')
+        print('  [iwara/yt-dlp] could not list formats')
         return False
 
     max_res = _get_max_resolution()
     format_id = _choose_iwara_format_id(formats, max_res)
     if not format_id:
-        print('  [iwara.tv/yt-dlp] no usable format found')
+        print('  [iwara/yt-dlp] no usable format found')
         return False
 
-    print(f'  [iwara.tv/yt-dlp] downloading format {format_id}...')
+    print(f'  [iwara/yt-dlp] downloading format {format_id}...')
     output_tmpl = os.path.join(download_dir, '_iwara_ytdlp_temp.%(ext)s')
     cmd = [
         *ytdlp_prefix, *auth_args,
@@ -3785,9 +3785,9 @@ def _download_iwara_ytdlp(url: str, download_dir: str) -> bool:
             _last_fetch_original_name = _page_title_override(name)
         return True
     except subprocess.TimeoutExpired:
-        print('  [iwara.tv/yt-dlp] timed out after 1 hour')
+        print('  [iwara/yt-dlp] timed out after 1 hour')
     except Exception as e:
-        print(f'  [iwara.tv/yt-dlp] error: {e}')
+        print(f'  [iwara/yt-dlp] error: {e}')
     return False
 
 
@@ -3804,13 +3804,13 @@ def download_iwara(driver, url: str, download_dir: str) -> bool:
     if _iwara_site(url).endswith('iwara.tv'):
         if _download_iwara_ytdlp(url, download_dir):
             return True
-        print('  [iwara.tv] yt-dlp path failed — falling back to API client...')
+        print('  [iwara] yt-dlp path failed — falling back to API client...')
     else:
         # yt-dlp's iwara extractor only matches iwara.tv links (its API calls carry no X-Site), so it cannot do these.
-        print('  [iwara.ai] yt-dlp has no extractor for this site — using the API client...')
+        print('  [iwara] yt-dlp has no extractor for this site — using the API client...')
     if _download_iwara_api(driver, url, download_dir):
         return True
-    print('  [iwara.tv] API client failed — falling back to browser automation...')
+    print('  [iwara] API client failed — falling back to browser automation...')
     return _download_iwara_browser(driver, url, download_dir)
 
 
