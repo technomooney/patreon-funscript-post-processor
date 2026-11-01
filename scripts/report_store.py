@@ -1,6 +1,6 @@
 """Download outcomes and report tables, stored in the library database instead of loose CSV files.
 
-Three downloader-owned tables (migration track 'downloader' v2, v3 and v4, see library_db.register_migration):
+Downloader-owned tables (migration track 'downloader' v2 to v5, see library_db.register_migration):
 
 * downloader_link_outcomes: one row per (folder, url) that failed or needs a human look, with WHY it failed (the
   HTTP status when we got one, a short reason, and whether the link is permanently dead so no run retries it).
@@ -58,7 +58,35 @@ _MIGRATION_V3 = [
 _MIGRATION_V4 = [
     "ALTER TABLE downloader_link_outcomes ADD COLUMN retry_after TEXT",
 ]
-_MIGRATIONS = ((2, _MIGRATION_V2), (3, _MIGRATION_V3), (4, _MIGRATION_V4))
+# Run history and what each run asked of the network (see run_stats): one row per run, per host in a run, and per link.
+_MIGRATION_V5 = [
+    """CREATE TABLE IF NOT EXISTS downloader_run_stats (
+        run_id TEXT PRIMARY KEY,
+        script TEXT, started_at TEXT, ended_at TEXT,
+        status TEXT,                     -- running | completed | stopped | interrupted
+        duration_s REAL,
+        tasks INTEGER, links_seen INTEGER, downloaded INTEGER, duplicates INTEGER, failed INTEGER, deferred INTEGER,
+        skipped INTEGER, bytes_saved INTEGER,
+        requests INTEGER, bytes_transferred INTEGER, request_seconds REAL,
+        code_version TEXT, settings_json TEXT
+    )""",
+    """CREATE TABLE IF NOT EXISTS downloader_host_stats (
+        run_id TEXT NOT NULL, host TEXT NOT NULL,
+        requests INTEGER, bytes INTEGER, seconds REAL, ok INTEGER, redirects INTEGER, client_errors INTEGER,
+        forbidden INTEGER, rate_limited INTEGER, server_errors INTEGER, errors INTEGER, slowest_seconds REAL,
+        PRIMARY KEY (run_id, host)
+    )""",
+    """CREATE TABLE IF NOT EXISTS downloader_link_stats (
+        run_id TEXT NOT NULL, folder TEXT NOT NULL, url TEXT NOT NULL,
+        host TEXT, started_at TEXT, requests INTEGER, bytes INTEGER, seconds REAL,
+        precheck_seconds REAL, download_seconds REAL,
+        precheck_result TEXT,            -- what settled the pre-check: name match, same-size shortcut, audio, visual, ...
+        outcome TEXT,
+        PRIMARY KEY (run_id, folder, url)
+    )""",
+    "CREATE INDEX IF NOT EXISTS downloader_link_stats_host ON downloader_link_stats(host)",
+]
+_MIGRATIONS = ((2, _MIGRATION_V2), (3, _MIGRATION_V3), (4, _MIGRATION_V4), (5, _MIGRATION_V5))
 
 KINDS = ('failed', 'uncertain')
 
@@ -71,6 +99,11 @@ def _locate(folder: str):
     for version, statements in _MIGRATIONS:
         library_db.register_migration(root, _TOOL, version, statements)
     return root
+
+
+def root_for(base: str) -> str | None:
+    """The library root owning *base* with every downloader table in place, or None when it is not in a library."""
+    return _locate(base)
 
 
 def _rel(root: str, folder: str) -> str:
