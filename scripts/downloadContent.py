@@ -6401,13 +6401,25 @@ def _record_failures(base_path: str, failures: list):
 
 
 def _write_mega_error6_csv(base_path: str, mega_error6: list, report: str = 'mega_error6'):
-    """Store mega.nz links that failed with exit 6 as the *report* report (replaced each run)."""
-    if not mega_error6:
-        return
+    """Store mega.nz links that failed with exit 6 as the *report* report. Replaced every run, so a run without any
+    leaves the report empty instead of showing an old run's links."""
     for row in mega_error6:
         row.setdefault('filename', 'unknown')
     report_store.replace_report(base_path, report, mega_error6)
-    print(f"\nMEGA error-6 links ({len(mega_error6)}) recorded in the library database (report '{report}').")
+    if mega_error6:
+        print(f"\nMEGA error-6 links ({len(mega_error6)}) recorded in the library database (report '{report}').")
+
+
+def _write_scan_reports(base_path: str, many_funscripts: list, manual_folders: list, consolidated_folders: list,
+                        ignored: bool, prebuilt: bool) -> None:
+    """Store what a full scan found (folders with many funscripts, skipped .manual / .consolidated folders), replacing
+    the last scan's lists even when they are now empty. A run handed prebuilt tasks (funscript metadata, flagged
+    collections) did no such scan and passes empty lists, so it must leave the real ones alone."""
+    if prebuilt:
+        return
+    _write_many_funscripts_csv(base_path, many_funscripts)
+    _write_manual_folders(base_path, manual_folders)
+    _write_consolidated_folders(base_path, consolidated_folders, ignored)
 
 
 def _write_manual_folders(base_path: str, manual_folders: list):
@@ -6432,11 +6444,10 @@ def _write_consolidated_folders(base_path: str, consolidated_folders: list, igno
 
 
 def _write_many_funscripts_csv(base_path: str, many_funscripts: list):
-    """Store folders with 3+ main funscripts as the 'many_funscripts' report."""
-    if not many_funscripts:
-        return
+    """Store folders with 3+ main funscripts as the 'many_funscripts' report (replaced every full scan)."""
     report_store.replace_report(base_path, 'many_funscripts', many_funscripts)
-    print(f"\nFolders with 3+ funscripts ({len(many_funscripts)}) recorded in the library database.")
+    if many_funscripts:
+        print(f"\nFolders with 3+ funscripts ({len(many_funscripts)}) recorded in the library database.")
 
 
 _FOLDER_TITLE_RE = re.compile(r'^\[\d+]\s+\d{4}-\d{2}-\d{2}\s+(.+)$')
@@ -6988,9 +6999,8 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
         tasks, failures, many_funscripts, manual_folders, consolidated_folders = collect_tasks(
             base_path, require_funscript=require_funscript, ignore_consolidated=bool(ignore_consolidated))
     failures = _RecordingList(base_path, 'failed', failures)
-    _write_many_funscripts_csv(base_path, many_funscripts)
-    _write_manual_folders(base_path, manual_folders)
-    _write_consolidated_folders(base_path, consolidated_folders, ignored=bool(ignore_consolidated))
+    _write_scan_reports(base_path, many_funscripts, manual_folders, consolidated_folders,
+                        bool(ignore_consolidated), prebuilt)
 
     if not tasks:
         print("No valid download tasks found.")
@@ -7473,7 +7483,6 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
             if st not in ('skipped_known_failure', 'deferred_mega', 'previously_failed')
             and (url, fld) not in _still_open])
         _write_mega_error6_csv(base_path, mega_error6, report=f'mega_error6{report_suffix}')
-        _write_many_funscripts_csv(base_path, many_funscripts)
         _write_playlist(base_path, newly_downloaded)
 
     if flagged_entries and redownload_flagged:
