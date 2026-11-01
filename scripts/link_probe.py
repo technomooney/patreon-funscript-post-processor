@@ -3,19 +3,18 @@
 probe(url) returns a Verdict: the HTTP status (or MEGA API error) we got, a short reason, and `permanent`, True only
 when the answer proves the link can never work. Anything uncertain (blocked, rate limited, timeout, unsupported,
 a login wall) is NOT permanent: a wrong "dead" verdict would hide a good link forever, a wrong "alive" costs one
-more attempt. Three tiers, most exact first:
+more attempt. Two tiers, most exact first:
 
 1. Sites with an API that says it outright: mega.nz (the public API's -9 / -16 / -8, the same numbers `mega-get`
    exits with, instantly), pixeldrain (`not_found`), Yandex Disk (`NotFoundError`).
-2. rule34video.com: a plain "404 Not Found" page. A bot-looking User-Agent gets 403 from DDoS-Guard, so a browser UA
-   is sent and 403 is "blocked", never dead.
-3. Every other site that is not login-gated (including domains with no dedicated handler): yt-dlp in simulate mode,
+2. Every other site that is not login-gated (including domains with no dedicated handler): yt-dlp in simulate mode,
    classified by its own error message (HTTP 404/410, "has been removed", ...). Cloudflare challenges, 403s,
    "Unsupported URL" and anything mentioning login/private/age/members are never permanent.
 
-Login-gated sites are never probed (GATED_HOSTS): iwara.tv, for example, answers an anonymous request for a
-login-only video with the same 404 (errors.notFound) as for one that does not exist, and its pages are a
-single-page app returning 200 for anything. Without the user's session there is no signal, so those stay unknown.
+Login-gated or partly gated sites are never probed (GATED_HOSTS, rule34video included, since nobody knows which of
+its videos are hidden): iwara.tv, for example, answers an anonymous request for a login-only video with the same
+404 (errors.notFound) as for one that does not exist, and its pages are a single-page app returning 200 for
+anything. Without the user's session there is no signal, so those stay unknown until the logged-in browser can ask.
 """
 import json
 import re
@@ -39,22 +38,6 @@ class Verdict(NamedTuple):
     reason: str
     http_status: int | None
     permanent: bool
-
-
-def _http_status(url: str) -> tuple[int | None, str]:
-    """(status code, first bytes of the body) of a GET with a browser User-Agent. Status is None when the request
-    itself failed (DNS, timeout...). The probe is anonymous, like nobody logged in."""
-    req = urllib.request.Request(url, headers={'User-Agent': _BROWSER_UA})
-    try:
-        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-            return resp.status, ''
-    except urllib.error.HTTPError as e:
-        try:
-            return e.code, e.read(_BODY_BYTES).decode('utf-8', 'replace')
-        except OSError:
-            return e.code, ''
-    except (urllib.error.URLError, OSError, ValueError):
-        return None, ''
 
 
 def _mega_api(payload: dict, node: str | None = None):
@@ -97,34 +80,11 @@ def _probe_mega(url: str) -> Verdict | None:
     return Verdict('mega_alive', None, False)
 
 
-_NOT_FOUND_TITLE = re.compile(r'<title>\s*(?:404|410)\b[^<]*not found|<title>[^<]*not found', re.I)
-
-
-def _probe_http_page(url: str) -> Verdict:
-    status, body = _http_status(url)
-    if status is None:
-        return Verdict('unreachable', None, False)
-    if status in (404, 410):
-        # Only a plain "404 Not Found" page proves the video is gone. A page for something hidden from an
-        # anonymous visitor (private / members-only / login-gated) must never be mistaken for it: the downloader
-        # may be logged in and see it fine.
-        if _NOT_FOUND_TITLE.search(body):
-            return Verdict(f'http_{status}', status, True)
-        return Verdict(f'http_{status}_unrecognised', status, False)
-    if status in (401, 403):
-        return Verdict(f'blocked_{status}', status, False)
-    if status == 429:
-        return Verdict('rate_limited', status, False)
-    if status >= 500:
-        return Verdict(f'http_{status}', status, False)
-    return Verdict('page_alive', status, False)
-
-
-_PAGE_PROBED_HOSTS = ('rule34video.com',)
-
 # Sites whose content (all or some) needs the user's login, so an anonymous probe cannot tell "gone" from "hidden".
-# gofile.io is here too: its API needs a guest token plus a token read from the page, which only the handler has.
-GATED_HOSTS = ('iwara.tv', 'hanime.tv', 'the-joi-database.com', 'joi.moe', 'eroscripts.com', 'gofile.io')
+# rule34video is partly gated and which videos are is unknown; a removed one returns a plain 404 page anonymously,
+# but a hidden one has never been observed. gofile.io is here too: its API needs a guest token plus a token read from the page, which only the handler has.
+GATED_HOSTS = ('iwara.tv', 'hanime.tv', 'the-joi-database.com', 'joi.moe', 'eroscripts.com', 'gofile.io',
+               'rule34video.com', 'rule34video.party')
 
 
 def _get_json(url: str) -> tuple[int | None, object]:
@@ -227,8 +187,6 @@ def probe(url: str, ytdlp: list[str] | None = None) -> Verdict | None:
             return _probe_pixeldrain(url)
         if host.endswith(('disk.yandex.com', 'disk.yandex.ru')):
             return _probe_yandex(url)
-        if host.endswith(_PAGE_PROBED_HOSTS):
-            return _probe_http_page(url)
         if ytdlp:
             return _probe_ytdlp(url, ytdlp)
     except Exception:

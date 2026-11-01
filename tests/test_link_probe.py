@@ -10,7 +10,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'scripts'))
 import link_probe  # noqa: E402
 
 MEGA_FILE = 'https://mega.nz/file/mCxyjJKL#gQyu2ghRzmRgjiyQqNpLkobKQ7SPicS-cN5dH9h2pjw'
-R34 = 'https://rule34video.com/video/3253844/jess-christmas-unwrapping/'
 
 
 class MegaTests(unittest.TestCase):
@@ -41,38 +40,6 @@ class MegaTests(unittest.TestCase):
 
     def test_unparseable_mega_link_is_not_probed(self):
         self.assertIsNone(link_probe.probe('https://mega.nz/'))
-
-
-NOT_FOUND_BODY = '<html><head><title>404 Not Found</title></head><body><h1>Not Found</h1></body></html>'
-
-
-class PageTests(unittest.TestCase):
-    def verdict(self, status, body=''):
-        with mock.patch.object(link_probe, '_http_status', return_value=(status, body)):
-            return link_probe.probe(R34)
-
-    def test_plain_404_and_410_pages_are_permanent(self):
-        self.assertEqual(self.verdict(404, NOT_FOUND_BODY), ('http_404', 404, True))
-        self.assertTrue(self.verdict(410, NOT_FOUND_BODY.replace('404', '410')).permanent)
-
-    def test_404_that_is_not_the_plain_page_is_never_permanent(self):
-        # a login-gated / private page that happens to carry a 404 status must not be mistaken for a removal
-        for body in ('', '<title>Please log in to view this video</title>', '<title>Private video</title>'):
-            v = self.verdict(404, body)
-            self.assertEqual((v.reason, v.permanent), ('http_404_unrecognised', False))
-
-    def test_blocked_rate_limited_and_server_errors_are_not(self):
-        for status in (401, 403, 429, 500, 503, None):
-            self.assertFalse(self.verdict(status).permanent, status)
-        self.assertEqual(self.verdict(403).reason, 'blocked_403')
-
-    def test_200_is_alive(self):
-        self.assertEqual(self.verdict(200), ('page_alive', 200, False))
-
-    def test_other_sites_are_not_probed_and_never_raise(self):
-        self.assertIsNone(link_probe.probe('https://example.com/x'))
-        with mock.patch.object(link_probe, '_http_status', side_effect=RuntimeError('boom')):
-            self.assertIsNone(link_probe.probe(R34))
 
 
 class ApiSiteTests(unittest.TestCase):
@@ -133,24 +100,18 @@ class YtdlpTierTests(unittest.TestCase):
     def test_gated_hosts_never_reach_any_probe(self):
         with mock.patch.object(link_probe, '_probe_ytdlp', side_effect=AssertionError), \
                 mock.patch.object(link_probe, '_get_json', side_effect=AssertionError), \
-                mock.patch.object(link_probe, '_http_status', side_effect=AssertionError):
+                mock.patch.object(link_probe, '_mega_api', side_effect=AssertionError):
             for url in ('https://www.iwara.tv/video/x/y', 'https://hanime.tv/videos/hentai/x', 'https://joi.moe/x',
-                        'https://the-joi-database.com/x', 'https://discuss.eroscripts.com/t/x/1', 'https://gofile.io/d/x'):
+                        'https://the-joi-database.com/x', 'https://discuss.eroscripts.com/t/x/1', 'https://gofile.io/d/x',
+                        'https://rule34video.com/video/3253844/jess-christmas-unwrapping/'):
                 self.assertIsNone(link_probe.probe(url, ['yt-dlp']), url)
-
-
-class GatedSitesTests(unittest.TestCase):
-    def test_iwara_is_never_probed(self):
-        # anonymous iwara answers 404 for login-only videos exactly as for deleted ones: no usable signal
-        with mock.patch.object(link_probe, '_http_status', side_effect=AssertionError('must not request')):
-            self.assertIsNone(link_probe.probe('https://www.iwara.tv/video/dJSZxsS1Cxvusg/mmd'))
 
 
 class ClassifyEntryTests(unittest.TestCase):
     def test_adds_fields_only_when_probed(self):
-        with mock.patch.object(link_probe, '_http_status', return_value=(404, NOT_FOUND_BODY)):
-            e = link_probe.classify_entry({'link': R34})
-        self.assertEqual((e['reason'], e['http_status'], e['permanent']), ('http_404', 404, True))
+        with mock.patch.object(link_probe, '_mega_api', return_value=-9):
+            e = link_probe.classify_entry({'link': MEGA_FILE})
+        self.assertEqual((e['reason'], e['http_status'], e['permanent']), ('mega_not_found', -9, True))
         self.assertEqual(link_probe.classify_entry({'link': 'https://example.com/x'}), {'link': 'https://example.com/x'})
 
 
