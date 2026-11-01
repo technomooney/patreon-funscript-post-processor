@@ -1,6 +1,6 @@
 """Download outcomes and report tables, stored in the library database instead of loose CSV files.
 
-Two downloader-owned tables (migration track 'downloader' v2, see library_db.register_migration):
+Three downloader-owned tables (migration track 'downloader' v2 and v3, see library_db.register_migration):
 
 * downloader_link_outcomes: one row per (folder, url) that failed or needs a human look, with WHY it failed (the
   HTTP status when we got one, a short reason, and whether the link is permanently dead so no run retries it).
@@ -8,8 +8,9 @@ Two downloader-owned tables (migration track 'downloader' v2, see library_db.reg
 * downloader_report_rows: every other report a tool used to write as a CSV (funscript_check, many_funscripts,
   garbled_names, ...). A report is replaced as a whole each time its tool runs, exactly like the CSV was
   rewritten; the HTML report (generate_audit_report) reads these rows.
+* downloader_progress: the resume state of an interrupted download run (was .download_progress.json).
 
-Both are keyed relative to the library root, so a library keeps working when it is moved.
+They are keyed relative to the library root, so a library keeps working when it is moved.
 """
 import json
 import os
@@ -17,8 +18,7 @@ import os
 import library_db
 
 _TOOL = 'downloader'
-_VERSION = 2
-_MIGRATION = [
+_MIGRATION_V2 = [
     """CREATE TABLE IF NOT EXISTS downloader_link_outcomes (
         folder TEXT NOT NULL,             -- relative to the library root
         url TEXT NOT NULL,
@@ -45,6 +45,17 @@ _MIGRATION = [
     )""",
 ]
 
+# Resume state of an interrupted download run: a (folder, url) row per finished link, and a row with url '' per post
+# whose links were all attempted. Cleared when a run completes cleanly.
+_MIGRATION_V3 = [
+    """CREATE TABLE IF NOT EXISTS downloader_progress (
+        folder TEXT NOT NULL,             -- relative to the library root
+        url TEXT NOT NULL,                -- '' = the whole post was attempted
+        PRIMARY KEY (folder, url)
+    )""",
+]
+_MIGRATIONS = ((2, _MIGRATION_V2), (3, _MIGRATION_V3))
+
 KINDS = ('failed', 'uncertain')
 
 
@@ -53,7 +64,8 @@ def _locate(folder: str):
     root = library_db.find_root(folder)
     if not os.path.isdir(os.path.join(root, library_db.DATA_DIRNAME)):
         return None
-    library_db.register_migration(root, _TOOL, _VERSION, _MIGRATION)
+    for version, statements in _MIGRATIONS:
+        library_db.register_migration(root, _TOOL, version, statements)
     return root
 
 
@@ -204,3 +216,41 @@ def replace_table(base: str, name: str, header: list[str], rows: list[list]) -> 
     Returns a short label for a "written to ..." message."""
     replace_report(base, name, [dict(zip(header, r)) for r in rows])
     return f"report '{name}' (library database)"
+
+
+# ---------------------------------------------------------------------------
+# Resume state of a download run
+# ---------------------------------------------------------------------------
+
+def progress_load(base: str) -> tuple[dict[str, set[str]], set[str]]:
+    """({folder: finished link urls}, {folders whose links were all attempted}) with absolute folder paths."""
+    root = _locate(base)
+    if root is None:
+        return {}, set()
+    links: dict[str, set[str]] = {}
+    folders: set[str] = set()
+    with library_db.db(root) as con:
+        for folder, url in con.execute('SELECT folder, url FROM downloader_progress'):
+            path = os.path.normpath(os.path.join(root, folder))
+            if url:
+                links.setdefault(path, set()).add(url)
+            else:
+                folders.add(path)
+    return links, folders
+
+
+def progress_mark(base: str, folder: str, url: str = '') -> None:
+    """Record a finished link, or (url '') a post whose links were all attempted."""
+    root = _locate(base)
+    if root is None:
+        return
+    with library_db.db(root, write=True) as con:
+        con.execute('INSERT OR IGNORE INTO downloader_progress(folder, url) VALUES(?,?)', (_rel(root, folder), url))
+
+
+def progress_clear(base: str) -> None:
+    root = _locate(base)
+    if root is None:
+        return
+    with library_db.db(root, write=True) as con:
+        con.execute('DELETE FROM downloader_progress')

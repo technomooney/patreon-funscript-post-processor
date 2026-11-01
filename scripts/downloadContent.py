@@ -6295,7 +6295,26 @@ def _reports_dir(base_path: str) -> str:
     return d
 
 
-def _write_failures_csv(base_path: str, failures: list):
+class _RecordingList(list):
+    """A failure/uncertain list that records each row in the library database the moment it is added, so a run
+    that is killed loses nothing and no end-of-run write has to remember to happen."""
+
+    def __init__(self, base_path: str, kind: str, rows=()):
+        super().__init__()
+        self._base, self._kind = base_path, kind
+        self.extend(rows)
+
+    def append(self, row):
+        row.setdefault('filename', 'unknown')
+        super().append(row)
+        report_store.record_rows(self._base, [row], self._kind)
+
+    def extend(self, rows):
+        for row in rows:
+            self.append(row)
+
+
+def _record_failures(base_path: str, failures: list):
     """Record failed download entries in the library database (report_store)."""
     if not failures:
         return
@@ -6434,14 +6453,6 @@ def _triage_failure(entry: dict, folder: str,
     failures.append(entry)
 
 
-def _write_uncertain_csv(base_path: str, uncertain: list):
-    """Record uncertain download entries in the library database (report_store)."""
-    if not uncertain:
-        return
-    n = report_store.record_rows(base_path, uncertain, 'uncertain')
-    print(f"\nUncertain downloads ({len(uncertain)}) recorded in the library database ({n} stored).")
-
-
 def _find_existing_by_hash(folder: str, file_hash: str, exclude: str) -> str | None:
     """Return the path of any file in *folder* whose SHA-256 matches *file_hash*.
 
@@ -6556,42 +6567,23 @@ def _save_downloaded(downloaded: str, folder: str,
 # ---------------------------------------------------------------------------
 
 class ProgressTracker:
-    """Persist per-link download progress so an interrupted run can resume.
+    """Persist per-link download progress (in the library database) so an interrupted run can resume.
 
-    State is written to *base_path*/.download_progress.json after every
-    completed link.  A link is "completed" when it was successfully downloaded,
-    found to be a duplicate/AV-similar file, or pre-checked as already present
-    — i.e. it does not need to be attempted again.  Genuine failures are NOT
-    marked done, so a post that is still being worked on retries them.
+    A link is written as soon as it is "completed": successfully downloaded, found to be a duplicate/AV-similar
+    file, or pre-checked as already present -- i.e. it does not need to be attempted again.  Genuine failures are
+    NOT marked done, so a post that is still being worked on retries them.
 
-    A post (folder) is also recorded once every one of its links has been
-    attempted.  A resume then skips that post outright, failed links and all,
-    instead of re-fetching the failures: the failure rows are stored with it so
-    the reports still list them.  Posts are retried by the next fresh run, which
-    starts a new session.
+    A post (folder) is also recorded once every one of its links has been attempted.  A resume then skips that
+    post outright, failed links and all, instead of re-fetching the failures: they are already in the link
+    outcomes table (report_store), so the reports still list them.  Posts are retried by the next fresh run,
+    which starts a new session.
     """
 
-    _FILENAME = '.download_progress.json'
-
     def __init__(self, base_path: str):
-        self._path = os.path.join(base_path, self._FILENAME)
-        self._done: dict[str, set[str]] = {}   # folder → set of completed link URLs
-        self._processed: dict[str, dict] = {}  # folder → {'failures': [...], 'uncertain': [...]} report rows
-        self._load()
-
-    def _load(self):
-        if os.path.exists(self._path):
-            try:
-                with open(self._path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                if data.get('version') == 2:
-                    self._done = {k: set(v) for k, v in data.get('links', {}).items()}
-                    self._processed = dict(data.get('folders', {}))
-                else:   # first format: just {folder: [links]}
-                    self._done = {k: set(v) for k, v in data.items()}
-            except (OSError, json.JSONDecodeError, ValueError, AttributeError):
-                self._done = {}
-                self._processed = {}
+        self._base = base_path
+        self._done: dict[str, set[str]] = {}   # folder -> set of completed link URLs
+        self._processed: set[str] = set()      # folders whose links were all attempted
+        self._done, self._processed = report_store.progress_load(base_path)
 
     def has_progress(self) -> bool:
         return bool(self._done or self._processed)
@@ -6601,39 +6593,19 @@ class ProgressTracker:
 
     def mark_done(self, folder: str, link: str):
         self._done.setdefault(folder, set()).add(link)
-        self._save()
+        report_store.progress_mark(self._base, folder, link)
 
     def is_folder_done(self, folder: str) -> bool:
         return folder in self._processed
 
-    def folder_rows(self, folder: str) -> tuple[list[dict], list[dict]]:
-        """The (failures, uncertain) report rows stored when *folder* was finished."""
-        entry = self._processed.get(folder, {})
-        return list(entry.get('failures', [])), list(entry.get('uncertain', []))
-
-    def mark_folder_done(self, folder: str, failures: list[dict], uncertain: list[dict]):
-        self._processed[folder] = {'failures': failures, 'uncertain': uncertain}
-        self._save()
-
-    def _save(self):
-        tmp = self._path + '.tmp'
-        try:
-            with open(tmp, 'w', encoding='utf-8') as f:
-                json.dump({'version': 2,
-                           'links': {k: list(v) for k, v in self._done.items()},
-                           'folders': self._processed}, f, indent=2)
-            os.replace(tmp, self._path)
-        except Exception as e:
-            print(f'  [progress] could not save progress: {e}')
+    def mark_folder_done(self, folder: str):
+        self._processed.add(folder)
+        report_store.progress_mark(self._base, folder)
 
     def clear(self):
         self._done = {}
-        self._processed = {}
-        try:
-            if os.path.exists(self._path):
-                os.remove(self._path)
-        except OSError:
-            pass
+        self._processed = set()
+        report_store.progress_clear(self._base)
 
 
 def _load_known_failures(base_path: str) -> set[str]:
@@ -6739,7 +6711,7 @@ def find_and_download_from_funscript_metadata(
     tasks, failures = collect_tasks_from_funscript_metadata(base_path)
     if not tasks:
         print("No funscripts with a usable video_url and no existing video found.")
-        _write_failures_csv(base_path, failures)
+        _record_failures(base_path, failures)
         return
     find_and_download(
         base_path, tasks=tasks, failures=failures,
@@ -6901,13 +6873,13 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
     else:
         tasks, failures, many_funscripts, manual_folders, consolidated_folders = collect_tasks(
             base_path, require_funscript=require_funscript, ignore_consolidated=bool(ignore_consolidated))
+    failures = _RecordingList(base_path, 'failed', failures)
     _write_many_funscripts_csv(base_path, many_funscripts)
     _write_manual_folders(base_path, manual_folders)
     _write_consolidated_folders(base_path, consolidated_folders, ignored=bool(ignore_consolidated))
 
     if not tasks:
         print("No valid download tasks found.")
-        _write_failures_csv(base_path, failures)
         if flagged_entries and redownload_flagged:
             _run_flagged_collection_redownloads(base_path, flagged_entries, resume=resume, auto_confirm=auto_confirm)
         return
@@ -6961,7 +6933,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
     current_before_files: set[str] = set()
 
     newly_downloaded: list[str] = []
-    uncertain: list[dict] = []
+    uncertain: list[dict] = _RecordingList(base_path, 'uncertain')
     mega_error6: list[dict] = []
     link_statuses: dict[str, dict[str, str]] = {}  # folder → {url → status}
     total = len(tasks)
@@ -7026,15 +6998,11 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
 
             _drain_mega_results()
             if tracker.is_folder_done(folder):
-                # Every link of this post was attempted before the interruption: don't touch the failures again,
-                # just carry their report rows over (this run rewrites the CSVs from its own lists).
-                prev_failures, prev_uncertain = tracker.folder_rows(folder)
-                have = {(r.get('link'), r.get('save_directory')) for r in failures}
-                failures.extend(r for r in prev_failures if (r.get('link'), r.get('save_directory')) not in have)
-                have = {(r.get('link'), r.get('save_directory')) for r in uncertain}
-                uncertain.extend(r for r in prev_uncertain if (r.get('link'), r.get('save_directory')) not in have)
+                # Every link of this post was attempted before the interruption: don't touch the failures again
+                # (they are already in the link outcomes table).
                 for link in links:
-                    link_statuses.setdefault(folder, {})[link] = 'previously_done'
+                    link_statuses.setdefault(folder, {})[link] = (
+                        'previously_done' if tracker.is_done(folder, link) else 'previously_failed')
                 print(f"\n[{task_idx}/{total}] {_safe(basename)} — already processed, skipping")
                 continue
             print(f"\n[{task_idx}/{total}] {_safe(basename)}")
@@ -7264,10 +7232,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
             # Every link attempted: a resume skips this post whatever failed. Not when the run was stopped partway
             # through it, nor when a mega retry is still queued in memory (an interruption would lose that retry).
             if not _stop_after_current.is_set() and not folder_deferred:
-                tracker.mark_folder_done(
-                    folder,
-                    [r for r in failures if r.get('save_directory') == folder],
-                    [r for r in uncertain if r.get('save_directory') == folder])
+                tracker.mark_folder_done(folder)
 
             _cleanup_temp_files(folder, base_path, protected=_protected())
 
@@ -7358,14 +7323,14 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                 print(f'\n[folder_log] {_logged} folder(s) logged as complete.')
             tracker.clear()
         # Links that got a result this run (downloaded, duplicate, ...) are no longer failures: drop their old
-        # outcome rows, then record this run's failures. Skipped-known and deferred links keep what they had.
+        # outcome rows. Failures were recorded as they happened; skipped-known, deferred and previously-failed links
+        # keep what they had.
         _still_open = {(r.get('link'), r.get('save_directory')) for r in failures + uncertain}
         report_store.forget_many(base_path, [
             (url, fld) for fld, per in link_statuses.items() for url, st in per.items()
-            if st not in ('skipped_known_failure', 'deferred_mega') and (url, fld) not in _still_open])
-        _write_failures_csv(base_path, failures)
+            if st not in ('skipped_known_failure', 'deferred_mega', 'previously_failed')
+            and (url, fld) not in _still_open])
         _write_mega_error6_csv(base_path, mega_error6, report=f'mega_error6{report_suffix}')
-        _write_uncertain_csv(base_path, uncertain)
         _write_many_funscripts_csv(base_path, many_funscripts)
         _write_playlist(base_path, newly_downloaded)
 
