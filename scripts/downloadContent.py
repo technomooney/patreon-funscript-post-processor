@@ -3051,6 +3051,7 @@ def download_pixeldrain(_driver, url: str, download_dir: str, funscript_gate: bo
     except urllib.error.HTTPError as e:
         if e.code != 401 or 'Authorization' not in headers:
             print(f'  [pixeldrain.com] handler error: {e}')
+            _note_failure(link_probe.classify_api_error('pixeldrain', e.code, _http_error_value(e, 'value')))
             return False
         retry_headers = _pixeldrain_retry_headers()
         if retry_headers is None:
@@ -3736,7 +3737,7 @@ def _download_iwara_ytdlp(url: str, download_dir: str) -> bool:
         '-f', format_id, '-o', output_tmpl, url,
     ]
     try:
-        result = subprocess.run(cmd, timeout=3600)
+        result = _run_ytdlp_download(cmd, url)
         if result.returncode != 0:
             return False
         name = _ytdlp_name_from_metadata(metadata)
@@ -4030,6 +4031,10 @@ def download_yandex_disk(_driver, url: str, download_dir: str) -> bool:
         fetch_diagnostics.log_fetch_failure(api_url, {'User-Agent': 'Mozilla/5.0 ...'}, e, 'API')
         hint = ' (Yandex-side server error -- likely an outage, retry later)' if e.code >= 500 else ''
         print(f'  [disk.yandex] HTTP {e.code}{hint}')
+        if (e.geturl() or '').startswith('https://cloud-api.yandex.net'):   # the API's answer, not the file download's
+            _note_failure(link_probe.classify_api_error('yandex', e.code, _http_error_value(e, 'error')))
+        else:
+            _note_failure(link_probe.Verdict(f'yandex_download_http_{e.code}', e.code, False))
     except Exception as e:
         print(f'  [disk.yandex] handler error: {type(e).__name__}: {e}')
 
@@ -4619,6 +4624,7 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
     except subprocess.TimeoutExpired:
         _last_mega_filename_hint = _mega_filename_hint(download_dir, before)
         print(f'  [mega.nz] download timed out after {_MEGA_TIMEOUT // 60} min (file: {_last_mega_filename_hint})')
+        _note_failure(link_probe.Verdict('mega_timeout', None, False))
         return False
     except OSError as e:
         print(f'  [mega.nz] handler error: {e}')
@@ -4645,6 +4651,7 @@ def download_mega(_driver, url: str, download_dir: str) -> bool:
 
     _last_mega_filename_hint = _mega_filename_hint(download_dir, before, result.stdout)
     print(f'  [mega.nz] mega-get failed (exit {result.returncode}): {err}')
+    _note_failure(link_probe.mega_exit_verdict(result.returncode))
     return False
 
 
@@ -5202,6 +5209,17 @@ def _ytdlp_cmd() -> list[str] | None:
     return [ytdlp] if ytdlp else None
 
 
+def _run_ytdlp_download(cmd: list[str], url: str) -> subprocess.CompletedProcess:
+    """Run a yt-dlp download with stderr captured (progress stays live on stdout), echo what it said, and on failure
+    keep its own explanation of why for the report. This run is the only request made for the link."""
+    result = subprocess.run(cmd, timeout=3600, stderr=subprocess.PIPE, text=True)
+    if result.stderr:
+        print(result.stderr, end='' if result.stderr.endswith('\n') else '\n', file=sys.stderr)
+    if result.returncode != 0:
+        _note_failure(link_probe.classify_ytdlp_error(result.stderr, url))
+    return result
+
+
 def _ytdlp_video_name(ytdlp_prefix: list[str], url: str) -> str | None:
     """Best-effort real name for *url* via yt-dlp's own -j metadata (same
     approach _iwara_ytdlp_metadata uses), so download_ytdlp's generic
@@ -5267,7 +5285,7 @@ def download_ytdlp(_driver, url: str, download_dir: str) -> bool:
 
     print('  [yt-dlp] extracting video...')
     try:
-        result = subprocess.run(cmd, timeout=3600)
+        result = _run_ytdlp_download(cmd, url)
         if result.returncode != 0:
             print(f'  [yt-dlp] failed (exit {result.returncode})')
             print('  [yt-dlp] try again after updating: \"pip install -U yt-dlp\". if this does not work then we are stuck, sorry...')
@@ -6416,8 +6434,47 @@ def _best_video_match(folder: str) -> tuple[str, float]:
     return best_file, best_score
 
 
-# Set by find_and_download while its browser is up: asks that (logged-in) browser about a failed link on a gated site.
+# Set by find_and_download while its browser is up: reads what that (logged-in) browser is showing for a failed link
+# on a gated site -- it never navigates, the handler already loaded the page.
 _probe_browser = None
+
+# What the failing attempt itself learned about the link (link_probe.Verdict), set by the handler that saw the
+# server's answer and consumed by _triage_failure. Reset before every link, so there is never an extra request.
+_last_failure: 'link_probe.Verdict | None' = None
+
+
+def _note_failure(verdict) -> None:
+    global _last_failure
+    _last_failure = verdict
+
+
+def _http_error_value(e: urllib.error.HTTPError, key: str) -> str | None:
+    """The `key` string of a JSON error body (pixeldrain `value`, Yandex `error`). The body may already have been
+    consumed by fetch_diagnostics, which keeps it as body_bytes."""
+    raw = getattr(e, 'body_bytes', None)
+    if raw is None:
+        try:
+            raw = e.read()
+        except Exception:
+            raw = b''
+    try:
+        value = json.loads(raw.decode('utf-8', 'replace')).get(key)
+    except (ValueError, AttributeError):
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _apply_failure_verdict(entry: dict) -> None:
+    """Put what the failed attempt learned (reason, HTTP status, permanently dead?) on the failure row. A gated
+    site's answer comes from the logged-in browser's current page and outranks the attempt's own, which for those
+    sites may have been made without the user's login. No request is made here."""
+    verdict = _last_failure
+    if _probe_browser is not None and link_probe.is_gated(entry.get('link', '')):
+        verdict = _probe_browser(entry['link']) or verdict
+        if verdict is not None and verdict is _last_failure and verdict.permanent:
+            verdict = verdict._replace(permanent=False)    # an answer given without the login is never proof
+    if verdict is not None:
+        entry['reason'], entry['http_status'], entry['permanent'] = verdict.reason, verdict.http_status, verdict.permanent
 
 
 def _triage_failure(entry: dict, folder: str,
@@ -6436,7 +6493,7 @@ def _triage_failure(entry: dict, folder: str,
         print(f'  [skip-fail] existing video "{_safe(matched_file)}" '
               f'matches folder title ({int(score * 100)}%) — not logged as failure')
         return
-    link_probe.classify_entry(entry, _ytdlp_cmd(), _probe_browser)   # reason / HTTP status / permanently-dead, for the report and future skips
+    _apply_failure_verdict(entry)
     if entry.get('permanent'):
         print(f'  [dead-link] {entry.get("reason")} ({entry.get("http_status")}) -- will not be retried')
     if score >= _MATCH_UNCERTAIN:
@@ -6925,7 +6982,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
 
     global _probe_browser
     # `driver` is rebound when the browser is restarted, so the closure reads whichever one is current.
-    _probe_browser = lambda url: link_probe_browser.probe(driver, url)
+    _probe_browser = lambda url: link_probe_browser.verdict_from_current_page(driver, url)
 
     # State tracked so KeyboardInterrupt can finish/clean the active download.
     current_folder: str = tasks[0]['folder']
@@ -6976,9 +7033,11 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                      'save_directory': res['download_dir'], 'domain': 'mega.nz'},
                     [f'background mega-get failed, exit code {res.get("exit_code")}, file hint: {hint}',
                      f'(full mega worker output: {mega_worker._log_path})'], outcome='failed (background)')
-                failures.append(link_probe.classify_entry(
-                    {'link': res['link'], 'funscript_name': res['basename'], 'filename': hint,
-                     'save_directory': res['download_dir'], 'domain': 'mega.nz'}, _ytdlp_cmd(), _probe_browser))
+                _verdict = link_probe.mega_exit_verdict(res.get('exit_code'))
+                failures.append({'link': res['link'], 'funscript_name': res['basename'], 'filename': hint,
+                                 'save_directory': res['download_dir'], 'domain': 'mega.nz',
+                                 'reason': _verdict.reason, 'http_status': _verdict.http_status,
+                                 'permanent': _verdict.permanent})
                 if res.get('exit_code') == _MEGA_RATE_LIMIT_EXIT:
                     mega_error6.append({'link': res['link'], 'funscript_name': res['basename'],
                                         'filename': hint, 'save_directory': res['download_dir']})
@@ -7018,6 +7077,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                 if _stop_after_current.is_set():
                     break
                 _last_fetch_original_name = None   # reset before each attempt
+                _note_failure(None)
                 fetch_diagnostics.reset_capture()
                 _last_download_skipped = False
 

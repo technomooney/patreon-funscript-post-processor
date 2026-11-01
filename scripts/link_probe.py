@@ -1,38 +1,18 @@
-"""Ask a site whether a link that just failed is gone for good, so it is never attempted (and never stalls) again.
+"""Turn what a failed download attempt already told us into a verdict: gone for good, or worth another try.
 
-probe(url) returns a Verdict: the HTTP status (or MEGA API error) we got, a short reason, and `permanent`, True only
-when the answer proves the link can never work. Anything uncertain (blocked, rate limited, timeout, unsupported,
-a login wall) is NOT permanent: a wrong "dead" verdict would hide a good link forever, a wrong "alive" costs one
-more attempt. Two tiers, most exact first:
+Nothing here talks to a site. The download attempt is the one and only request; when it fails, the handler passes
+the server's own answer (mega-get's exit code, an HTTP status and error value, yt-dlp's error text, what the
+logged-in browser is showing) to a classifier below, and the result is stored with the failed link
+(report_store.record_outcome) so later runs can skip links proven dead and nobody asks the server a second time.
 
-1. Sites with an API that says it outright: mega.nz (the public API's -9 / -16 / -8, the same numbers `mega-get`
-   exits with, instantly), pixeldrain (`not_found`), Yandex Disk (`NotFoundError`).
-2. Every other site that is not login-gated (including domains with no dedicated handler): yt-dlp in simulate mode,
-   classified by its own error message (HTTP 404/410, "has been removed", ...). Cloudflare challenges, 403s,
-   "Unsupported URL" and anything mentioning login/private/age/members are never permanent.
-
-Login-gated or partly gated sites are never probed (GATED_HOSTS, rule34video included, since nobody knows which of
-its videos are hidden): iwara.tv, for example, answers an anonymous request for a login-only video with the same
-404 (errors.notFound) as for one that does not exist, and its pages are a single-page app returning 200 for
-anything. Without the user's session there is no signal, so those go to the logged-in browser
-(link_probe_browser) when one is supplied and are otherwise left unknown.
+A Verdict has the status we saw (HTTP status, or the negated MEGA error), a short reason, and `permanent`, True only
+when the answer proves the link can never work. Anything uncertain (blocked, rate limited, timeout, unsupported, a
+login wall, a login-gated site's answer to a visitor who may not have been signed in) is NOT permanent: a wrong
+"dead" verdict would hide a good link forever, a wrong "alive" costs one more attempt.
 """
-import json
 import re
-import urllib.error
-import urllib.request
 from typing import NamedTuple
 from urllib.parse import urlparse
-
-_BROWSER_UA = ('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) '
-               'Chrome/130.0.0.0 Safari/537.36')
-_TIMEOUT = 15
-_BODY_BYTES = 20000
-_YTDLP_TIMEOUT = 90
-_MEGA_API = 'https://g.api.mega.co.nz/cs'
-
-# MEGA SDK error -> (reason, permanent). Everything else is reported but retryable.
-_MEGA_PERMANENT = {-9: 'mega_not_found', -16: 'mega_blocked', -8: 'mega_expired'}
 
 
 class Verdict(NamedTuple):
@@ -41,100 +21,47 @@ class Verdict(NamedTuple):
     permanent: bool
 
 
-def _mega_api(payload: dict, node: str | None = None):
-    """POST one command to MEGA's public API. Returns the first response item, or None on a transport failure."""
-    url = f'{_MEGA_API}?id=1' + (f'&n={node}' if node else '')
-    req = urllib.request.Request(url, data=json.dumps([payload]).encode(),
-                                 headers={'Content-Type': 'application/json', 'User-Agent': _BROWSER_UA})
-    try:
-        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-            data = json.loads(resp.read().decode('utf-8', 'replace'))
-    except (urllib.error.URLError, OSError, ValueError):
-        return None
-    if isinstance(data, list) and data:
-        return data[0]
-    # A bare number (not wrapped in a list) is also how MEGA reports a request-level error such as -3 or -4.
-    return data if isinstance(data, int) else None
-
-
-def _mega_ref(url: str) -> tuple[str, str] | None:
-    """('file'|'folder', id) from a mega.nz link in the new (/file/ID#KEY) or legacy (#!ID!KEY / #F!ID!KEY) form."""
-    m = re.search(r'mega\.(?:nz|io)/(file|folder)/([A-Za-z0-9_-]{8})', url)
-    if m:
-        return m.group(1), m.group(2)
-    m = re.search(r'mega\.(?:nz|io)/#(F?)!([A-Za-z0-9_-]{8})', url)
-    if m:
-        return ('folder' if m.group(1) else 'file'), m.group(2)
-    return None
-
-
-def _probe_mega(url: str) -> Verdict | None:
-    ref = _mega_ref(url)
-    if ref is None:
-        return None
-    kind, node = ref
-    answer = _mega_api({'a': 'g', 'p': node}) if kind == 'file' else _mega_api({'a': 'f', 'c': 1, 'r': 1}, node)
-    if answer is None:
-        return Verdict('mega_api_unreachable', None, False)
-    if isinstance(answer, int) and answer < 0:
-        return Verdict(_MEGA_PERMANENT.get(answer, f'mega_api_{-answer}'), answer, answer in _MEGA_PERMANENT)
-    return Verdict('mega_alive', None, False)
-
-
-# Sites whose content (all or some) needs the user's login, so an anonymous probe cannot tell "gone" from "hidden".
-# rule34video is partly gated and which videos are is unknown; a removed one returns a plain 404 page anonymously,
-# but a hidden one has never been observed. gofile.io is here too: its API needs a guest token plus a token read from the page, which only the handler has.
+# Sites whose content (all or some) needs the user's login, so a yt-dlp/anonymous answer cannot tell "gone" from
+# "hidden". iwara.tv answers an anonymous request for a login-only video with the same 404 (errors.notFound) as
+# for one that does not exist. A not-found from these only counts when the logged-in browser saw it
+# (link_probe_browser).
 GATED_HOSTS = ('iwara.tv', 'hanime.tv', 'the-joi-database.com', 'joi.moe', 'eroscripts.com', 'gofile.io',
                'rule34video.com', 'rule34video.party')
 
 
-def _get_json(url: str) -> tuple[int | None, object]:
-    """(status, parsed JSON body or None) of an anonymous GET; status None when the request itself failed."""
-    req = urllib.request.Request(url, headers={'User-Agent': _BROWSER_UA, 'Accept': 'application/json'})
-    try:
-        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-            status, raw = resp.status, resp.read(_BODY_BYTES)
-    except urllib.error.HTTPError as e:
-        try:
-            status, raw = e.code, e.read(_BODY_BYTES)
-        except OSError:
-            return e.code, None
-    except (urllib.error.URLError, OSError, ValueError):
-        return None, None
-    try:
-        return status, json.loads(raw.decode('utf-8', 'replace'))
-    except ValueError:
-        return status, None
+def is_gated(url: str) -> bool:
+    return (urlparse(url).hostname or '').lower().endswith(GATED_HOSTS)
 
 
-def _probe_pixeldrain(url: str) -> Verdict | None:
-    m = re.search(r'pixeldrain\.(?:com|net)/(u|l)/([A-Za-z0-9_-]+)', url)
-    if not m:
-        return None   # /d/ filesystem paths and anything unusual: no clear answer
-    api = f'https://pixeldrain.com/api/{"file" if m.group(1) == "u" else "list"}/{m.group(2)}'
-    status, body = _get_json(api + ('/info' if m.group(1) == 'u' else ''))
+# MEGA SDK error -> reason, for the ones that mean the link can never work. mega-get exits with the negated SDK
+# error, so exit 9 is API_ENOENT (-9). Everything else is reported but retryable.
+_MEGA_PERMANENT = {9: 'mega_not_found', 16: 'mega_blocked', 8: 'mega_expired'}
+_MEGA_RATE_LIMIT = 6   # API_ETOOMANY: "Too many requests for this resource", the exit-6 case
+
+
+def mega_exit_verdict(exit_code: int | None) -> Verdict:
+    """Verdict from mega-get's process exit code. -1 is our own stall kill (no progress for a minute), which is
+    deliberately not a verdict: nobody knows why the link stalled."""
+    if exit_code is None:
+        return Verdict('mega_unknown', None, False)
+    if exit_code == -1:
+        return Verdict('mega_stalled', None, False)
+    if exit_code in _MEGA_PERMANENT:
+        return Verdict(_MEGA_PERMANENT[exit_code], -exit_code, True)
+    if exit_code == _MEGA_RATE_LIMIT:
+        return Verdict('mega_too_many_requests', -exit_code, False)
+    return Verdict(f'mega_exit_{exit_code}', -exit_code if exit_code > 0 else None, False)
+
+
+def classify_api_error(site: str, status: int | None, value: str | None) -> Verdict:
+    """Verdict from a site API's HTTP status plus its error string (pixeldrain `value`, Yandex `error`). Only an
+    explicit 404 with a not-found error string is permanent."""
     if status is None:
-        return Verdict('unreachable', None, False)
-    value = body.get('value') if isinstance(body, dict) else None
-    if status == 404 and value == 'not_found':
-        return Verdict('pixeldrain_not_found', 404, True)
-    if status == 200:
-        return Verdict('pixeldrain_alive', 200, False)
-    return Verdict(f'pixeldrain_{value or status}', status, False)
-
-
-def _probe_yandex(url: str) -> Verdict:
-    from urllib.parse import quote
-    status, body = _get_json(
-        'https://cloud-api.yandex.net/v1/disk/public/resources?public_key=' + quote(url, safe=''))
-    if status is None:
-        return Verdict('unreachable', None, False)
-    error = body.get('error') if isinstance(body, dict) else None
-    if status == 404 and error == 'NotFoundError':
-        return Verdict('yandex_not_found', 404, True)
-    if status == 200:
-        return Verdict('yandex_alive', 200, False)
-    return Verdict(f'yandex_{error or status}', status, False)
+        return Verdict(f'{site}_unreachable', None, False)
+    value = (value or '').strip()
+    if status == 404 and value.lower().endswith(('not_found', 'notfounderror')):
+        return Verdict(f'{site}_not_found', 404, True)
+    return Verdict(f'{site}_{value or status}', status, False)
 
 
 # yt-dlp error text. Gate words are checked first and always win: a login/age/region/bot wall is not a removal.
@@ -147,9 +74,10 @@ _YTDLP_GONE = re.compile(
     r'does(?: not|n.t) exist|no longer (?:exists|available)', re.I)
 
 
-def classify_ytdlp_error(text: str) -> Verdict:
-    """Verdict from yt-dlp's stderr: only an explicit removal/404 with no login-or-block wording is permanent."""
-    errors = [ln for ln in text.splitlines() if 'ERROR' in ln] or [text.strip()]
+def classify_ytdlp_error(text: str, url: str = '') -> Verdict:
+    """Verdict from yt-dlp's stderr: only an explicit removal/404 with no login-or-block wording is permanent,
+    and never for a login-gated site, since yt-dlp runs without the user's login."""
+    errors = [ln for ln in (text or '').splitlines() if 'ERROR' in ln] or [(text or '').strip()]
     line = errors[-1].strip()
     status = None
     m = re.search(r'HTTP Error (\d{3})', line)
@@ -159,48 +87,5 @@ def classify_ytdlp_error(text: str) -> Verdict:
         return Verdict('ytdlp_blocked' if status in (401, 403, 429) or 'cloudflare' in line.lower() else 'ytdlp_unclear',
                        status, False)
     if _YTDLP_GONE.search(line):
-        return Verdict(f'ytdlp_http_{status}' if status else 'ytdlp_removed', status, True)
+        return Verdict(f'ytdlp_http_{status}' if status else 'ytdlp_removed', status, not (url and is_gated(url)))
     return Verdict('ytdlp_unclear', status, False)
-
-
-def _probe_ytdlp(url: str, ytdlp: list[str]) -> Verdict:
-    import subprocess
-    try:
-        result = subprocess.run([*ytdlp, '-s', '--no-playlist', '--no-warnings', url],
-                                capture_output=True, text=True, timeout=_YTDLP_TIMEOUT)
-    except (subprocess.SubprocessError, OSError):
-        return Verdict('ytdlp_unreachable', None, False)
-    if result.returncode == 0:
-        return Verdict('ytdlp_alive', None, False)
-    return classify_ytdlp_error(result.stderr or result.stdout)
-
-
-def probe(url: str, ytdlp: list[str] | None = None, browser=None) -> Verdict | None:
-    """Verdict for *url*, or None when nothing trustworthy can be asked. *ytdlp* is the command prefix for yt-dlp
-    (None disables that tier). *browser* is a callable(url) -> Verdict | None that asks the logged-in browser
-    (link_probe_browser); without it gated sites stay unknown. Never raises."""
-    try:
-        host = (urlparse(url).hostname or '').lower()
-        if host.endswith(GATED_HOSTS):
-            return browser(url) if browser else None
-        if host.endswith(('mega.nz', 'mega.io', 'mega.co.nz')):
-            return _probe_mega(url)
-        if host.endswith(('pixeldrain.com', 'pixeldrain.net')):
-            return _probe_pixeldrain(url)
-        if host.endswith(('disk.yandex.com', 'disk.yandex.ru')):
-            return _probe_yandex(url)
-        if ytdlp:
-            return _probe_ytdlp(url, ytdlp)
-    except Exception:
-        return None
-    return None
-
-
-def classify_entry(entry: dict, ytdlp: list[str] | None = None, browser=None) -> dict:
-    """Add reason / http_status / permanent to a failure row in place (when something trustworthy can be asked)."""
-    verdict = probe(entry.get('link', ''), ytdlp, browser)
-    if verdict is not None:
-        entry['reason'] = verdict.reason
-        entry['http_status'] = verdict.http_status
-        entry['permanent'] = verdict.permanent
-    return entry

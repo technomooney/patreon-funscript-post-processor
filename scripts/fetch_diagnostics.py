@@ -56,6 +56,10 @@ def log_fetch_failure(url: str, headers: dict[str, str], exc: BaseException, lab
             lines += [f'  {k}: {v}' for k, v in resp_headers.items()]
         try:
             body = exc.read(_BODY_SNIPPET) if hasattr(exc, 'read') else b''
+            try:
+                exc.body_bytes = body   # reading consumed it: keep it so the caller can still classify the answer
+            except AttributeError:
+                pass
             if body:
                 lines.append(f'response body (first {_BODY_SNIPPET} bytes): {body.decode("utf-8", "replace")!r}')
         except Exception:
