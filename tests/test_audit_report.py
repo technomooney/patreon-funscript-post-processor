@@ -34,6 +34,13 @@ class AuditReportTests(unittest.TestCase):
         self.assertIn('a &lt;b&gt;.mp4', html)      # escaped
         self.assertNotIn('a <b>.mp4', html)
 
+    def test_cells_carry_the_full_value_to_copy(self):
+        report_store.record_outcome(self.root, 'https://mega.nz/file/AbCdEfGh#KEY', self.post, domain='mega.nz')
+        html = generate_audit_report.generate(self.root)
+        self.assertIn('data-copy="https://mega.nz/file/AbCdEfGh#KEY"', html)   # the whole link
+        self.assertIn(f'data-copy="{self.post}"', html)                         # absolute, though shown relative
+        self.assertIn('class="cp"', html)
+
     def test_loose_csvs_are_not_read_any_more(self):
         os.makedirs(os.path.join(self.root, '_reports'))
         with open(os.path.join(self.root, '_reports', 'funscript_check.csv'), 'w') as f:

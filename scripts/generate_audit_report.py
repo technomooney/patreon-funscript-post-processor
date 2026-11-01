@@ -221,18 +221,22 @@ def _render_csv_section(fname: str, rows: list[dict], base: str, label: str | No
             is_url  = not is_path and _looks_like_url(val)
             is_long = is_path or is_url or len(val) > 80
             display = _rel(val, base) if is_path and val else val
+            # Every value gets a copy button that copies the FULL original (absolute path, whole link, exact name),
+            # whatever the cell shows.
+            copy_btn = f'<button class="cp" type="button" title="copy">copy</button>' if val else ''
+            copy_attr = f' data-copy="{_ea(val)}"' if val else ''
             if col == 'status' and val:
                 cls = _status_cls(val)
-                cells.append(f'<td class="st {cls}">{_e(val)}</td>')
+                cells.append(f'<td class="st {cls}"{copy_attr}>{_e(val)}{copy_btn}</td>')
             elif is_long and val:
                 extra = 'rpt-path' if is_path else ('rpt-url' if is_url else '')
                 cells.append(
-                    f'<td>'
-                    f'<div class="cell-clip {extra}" title="{_ea(val)}">{_e(display)}</div>'
+                    f'<td{copy_attr}>'
+                    f'<div class="cell-clip {extra}" title="{_ea(val)}">{_e(display)}</div>{copy_btn}'
                     f'</td>'
                 )
             else:
-                cells.append(f'<td>{_e(display)}</td>')
+                cells.append(f'<td{copy_attr}>{_e(display)}{copy_btn}</td>')
         trs.append('<tr>' + ''.join(cells) + '</tr>')
 
     rows_html = '\n'.join(trs)
@@ -877,6 +881,21 @@ body {
     word-break: break-all;
 }
 .cell-clip.expanded::after { content: ''; }
+.cp {
+    margin-left: .4rem;
+    padding: 0 .35rem;
+    font-size: .62rem;
+    line-height: 1.5;
+    color: #8090b0;
+    background: transparent;
+    border: 1px solid #3a3a50;
+    border-radius: 3px;
+    cursor: pointer;
+    opacity: 0;
+    vertical-align: middle;
+}
+.rpt-tbl tr:hover .cp, .cp:focus { opacity: 1; }
+.cp:hover { color: #c0d0f0; border-color: #6070a0; }
 .rpt-path { color: #7090a8; font-size: .72rem; }
 .rpt-url  { color: #6080a0; font-size: .72rem; }
 .st { white-space: nowrap; font-size: .72rem; }
@@ -915,7 +934,30 @@ function copyPath(btn) {
     }).catch(() => {});
 }
 
+function copyText(text) {
+    // navigator.clipboard needs a secure context; a report opened from disk or plain http may not have one.
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+    return new Promise((resolve, reject) => {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy') ? resolve() : reject(); } catch (err) { reject(err); }
+        document.body.removeChild(ta);
+    });
+}
+
 document.addEventListener('click', function(e) {
+    const cp = e.target.closest('.cp');
+    if (cp) {
+        copyText(cp.closest('td').dataset.copy).then(() => {
+            cp.textContent = 'copied';
+            setTimeout(() => cp.textContent = 'copy', 1200);
+        }).catch(() => { cp.textContent = 'failed'; setTimeout(() => cp.textContent = 'copy', 1200); });
+        return;
+    }
     const el = e.target.closest('.cell-clip');
     if (el) el.classList.toggle('expanded');
 });
