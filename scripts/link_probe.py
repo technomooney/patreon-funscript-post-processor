@@ -14,7 +14,8 @@ more attempt. Two tiers, most exact first:
 Login-gated or partly gated sites are never probed (GATED_HOSTS, rule34video included, since nobody knows which of
 its videos are hidden): iwara.tv, for example, answers an anonymous request for a login-only video with the same
 404 (errors.notFound) as for one that does not exist, and its pages are a single-page app returning 200 for
-anything. Without the user's session there is no signal, so those stay unknown until the logged-in browser can ask.
+anything. Without the user's session there is no signal, so those go to the logged-in browser
+(link_probe_browser) when one is supplied and are otherwise left unknown.
 """
 import json
 import re
@@ -174,13 +175,14 @@ def _probe_ytdlp(url: str, ytdlp: list[str]) -> Verdict:
     return classify_ytdlp_error(result.stderr or result.stdout)
 
 
-def probe(url: str, ytdlp: list[str] | None = None) -> Verdict | None:
+def probe(url: str, ytdlp: list[str] | None = None, browser=None) -> Verdict | None:
     """Verdict for *url*, or None when nothing trustworthy can be asked. *ytdlp* is the command prefix for yt-dlp
-    (None disables that tier). Never raises."""
+    (None disables that tier). *browser* is a callable(url) -> Verdict | None that asks the logged-in browser
+    (link_probe_browser); without it gated sites stay unknown. Never raises."""
     try:
         host = (urlparse(url).hostname or '').lower()
         if host.endswith(GATED_HOSTS):
-            return None
+            return browser(url) if browser else None
         if host.endswith(('mega.nz', 'mega.io', 'mega.co.nz')):
             return _probe_mega(url)
         if host.endswith(('pixeldrain.com', 'pixeldrain.net')):
@@ -194,9 +196,9 @@ def probe(url: str, ytdlp: list[str] | None = None) -> Verdict | None:
     return None
 
 
-def classify_entry(entry: dict, ytdlp: list[str] | None = None) -> dict:
+def classify_entry(entry: dict, ytdlp: list[str] | None = None, browser=None) -> dict:
     """Add reason / http_status / permanent to a failure row in place (when something trustworthy can be asked)."""
-    verdict = probe(entry.get('link', ''), ytdlp)
+    verdict = probe(entry.get('link', ''), ytdlp, browser)
     if verdict is not None:
         entry['reason'] = verdict.reason
         entry['http_status'] = verdict.http_status

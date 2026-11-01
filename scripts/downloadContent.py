@@ -35,6 +35,7 @@ import folder_log
 import library_db
 import report_store
 import link_probe
+import link_probe_browser
 import browser_defaults
 import browser_session
 import funscript_utils
@@ -6415,6 +6416,10 @@ def _best_video_match(folder: str) -> tuple[str, float]:
     return best_file, best_score
 
 
+# Set by find_and_download while its browser is up: asks that (logged-in) browser about a failed link on a gated site.
+_probe_browser = None
+
+
 def _triage_failure(entry: dict, folder: str,
                     failures: list, uncertain: list) -> None:
     """Route a failed-download entry to the appropriate list.
@@ -6431,7 +6436,7 @@ def _triage_failure(entry: dict, folder: str,
         print(f'  [skip-fail] existing video "{_safe(matched_file)}" '
               f'matches folder title ({int(score * 100)}%) — not logged as failure')
         return
-    link_probe.classify_entry(entry, _ytdlp_cmd())   # reason / HTTP status / permanently-dead, for the report and future skips
+    link_probe.classify_entry(entry, _ytdlp_cmd(), _probe_browser)   # reason / HTTP status / permanently-dead, for the report and future skips
     if entry.get('permanent'):
         print(f'  [dead-link] {entry.get("reason")} ({entry.get("http_status")}) -- will not be retried')
     if score >= _MATCH_UNCERTAIN:
@@ -6918,6 +6923,10 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
 
     driver = setup_driver(tasks[0]['folder'])
 
+    global _probe_browser
+    # `driver` is rebound when the browser is restarted, so the closure reads whichever one is current.
+    _probe_browser = lambda url: link_probe_browser.probe(driver, url)
+
     # State tracked so KeyboardInterrupt can finish/clean the active download.
     current_folder: str = tasks[0]['folder']
     current_before_files: set[str] = set()
@@ -6969,7 +6978,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                      f'(full mega worker output: {mega_worker._log_path})'], outcome='failed (background)')
                 failures.append(link_probe.classify_entry(
                     {'link': res['link'], 'funscript_name': res['basename'], 'filename': hint,
-                     'save_directory': res['download_dir'], 'domain': 'mega.nz'}, _ytdlp_cmd()))
+                     'save_directory': res['download_dir'], 'domain': 'mega.nz'}, _ytdlp_cmd(), _probe_browser))
                 if res.get('exit_code') == _MEGA_RATE_LIMIT_EXIT:
                     mega_error6.append({'link': res['link'], 'funscript_name': res['basename'],
                                         'filename': hint, 'save_directory': res['download_dir']})
@@ -7284,6 +7293,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
         if prev_sigint is not None:
             signal.signal(signal.SIGINT, prev_sigint)
         action_log.finish()
+        _probe_browser = None
         driver.quit()
         # Close the Discord browser too, if _fetch_discord_password_cached ever
         # opened one this run — checked via sys.modules rather than a top-level
