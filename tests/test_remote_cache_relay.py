@@ -120,10 +120,11 @@ class HttpLayerTests(unittest.TestCase):
         self.url = self.relay.start()
         self.addCleanup(self.relay.close)
         self.port = int(self.url.split(':')[2].split('/')[0])
+        self.path = '/' + self.url.split('/', 3)[3]
 
-    def request(self, method='GET', rng=None):
+    def request(self, method='GET', rng=None, path=None):
         conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10)
-        conn.request(method, '/relay.mp4', headers={'Range': rng} if rng else {})
+        conn.request(method, path or self.path, headers={'Range': rng} if rng else {})
         resp = conn.getresponse()
         body = resp.read() if method == 'GET' else b''
         conn.close()
@@ -153,11 +154,30 @@ class HttpLayerTests(unittest.TestCase):
     def test_a_remote_failure_gives_the_client_a_short_read_not_wrong_data(self):
         self.origin.fail = True
         conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=10)
-        conn.request('GET', '/relay.mp4', headers={'Range': 'bytes=2000000-2001000'})
+        conn.request('GET', self.path, headers={'Range': 'bytes=2000000-2001000'})
         resp = conn.getresponse()
         with self.assertRaises(http.client.IncompleteRead):
             resp.read()
         conn.close()
+
+    def test_a_request_without_the_secret_in_the_url_is_refused(self):
+        for path in ('/relay.mp4', '/wrong-token/relay.mp4', '/'):
+            resp, body = self.request(path=path)
+            self.assertEqual((resp.status, body), (404, b''), path)
+        resp, _ = self.request(rng='bytes=0-9')
+        self.assertEqual(resp.status, 206)
+
+    def test_each_relay_has_its_own_secret(self):
+        other, _ = make_relay()
+        other_url = other.start()
+        self.addCleanup(other.close)
+        self.assertNotEqual(self.url.split('/')[3], other_url.split('/')[3])
+
+    def test_close_is_quick(self):
+        import time
+        t = time.perf_counter()
+        self.relay.close()
+        self.assertLess(time.perf_counter() - t, 0.3)
 
     def test_close_frees_the_port(self):
         self.relay.close()

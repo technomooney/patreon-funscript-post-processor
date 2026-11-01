@@ -17,6 +17,7 @@ remote failure ends the local connection so the ffmpeg run fails the way it woul
 import collections
 import http.server
 import re
+import secrets
 import socketserver
 import threading
 import urllib.error
@@ -24,6 +25,7 @@ import urllib.request
 
 BLOCK = 128 * 1024            # remote data is fetched and remembered in blocks of this size
 SERVE_CHUNK = 1024 * 1024     # a response is produced piece by piece, so a client that stops early costs nothing more
+POLL_INTERVAL = 0.02          # serve_forever's tick: shutdown() waits for one, and the default (0.5 s) made every close slow
 MAX_CACHED_BLOCKS = 512       # 64 MB of remembered sample data; the index is kept separately and never evicted
 INDEX_LIMIT = 96 * 1024 * 1024  # an index bigger than this is not worth holding in memory: no relay
 
@@ -74,6 +76,7 @@ class CacheRelay:
         self.remote_bytes = 0
         self.index_bytes = 0
         self.local_url = ''
+        self._token = secrets.token_urlsafe(12)       # the relay serves your logged-in session: only whoever got the URL may read
 
     # -- remote side ------------------------------------------------------------------------------------------
     def _remote(self, start: int, end: int) -> bytes:
@@ -182,6 +185,11 @@ class CacheRelay:
                 return start, end, True
 
             def _respond(self, head_only):
+                if not self.path.startswith(f'/{relay._token}/'):
+                    self.send_response(404)
+                    self.send_header('Content-Length', '0')
+                    self.end_headers()
+                    return
                 start, end, ranged = self._span()
                 if start > end or start >= relay.content_length:
                     self.send_response(416)
@@ -220,9 +228,10 @@ class CacheRelay:
                 self._respond(True)
 
         self._server = _Server(('127.0.0.1', 0), Handler)
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True, name='cache-relay')
+        self._thread = threading.Thread(target=self._server.serve_forever, kwargs={'poll_interval': POLL_INTERVAL},
+                                        daemon=True, name='cache-relay')
         self._thread.start()
-        self.local_url = f'http://127.0.0.1:{self._server.server_address[1]}/relay.mp4'
+        self.local_url = f'http://127.0.0.1:{self._server.server_address[1]}/{self._token}/relay.mp4'
         return self.local_url
 
     def close(self) -> None:
