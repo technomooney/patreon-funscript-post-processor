@@ -11,7 +11,6 @@ Usage
   python generate_audit_report.py [directory]
 """
 
-import csv
 import html
 import json
 import os
@@ -156,16 +155,6 @@ def _csv_title(fname: str) -> str:
     if meta:
         return meta['title']
     return fname.replace('_', ' ').replace('.csv', '').title()
-
-
-def _read_csv_report(path: str) -> list[dict]:
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, newline='', encoding='utf-8') as f:
-            return list(csv.DictReader(f))
-    except (OSError, csv.Error):
-        return []
 
 
 def _rel(path: str, base: str) -> str:
@@ -479,7 +468,6 @@ def generate(base: str) -> str:
                 f'<div class="stat-lbl">{_e(label)}</div>'
                 f'</div>')
 
-    fs_csv_exists = os.path.exists(os.path.join(_reports_dir(base), 'funscript_check.csv'))
 
     cards_html = ''.join([
         card(total,             'Total folders'),
@@ -561,24 +549,8 @@ def generate(base: str) -> str:
 
     folders_html = '\n'.join(folder_items)
 
-    fs_csv_link = ('<a class="csv-link" href="funscript_check.csv">funscript_check.csv</a>'
-                   if fs_csv_exists else '')
-
-    # --- report tables: scan all *.csv files in _reports/ ---
-    rdir = _reports_dir(base)
-    try:
-        csv_files = sorted(
-            (f for f in os.listdir(rdir) if f.endswith('.csv')),
-            key=lambda f: (_CSV_META.get(f, {}).get('order', 99), f)
-        )
-    except OSError:
-        csv_files = []
-
-    # Reports as (order, key, rows, label): the remaining loose CSVs, then the ones kept in the library database.
+    # Reports as (order, key, rows, label), all kept in the library database.
     sections: list[tuple[int, str, list[dict], str | None]] = []
-    for fname in csv_files:
-        sections.append((_CSV_META.get(fname, {}).get('order', 99), fname,
-                         _read_csv_report(os.path.join(rdir, fname)), None))
     for kind, key in (('failed', 'failed_downloads.csv'), ('uncertain', 'uncertain_downloads.csv')):
         rows = [{c: ('' if r.get(c) is None else str(r.get(c)))
                  for c in _OUTCOME_COLS[kind]}
@@ -598,7 +570,7 @@ def generate(base: str) -> str:
 
     return _build_page(base=_e(base), generated=_e(now),
                        cards=cards_html, bars=bars_html, folders=folders_html,
-                       fs_csv_link=fs_csv_link, reports=reports_html)
+                       reports=reports_html)
 
 
 # ---------------------------------------------------------------------------
@@ -791,13 +763,6 @@ body {
 .missing-list { margin: .3rem 0 0 1.2rem; }
 .missing-video { color: #c07060; font-size: .76rem; margin-bottom: .1rem; word-break: break-all; }
 
-.csv-link {
-    font-size: .76rem; color: #6090b0; text-decoration: none;
-    border: 1px solid #2a4060; border-radius: 3px; padding: .15rem .45rem;
-    margin-left: .5rem;
-}
-.csv-link:hover { color: #90c0e0; border-color: #4a6080; }
-
 .badge-forced {
     font-size: .65rem; background: #4a2a1a; color: #d07040;
     border: 1px solid #6a3a20; border-radius: 3px; padding: .1rem .4rem;
@@ -958,7 +923,7 @@ document.addEventListener('click', function(e) {
 """
 
 
-def _build_page(*, base, generated, cards, bars, folders, fs_csv_link='', reports='') -> str:
+def _build_page(*, base, generated, cards, bars, folders, reports='') -> str:
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -992,7 +957,7 @@ def _build_page(*, base, generated, cards, bars, folders, fs_csv_link='', report
 
 <section class="summary-section">
   <div class="stat-cards">{cards}</div>
-  <div class="prog-section-title">Script coverage{fs_csv_link}</div>
+  <div class="prog-section-title">Script coverage</div>
   {bars}
 </section>
 
