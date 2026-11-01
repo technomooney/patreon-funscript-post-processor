@@ -34,6 +34,7 @@ import external_links
 import folder_log
 import library_db
 import report_store
+import link_probe
 import browser_defaults
 import browser_session
 import funscript_utils
@@ -6421,6 +6422,9 @@ def _triage_failure(entry: dict, folder: str,
         print(f'  [skip-fail] existing video "{_safe(matched_file)}" '
               f'matches folder title ({int(score * 100)}%) — not logged as failure')
         return
+    link_probe.classify_entry(entry)   # reason / HTTP status / permanently-dead, for the report and future skips
+    if entry.get('permanent'):
+        print(f'  [dead-link] {entry.get("reason")} ({entry.get("http_status")}) -- will not be retried')
     if score >= _MATCH_UNCERTAIN:
         print(f'  [uncertain] existing video "{_safe(matched_file)}" '
               f'may match ({int(score * 100)}%) — logged for manual review')
@@ -7001,9 +7005,9 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                      'save_directory': res['download_dir'], 'domain': 'mega.nz'},
                     [f'background mega-get failed, exit code {res.get("exit_code")}, file hint: {hint}',
                      f'(full mega worker output: {mega_worker._log_path})'], outcome='failed (background)')
-                failures.append({'link': res['link'], 'funscript_name': res['basename'],
-                                 'filename': hint,
-                                 'save_directory': res['download_dir'], 'domain': 'mega.nz'})
+                failures.append(link_probe.classify_entry(
+                    {'link': res['link'], 'funscript_name': res['basename'], 'filename': hint,
+                     'save_directory': res['download_dir'], 'domain': 'mega.nz'}))
                 if res.get('exit_code') == _MEGA_RATE_LIMIT_EXIT:
                     mega_error6.append({'link': res['link'], 'funscript_name': res['basename'],
                                         'filename': hint, 'save_directory': res['download_dir']})
