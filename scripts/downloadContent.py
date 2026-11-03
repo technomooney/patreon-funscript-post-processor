@@ -1569,7 +1569,7 @@ def _remote_visually_similar(url: str, headers: dict[str, str],
     every sample re-reads it), so opening titles are avoided and a shared intro cannot hide different later
     content.  Each
     sample downloads only the data around that seek point via HTTP Range
-    requests.  At least 75 % of sampled frames must match, and every third of the video must mostly agree.
+    requests.  At least 85 % of compared frames must match (and at least half the planned ones must be readable), and every third of the video must agree at 75 %.
     """
     # Longer videos get more frames (4 for a short clip, +1 per 15 minutes, up to 12), never closer than 5 s apart.
     wanted = min(12, 4 + int(url_dur // 900))
@@ -1601,10 +1601,11 @@ def _remote_visually_similar(url: str, headers: dict[str, str],
         else:
             print(f'  [pre-check] frame {i}/{n} at {ts}: could not extract', flush=True)
 
-    if total_count == 0 or (match_count / total_count) < 0.75:
+    # Too few readable frames is not evidence of a match: at least half of the planned ones must have been compared.
+    if total_count < max(2, n // 2) or (match_count / total_count) < 0.85:
         return False
     # Same intro, different later content: every third of the video that was sampled has to agree too.
-    return all(hit / seen >= 0.5 for hit, seen in thirds.values())
+    return all(hit / seen >= 0.75 for hit, seen in thirds.values())
 
 
 _VISUAL_PRECHECK_MIN_BYTES = 100 * 1024 * 1024  # 100 MB
