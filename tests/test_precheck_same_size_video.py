@@ -368,16 +368,16 @@ class LongVideoIndexTests(unittest.TestCase):
         self.assertEqual((dc._scaled_timeout(60), dc._scaled_timeout(180), dc._scaled_timeout(30)), (60, 180, 30))
         self.assertEqual(dc._frame_samples_for_index(), 12)
 
-    def test_an_hour_long_index_still_fits_the_old_frame_limit_barely_and_takes_four_frames(self):
+    def test_an_hour_long_index_still_fits_the_old_frame_limit_barely_and_takes_six_frames(self):
         self.at(5.2)
         self.assertGreaterEqual(dc._scaled_timeout(60), 90)         # ~63 s to read at the slowest speed seen
-        self.assertEqual(dc._frame_samples_for_index(), 4)
+        self.assertEqual(dc._frame_samples_for_index(), 6)
 
-    def test_three_hour_index_gets_minutes_not_a_minute_and_three_frames(self):
+    def test_three_hour_index_gets_minutes_not_a_minute_and_five_frames(self):
         self.at(15.5)
         self.assertGreaterEqual(dc._scaled_timeout(60), 190)        # 15.5 MB / 85 KB/s = 187 s to read, plus margin
         self.assertGreaterEqual(dc._scaled_timeout(180), 270)
-        self.assertEqual(dc._frame_samples_for_index(), 3)
+        self.assertEqual(dc._frame_samples_for_index(), 5)
 
     def test_the_limit_is_capped(self):
         self.at(200)
@@ -409,7 +409,7 @@ class LongVideoIndexTests(unittest.TestCase):
                 mock.patch.object(dc, '_video_frame_hash', return_value=None), \
                 contextlib.redirect_stdout(io.StringIO()):
             dc._remote_visually_similar('https://cdn.example/x.mp4', {}, 3 * 3600.0, '/nonexistent.mp4')
-        self.assertEqual(len(frames), 3)
+        self.assertEqual(len(frames), 5)
 
 
 if __name__ == '__main__':

@@ -1429,9 +1429,9 @@ def _scaled_timeout(base_seconds: int) -> int:
 def _frame_samples_for_index() -> int:
     """How many frames the visual check takes. Each one re-reads the whole index, so a big index gets fewer."""
     if _remote_index_bytes > 10 * 1024 * 1024:
-        return 3
+        return 5
     if _remote_index_bytes > 3 * 1024 * 1024:
-        return 4
+        return 6
     return 12
 
 
@@ -1565,14 +1565,14 @@ def _remote_visually_similar(url: str, headers: dict[str, str],
                               url_dur: float, local_path: str) -> bool:
     """Return True if the remote video at *url* is visually similar to *local_path*.
 
-    Samples frames spread evenly from ~5 % to ~92 % of the video (4 to 12 samples by length, fewer when the remote index is large:
+    Samples frames spread evenly from ~5 % to ~92 % of the video (6 to 12 samples by length, fewer when the remote index is large:
     every sample re-reads it), so opening titles are avoided and a shared intro cannot hide different later
     content.  Each
     sample downloads only the data around that seek point via HTTP Range
     requests.  At least 85 % of compared frames must match (and at least half the planned ones must be readable), and every third of the video must agree at 75 %.
     """
-    # Longer videos get more frames (4 for a short clip, +1 per 15 minutes, up to 12), never closer than 5 s apart.
-    wanted = min(12, 4 + int(url_dur // 900))
+    # Longer videos get more frames (6 for a short clip, +1 per 10 minutes, up to 12), never closer than 5 s apart.
+    wanted = min(12, 6 + int(url_dur // 600))
     n = max(1, min(wanted, _frame_samples_for_index(), int(url_dur * 0.87 // 5) + 1))
     first, last = max(url_dur * 0.05, 2.0), url_dur * 0.92
     if last <= first:
@@ -1602,7 +1602,7 @@ def _remote_visually_similar(url: str, headers: dict[str, str],
             print(f'  [pre-check] frame {i}/{n} at {ts}: could not extract', flush=True)
 
     # Too few readable frames is not evidence of a match: at least half of the planned ones must have been compared.
-    if total_count < max(2, n // 2) or (match_count / total_count) < 0.85:
+    if total_count < max(3, n // 2) or (match_count / total_count) < 0.85:
         return False
     # Same intro, different later content: every third of the video that was sampled has to agree too.
     return all(hit / seen >= 0.75 for hit, seen in thirds.values())
