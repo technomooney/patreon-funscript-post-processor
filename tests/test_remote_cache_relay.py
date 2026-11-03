@@ -391,7 +391,7 @@ class PrecheckEndToEndTests(unittest.TestCase):
 
     def test_visual_match_with_the_index_at_the_start(self):
         text = self.run_case(faststart=True, audio=False)
-        self.assertEqual(text.count('match ('), 3)          # all the sampled frames of a 40 s clip compared, none re-read the index
+        self.assertEqual(text.count('match ('), 4)          # all the sampled frames of a 40 s clip compared, none re-read the index
 
     def test_visual_match_with_the_index_at_the_end(self):
         self.run_case(faststart=False, audio=False)

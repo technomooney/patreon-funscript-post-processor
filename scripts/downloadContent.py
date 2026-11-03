@@ -1374,12 +1374,13 @@ def _remote_full_hash(url: str, headers: dict[str, str]) -> str | None:
         return None
 
 
-def _remote_audio_fingerprint(url: str, headers: dict[str, str]) -> list[int] | None:
-    """Return a chromaprint fingerprint for the audio track of a remote URL.
+def _remote_audio_fingerprint(url: str, headers: dict[str, str], start: float = 0.0,
+                              length: int = 120) -> list[int] | None:
+    """Return a chromaprint fingerprint for *length* seconds of audio from *start* in a remote URL (or local path).
 
     Pipes audio from ffmpeg (with optional auth headers) into fpcalc reading
-    raw PCM via stdin — avoids saving a temp file and only streams the first
-    120 seconds.  Returns None if either tool is unavailable or the probe fails.
+    raw PCM via stdin — avoids saving a temp file.  Returns None if either tool is
+    unavailable or the probe fails.
     """
     ffmpeg = shutil.which('ffmpeg')
     fpcalc = shutil.which('fpcalc')
@@ -1389,10 +1390,12 @@ def _remote_audio_fingerprint(url: str, headers: dict[str, str]) -> list[int] | 
         ffmpeg_cmd = [ffmpeg, '-v', 'error']
         if headers:
             ffmpeg_cmd += ['-headers', ''.join(f'{k}: {v}\r\n' for k, v in headers.items())]
-        ffmpeg_cmd += ['-i', url, '-t', '120', '-vn', '-ac', '1', '-ar', '11025',
+        if start > 0:
+            ffmpeg_cmd += ['-ss', _format_ts(start)]
+        ffmpeg_cmd += ['-i', url, '-t', str(length), '-vn', '-ac', '1', '-ar', '11025',
                        '-f', 's16le', 'pipe:1']
         fpcalc_cmd = [fpcalc, '-raw', '-json', '-rate', '11025', '-channels', '1',
-                      '-length', '120', '-']
+                      '-length', str(length), '-']
         ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE,
                                        stderr=subprocess.DEVNULL)
         fpcalc_proc = subprocess.Popen(fpcalc_cmd, stdin=ffmpeg_proc.stdout,
@@ -1429,7 +1432,7 @@ def _frame_samples_for_index() -> int:
         return 3
     if _remote_index_bytes > 3 * 1024 * 1024:
         return 4
-    return 8
+    return 12
 
 
 # Why the last _remote_video_duration() came back empty, for the pre-check's "duration unavailable" line.
@@ -1562,24 +1565,24 @@ def _remote_visually_similar(url: str, headers: dict[str, str],
                               url_dur: float, local_path: str) -> bool:
     """Return True if the remote video at *url* is visually similar to *local_path*.
 
-    Samples one frame every 15 seconds (capped at 8 samples, fewer when the remote index is large: every sample
-    re-reads it), starting from
-    ~5 % of the video duration so opening-title frames are avoided.  Each
+    Samples frames spread evenly from ~5 % to ~92 % of the video (4 to 12 samples by length, fewer when the remote index is large:
+    every sample re-reads it), so opening titles are avoided and a shared intro cannot hide different later
+    content.  Each
     sample downloads only the data around that seek point via HTTP Range
-    requests.  At least 75 % of sampled frames must match for a True result.
+    requests.  At least 75 % of sampled frames must match, and every third of the video must mostly agree.
     """
-    timestamps: list[str] = []
-    t = max(url_dur * 0.05, 2.0)
-    max_frames = _frame_samples_for_index()
-    while t < url_dur * 0.92 and len(timestamps) < max_frames:
-        timestamps.append(_format_ts(t))
-        t += 15.0
-    if not timestamps:
+    # Longer videos get more frames (4 for a short clip, +1 per 15 minutes, up to 12), never closer than 5 s apart.
+    wanted = min(12, 4 + int(url_dur // 900))
+    n = max(1, min(wanted, _frame_samples_for_index(), int(url_dur * 0.87 // 5) + 1))
+    first, last = max(url_dur * 0.05, 2.0), url_dur * 0.92
+    if last <= first:
         return False
+    positions = [first + (last - first) * i / (n - 1) for i in range(n)] if n > 1 else [first]
+    timestamps = [_format_ts(t) for t in positions]
 
-    n = len(timestamps)
     match_count = 0
     total_count = 0
+    thirds: dict[int, list[int]] = {}      # which third of the video -> [matched, compared]
     for i, ts in enumerate(timestamps, start=1):
         print(f'  [pre-check] frame sample {i}/{n} at {ts}...', end='\r', flush=True)
         remote_frame = _stream_frame(url, headers, ts)
@@ -1588,14 +1591,20 @@ def _remote_visually_similar(url: str, headers: dict[str, str],
             total_count += 1
             sim = _frame_similarity(remote_frame, local_frame)
             match = sim >= 0.85
+            tally = thirds.setdefault(min(2, int(positions[i - 1] / url_dur * 3)), [0, 0])
+            tally[1] += 1
             if match:
                 match_count += 1
+                tally[0] += 1
             print(f'  [pre-check] frame {i}/{n} at {ts}: {"match" if match else "no match"} ({sim:.0%})',
                   flush=True)
         else:
             print(f'  [pre-check] frame {i}/{n} at {ts}: could not extract', flush=True)
 
-    return total_count > 0 and (match_count / total_count) >= 0.75
+    if total_count == 0 or (match_count / total_count) < 0.75:
+        return False
+    # Same intro, different later content: every third of the video that was sampled has to agree too.
+    return all(hit / seen >= 0.5 for hit, seen in thirds.values())
 
 
 _VISUAL_PRECHECK_MIN_BYTES = 100 * 1024 * 1024  # 100 MB
@@ -1868,6 +1877,13 @@ def _precheck_av(url: str, headers: dict[str, str], download_dir: str, url_dur: 
             relay.close()
 
 
+def _audio_segments(duration: float) -> list[tuple[float, int]]:
+    """(start, seconds) stretches to fingerprint: the opening, plus the middle and the end of a longer video."""
+    if duration < 300:
+        return [(0.0, 120)]
+    return [(0.0, 40), (duration * 0.4, 40), (duration * 0.75, 40)]
+
+
 def _precheck_av_stages(url: str, headers: dict[str, str], url_dur: float, content_length: int,
                         duration_candidates: list[str]) -> str | None:
     # --- 3. Audio fingerprint ---
@@ -1875,17 +1891,22 @@ def _precheck_av_stages(url: str, headers: dict[str, str], url_dur: float, conte
     # Confirms or eliminates duration candidates before the more expensive
     # visual check.  Inconclusive results (0.5 ≤ sim < 0.85) fall through.
     print('  [pre-check] audio fingerprint...', end='\r', flush=True)
-    url_fp = _remote_audio_fingerprint(url, headers)
-    if url_fp is not None:
+    segments = _audio_segments(url_dur)
+    url_fps = [_remote_audio_fingerprint(url, headers, start, length) for start, length in segments]
+    if any(fp is not None for fp in url_fps):
         surviving: list[str] = []
         for candidate in duration_candidates:
-            local_fp = _audio_fingerprint(candidate)
-            if local_fp is None:
+            sims = []
+            for (start, length), url_fp in zip(segments, url_fps):
+                local_fp = _remote_audio_fingerprint(candidate, {}, start, length) if url_fp is not None else None
+                if url_fp is not None and local_fp is not None:
+                    sims.append(_fingerprint_similarity(url_fp, local_fp))
+            if not sims:
                 surviving.append(candidate)
                 continue
-            sim = _fingerprint_similarity(url_fp, local_fp)
+            sim = min(sims)          # every sampled stretch has to agree, not just the opening
             cname = _safe(os.path.basename(candidate))
-            print(f'  [pre-check] audio vs {cname}: {sim:.0%}', flush=True)
+            print(f'  [pre-check] audio vs {cname}: {sim:.0%} (worst of {len(sims)} stretches)', flush=True)
             if sim >= 0.85:
                 reason = (f'audio fingerprint match: {cname} '
                           f'({url_dur:.1f}s, {sim:.0%})')

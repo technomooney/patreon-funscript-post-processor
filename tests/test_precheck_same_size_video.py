@@ -363,10 +363,10 @@ class LongVideoIndexTests(unittest.TestCase):
     def at(self, index_mb):
         dc._remote_index_bytes = int(index_mb * self.MB)
 
-    def test_short_videos_keep_the_original_limits_and_eight_frames(self):
+    def test_short_videos_keep_the_original_limits_and_the_full_frame_allowance(self):
         self.at(0.4)
         self.assertEqual((dc._scaled_timeout(60), dc._scaled_timeout(180), dc._scaled_timeout(30)), (60, 180, 30))
-        self.assertEqual(dc._frame_samples_for_index(), 8)
+        self.assertEqual(dc._frame_samples_for_index(), 12)
 
     def test_an_hour_long_index_still_fits_the_old_frame_limit_barely_and_takes_four_frames(self):
         self.at(5.2)
