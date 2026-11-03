@@ -1966,6 +1966,11 @@ def _direct_fetch(*args, **kwargs) -> bool:
         net_stats.collector.note(download_seconds=max(0.0, time.perf_counter() - started - pre))
 
 
+# (final URL, download folder) -> why it was settled, for links fetched or skipped earlier in this run. A link reached
+# again from another source path is not probed a second time.
+_links_handled: dict[tuple[str, str], str] = {}
+
+
 def _direct_fetch_inner(video_url: str, download_dir: str, temp_prefix: str, headers: dict[str, str],
                         override_name: str | None = None) -> bool:
     """Download *video_url* straight to *download_dir* using urllib, no browser needed.
@@ -1991,9 +1996,19 @@ def _direct_fetch_inner(video_url: str, download_dir: str, temp_prefix: str, hea
     # Zero bandwidth cost — we only proceed with the full download if nothing
     # similar already exists in download_dir.
     _pre_started = time.perf_counter()
-    skip_reason = _precheck_url(video_url, headers, download_dir)
-    net_stats.collector.note(precheck_seconds=time.perf_counter() - _pre_started,
-                             precheck_result=_precheck_category(skip_reason))
+    _handled_key = (video_url.split('#', 1)[0], os.path.normcase(os.path.abspath(download_dir)))
+    skip_reason = _links_handled.get(_handled_key)
+    if skip_reason:
+        # The same final link, reached again through another source path: already settled this run, so no
+        # HEAD / ffprobe / frame requests again.
+        skip_reason = f'same link already handled this run ({skip_reason})'
+        net_stats.collector.note(precheck_seconds=0.0, precheck_result='repeat link')
+    else:
+        skip_reason = _precheck_url(video_url, headers, download_dir)
+        net_stats.collector.note(precheck_seconds=time.perf_counter() - _pre_started,
+                                 precheck_result=_precheck_category(skip_reason))
+        if skip_reason:
+            _links_handled[_handled_key] = skip_reason
     if skip_reason:
         print(f'  [pre-check] skipping — {skip_reason}')
         _last_download_skipped = True
@@ -2024,6 +2039,7 @@ def _direct_fetch_inner(video_url: str, download_dir: str, temp_prefix: str, hea
                     _set_status(f'  downloading... {done_mb:.1f} MB')
     final_temp = os.path.join(download_dir, f'{temp_prefix}{ext}')
     os.rename(writing_path, final_temp)
+    _links_handled[_handled_key] = 'downloaded earlier'
     final_temp = _fix_av_extension(final_temp)
 
     # Content-based duplicate check: compare the downloaded bytes against every
