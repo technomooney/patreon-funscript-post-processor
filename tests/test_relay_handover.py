@@ -79,6 +79,7 @@ class HandOverTests(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         self.part = os.path.join(self.dir, 'x.part')
         self.addCleanup(lambda: dc._close_held_relay())
+        self.addCleanup(dc._fill_refused_hosts.clear)
         self.addCleanup(__import__('shutil').rmtree, self.dir, True)
 
     def test_the_download_is_written_from_the_fill_without_asking_again(self):
@@ -140,6 +141,7 @@ class KeepOrCloseTests(unittest.TestCase):
         self.addCleanup(__import__('shutil').rmtree, self.dir, True)
         self.addCleanup(lambda: setattr(dc, '_held_relay', None))
         dc._held_relay = None
+        dc._fill_refused_hosts.clear()
         self.relay = mock.Mock()
         self.relay.summary.return_value = ''
         self.relay.fill_error = ''
