@@ -1867,6 +1867,17 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
     return _precheck_av(url, headers, download_dir, url_dur, content_length)
 
 
+def _relay_memory_blocks() -> int | None:
+    """How many 128 KB blocks the relay may remember: RELAY_MEMORY_MB (default 64), 0 = no limit (None)."""
+    try:
+        mb = int(os.getenv('RELAY_MEMORY_MB', '64'))
+    except ValueError:
+        mb = 64
+    if mb < 0:
+        mb = 64
+    return None if mb == 0 else max(1, mb * 1024 // (remote_cache_relay.BLOCK // 1024))
+
+
 def _precheck_av(url: str, headers: dict[str, str], download_dir: str, url_dur: float, content_length: int) -> str | None:
     """Steps 3-4 of the pre-check (audio fingerprint, visual sampling) for a remote video whose duration is known.
 
@@ -1898,7 +1909,7 @@ def _precheck_av(url: str, headers: dict[str, str], download_dir: str, url_dur: 
         ext = ext if re.fullmatch(r'\.[a-z0-9]{1,5}', ext) else '.mp4'
         relay = remote_cache_relay.CacheRelay(url, headers, content_length, _remote_index_span,
                                               content_type=mimetypes.guess_type('x' + ext)[0] or 'video/mp4',
-                                              filename='relay' + ext)
+                                              filename='relay' + ext, max_blocks=_relay_memory_blocks())
         local_url = relay.start()
         if local_url:
             url, headers = local_url, {}
@@ -6858,7 +6869,7 @@ def _best_video_match(folder: str) -> tuple[str, float]:
 
 # The settings recorded with every run's statistics (never a secret: only these named, behaviour-shaping ones).
 _RUN_SETTINGS = ('MAX_RESOLUTION', 'SKIP_KNOWN_FAILURES', 'MEGA_RETRY_MINUTES', 'MEGA_MAX_WAIT_MINUTES', 'BROWSER_HEADLESS',
-                 'BROWSER_PERSISTENT_PROFILE', 'PROTECT_AV1', 'FORCE_RERUN', 'SKIP_TITLE_KEYWORDS')
+                 'BROWSER_PERSISTENT_PROFILE', 'PROTECT_AV1', 'FORCE_RERUN', 'SKIP_TITLE_KEYWORDS', 'RELAY_MEMORY_MB')
 
 # Set by find_and_download while its browser is up: reads what that (logged-in) browser is showing for a failed link
 # on a gated site -- it never navigates, the handler already loaded the page.

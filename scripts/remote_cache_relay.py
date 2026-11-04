@@ -63,13 +63,15 @@ class _Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 class CacheRelay:
     def __init__(self, url: str, headers: dict, content_length: int, index_span: tuple[int, int] | None = None,
-                 content_type: str = 'video/mp4', fetch=default_fetch, filename: str = 'relay.mp4'):
+                 content_type: str = 'video/mp4', fetch=default_fetch, filename: str = 'relay.mp4',
+                 max_blocks: int | None = MAX_CACHED_BLOCKS):
         self.url, self.headers = url, dict(headers)
         self.content_length = content_length
         self.index_span = index_span                  # (offset, size) of the moov box, or None
         self.content_type = content_type
         self.filename = filename                      # the last part of the local URL: ffmpeg takes a hint from its extension
         self._fetch = fetch
+        self.max_blocks = max_blocks                  # remembered sample blocks kept; None = no limit
         self._lock = threading.RLock()
         self._index: bytes | None = None
         self._blocks: collections.OrderedDict[int, bytes] = collections.OrderedDict()
@@ -129,7 +131,7 @@ class CacheRelay:
         for b in range(first, last + 1):
             self._blocks.move_to_end(b)
             out += self._blocks[b]
-        while len(self._blocks) > MAX_CACHED_BLOCKS:
+        while self.max_blocks is not None and len(self._blocks) > self.max_blocks:
             self._blocks.popitem(last=False)
         offset = start - first * BLOCK
         return bytes(out[offset:offset + (end - start + 1)])

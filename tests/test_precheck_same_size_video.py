@@ -425,6 +425,28 @@ class RemoteFrameSharingTests(unittest.TestCase):
         self.assertEqual(len(calls), len(set(calls)))
 
 
+class RelayMemorySettingTests(unittest.TestCase):
+    def blocks(self, value):
+        env = {} if value is None else {'RELAY_MEMORY_MB': value}
+        with mock.patch.dict(os.environ, env, clear=value is None):
+            if value is None:
+                os.environ.pop('RELAY_MEMORY_MB', None)
+            return dc._relay_memory_blocks()
+
+    def test_default_is_64_mb(self):
+        self.assertEqual(self.blocks(None), 64 * 8)
+
+    def test_zero_means_unlimited(self):
+        self.assertIsNone(self.blocks('0'))
+
+    def test_a_value_is_converted_to_blocks(self):
+        self.assertEqual(self.blocks('256'), 256 * 8)
+
+    def test_garbage_or_negative_falls_back_to_the_default(self):
+        self.assertEqual(self.blocks('lots'), 64 * 8)
+        self.assertEqual(self.blocks('-5'), 64 * 8)
+
+
 class FrameExtractRetryTests(unittest.TestCase):
     def test_a_frame_is_retried_three_times_before_it_counts_as_failed(self):
         calls = []

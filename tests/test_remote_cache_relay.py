@@ -130,6 +130,30 @@ class CacheLogicTests(unittest.TestCase):
         self.assertIsNone(rcr.CacheRelay('u', {}, len(data), (0, 1000), fetch=origin.fetch).start())
 
 
+class MemoryLimitTests(unittest.TestCase):
+    def test_a_small_limit_evicts_old_blocks(self):
+        relay, origin = make_relay(index_span=None)
+        relay.max_blocks = 3
+        relay.start()
+        self.addCleanup(relay.close)
+        for b in range(8):
+            relay.read(b * rcr.BLOCK, b * rcr.BLOCK + 9)
+        self.assertLessEqual(len(relay._blocks), 3)
+
+    def test_no_limit_keeps_everything(self):
+        relay, origin = make_relay(index_span=None)
+        relay.max_blocks = None
+        relay.start()
+        self.addCleanup(relay.close)
+        for b in range(20):
+            relay.read(b * rcr.BLOCK, b * rcr.BLOCK + 9)
+        n = len(origin.calls)
+        for b in range(20):
+            relay.read(b * rcr.BLOCK, b * rcr.BLOCK + 9)
+        self.assertEqual(len(origin.calls), n)           # all 20 were still held
+        self.assertGreaterEqual(len(relay._blocks), 20)
+
+
 class HttpLayerTests(unittest.TestCase):
     def setUp(self):
         self.relay, self.origin = make_relay()
