@@ -1585,14 +1585,16 @@ def _extract_with_retries(extract, *args) -> bytes | None:
 
 
 def _remote_visually_similar(url: str, headers: dict[str, str],
-                              url_dur: float, local_path: str) -> bool:
+                              url_dur: float, local_path: str,
+                              remote_frames: dict[str, bytes | None] | None = None) -> bool:
     """Return True if the remote video at *url* is visually similar to *local_path*.
 
     Samples frames spread evenly from ~5 % to ~92 % of the video (6 to 12 samples by length, fewer when the remote index is large:
     every sample re-reads it), so opening titles are avoided and a shared intro cannot hide different later
     content.  Each
     sample downloads only the data around that seek point via HTTP Range
-    requests.  At least 85 % of compared frames must match (and at least half the planned ones must be readable), and every third of the video must agree at 75 %.
+    requests.  *remote_frames* (timestamp -> frame) lets several candidates share one extraction of each remote frame.
+    At least 85 % of compared frames must match (and at least half the planned ones must be readable), and every third of the video must agree at 75 %.
     """
     # Longer videos get more frames (6 for a short clip, +1 per 10 minutes, up to 12), never closer than 5 s apart.
     wanted = min(12, 6 + int(url_dur // 600))
@@ -1608,7 +1610,12 @@ def _remote_visually_similar(url: str, headers: dict[str, str],
     thirds: dict[int, list[int]] = {}      # which third of the video -> [matched, compared]
     for i, ts in enumerate(timestamps, start=1):
         print(f'  [pre-check] frame sample {i}/{n} at {ts}...', end='\r', flush=True)
-        remote_frame = _extract_with_retries(_stream_frame, url, headers, ts)
+        if remote_frames is not None and ts in remote_frames:
+            remote_frame = remote_frames[ts]
+        else:
+            remote_frame = _extract_with_retries(_stream_frame, url, headers, ts)
+            if remote_frames is not None:
+                remote_frames[ts] = remote_frame
         local_frame  = _extract_with_retries(_video_frame_hash, local_path, ts) if remote_frame else None
         if remote_frame and local_frame:
             total_count += 1
@@ -1951,10 +1958,11 @@ def _precheck_av_stages(url: str, headers: dict[str, str], url_dur: float, conte
     # For files under 100 MB, the full download is cheap enough that we skip
     # the per-frame probing and let the post-download hash/AV check handle it.
     if content_length >= _VISUAL_PRECHECK_MIN_BYTES:
+        remote_frames: dict[str, bytes | None] = {}     # the remote frames are the same for every candidate
         for candidate in duration_candidates:
             cname = _safe(os.path.basename(candidate))
             print(f'  [pre-check] visually sampling against {cname} ({url_dur:.1f}s)...', flush=True)
-            if _remote_visually_similar(url, headers, url_dur, candidate):
+            if _remote_visually_similar(url, headers, url_dur, candidate, remote_frames):
                 reason = (f'visually similar to existing: {_safe(os.path.basename(candidate))} '
                           f'({url_dur:.1f}s)')
                 return _decide_skip_or_replace(candidate, url, headers, content_length, reason)

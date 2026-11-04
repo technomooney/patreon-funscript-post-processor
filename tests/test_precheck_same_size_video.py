@@ -413,6 +413,18 @@ class LongVideoIndexTests(unittest.TestCase):
         self.assertEqual(len(set(frames)), 5)
 
 
+class RemoteFrameSharingTests(unittest.TestCase):
+    def test_two_candidates_share_one_extraction_of_each_remote_frame(self):
+        calls = []
+        shared = {}
+        with mock.patch.object(dc, '_stream_frame', side_effect=lambda u, h, ts: calls.append(ts) or b'x' * 1024), \
+                mock.patch.object(dc, '_video_frame_hash', return_value=b'x' * 1024), \
+                contextlib.redirect_stdout(io.StringIO()):
+            for path in ('/a.mp4', '/b.mp4'):
+                dc._remote_visually_similar('https://cdn.example/x.mp4', {}, 600.0, path, shared)
+        self.assertEqual(len(calls), len(set(calls)))
+
+
 class FrameExtractRetryTests(unittest.TestCase):
     def test_a_frame_is_retried_three_times_before_it_counts_as_failed(self):
         calls = []
