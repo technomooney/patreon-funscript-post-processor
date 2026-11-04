@@ -20,6 +20,7 @@ import re
 import secrets
 import socketserver
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -57,6 +58,29 @@ def default_fetch(url: str, headers: dict, start: int, end: int, timeout: float 
     return bytes(data)
 
 
+def default_stream(url: str, headers: dict, start: int, end: int, timeout: float = 60):
+    """Bytes start..end (inclusive) of *url* through ONE ranged request, yielded in BLOCK-sized pieces as they arrive
+    (the last one may be shorter). *start* must be a multiple of BLOCK. Closing the generator closes the connection."""
+    req = urllib.request.Request(url, headers={**headers, 'Range': f'bytes={start}-{end}'})
+    want = end - start + 1
+    got = 0
+    try:
+        with net_stats.urlopen(req, timeout=timeout) as resp:
+            if resp.status != 206 and not (resp.status == 200 and start == 0):
+                raise RemoteError(f'the server ignored the Range header (HTTP {resp.status})')
+            while got < want:
+                piece = bytearray()
+                while len(piece) < min(BLOCK, want - got):
+                    part = resp.read(min(BLOCK, want - got) - len(piece))
+                    if not part:
+                        raise RemoteError(f'short read: wanted {want} bytes, got {got + len(piece)}')
+                    piece += part
+                got += len(piece)
+                yield bytes(piece)
+    except (urllib.error.URLError, OSError) as e:
+        raise RemoteError(f'{type(e).__name__}: {e}') from e
+
+
 class _Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
 
@@ -64,19 +88,33 @@ class _Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 class CacheRelay:
     def __init__(self, url: str, headers: dict, content_length: int, index_span: tuple[int, int] | None = None,
                  content_type: str = 'video/mp4', fetch=default_fetch, filename: str = 'relay.mp4',
-                 max_blocks: int | None = MAX_CACHED_BLOCKS):
+                 max_blocks: int | None = MAX_CACHED_BLOCKS, stream=default_stream,
+                 wait_ahead_mb: float = 2, stall_seconds: float = 15):
         self.url, self.headers = url, dict(headers)
         self.content_length = content_length
         self.index_span = index_span                  # (offset, size) of the moov box, or None
         self.content_type = content_type
         self.filename = filename                      # the last part of the local URL: ffmpeg takes a hint from its extension
         self._fetch = fetch
+        self._stream = stream
+        self.wait_ahead_blocks = int(wait_ahead_mb * 1024 * 1024) // BLOCK   # 0 = never wait for the fill
+        self.stall_seconds = stall_seconds
         self.max_blocks = max_blocks                  # remembered sample blocks kept; None = no limit
         self._lock = threading.RLock()
+        self._cond = threading.Condition(self._lock)  # signalled whenever the fill stores a block or ends
         self._index: bytes | None = None
         self._blocks: collections.OrderedDict[int, bytes] = collections.OrderedDict()
         self._server: _Server | None = None
         self._thread: threading.Thread | None = None
+        self._fill_thread: threading.Thread | None = None
+        self._fill_cancel = threading.Event()
+        self._fill_running = False
+        self._fill_next = 0              # the next block the fill will store ...
+        self._fill_run_last = -1         # ... and the last block of the request it is reading
+        self.last_progress = time.monotonic()
+        self.fill_requests = 0
+        self.fill_bytes = 0
+        self.fill_error = ''
         self.remote_requests = 0
         self.remote_bytes = 0
         self.index_bytes = 0
@@ -115,6 +153,7 @@ class CacheRelay:
 
     def _read_blocks(self, start: int, end: int) -> bytes:
         first, last = start // BLOCK, end // BLOCK
+        self._wait_for_fill(first, last)
         missing = [b for b in range(first, last + 1) if b not in self._blocks]
         i = 0
         while i < len(missing):                       # one request per run of neighbouring missing blocks
@@ -135,6 +174,116 @@ class CacheRelay:
             self._blocks.popitem(last=False)
         offset = start - first * BLOCK
         return bytes(out[offset:offset + (end - start + 1)])
+
+    # -- background fill --------------------------------------------------------------------------------------
+    def _fill_active(self) -> bool:
+        return self._fill_running and not self._fill_cancel.is_set()
+
+    def _wait_for_fill(self, first: int, last: int) -> None:
+        """Blocks the fill is about to deliver (within wait_ahead of where it is, in its current request) are waited
+        for rather than requested again. The wait is a STALL timeout: it ends only when the fill has delivered no
+        data at all for stall_seconds (each arriving block restarts the clock), however long the wait has been."""
+        if self.wait_ahead_blocks <= 0:
+            return
+        for b in range(first, last + 1):
+            while b not in self._blocks and self._fill_active() and \
+                    self._fill_next <= b <= self._fill_run_last and b - self._fill_next < self.wait_ahead_blocks:
+                if time.monotonic() - self.last_progress > self.stall_seconds:
+                    return
+                self._cond.wait(timeout=min(0.2, self.stall_seconds))
+
+    def start_fill(self, priority_ranges: list[tuple[int, int]]) -> None:
+        """Start filling the whole file into memory in the background: first the byte ranges in *priority_ranges*
+        (start, end inclusive; in that order), then every remaining gap from the start of the file onwards. Each run of
+        missing blocks is ONE streaming request. Nothing is evicted while filling."""
+        if self._fill_thread is not None or self.content_length <= 0:
+            return
+        last_block = (self.content_length - 1) // BLOCK
+        plan = [(max(0, a) // BLOCK, min(b, self.content_length - 1) // BLOCK) for a, b in priority_ranges if b >= a]
+        plan.append((0, last_block))
+        self.max_blocks = None
+        self._fill_running = True
+        self.last_progress = time.monotonic()
+        self._fill_thread = threading.Thread(target=self._fill_main, args=(plan,), daemon=True, name='cache-relay-fill')
+        self._fill_thread.start()
+
+    def _fill_main(self, plan: list[tuple[int, int]]) -> None:
+        try:
+            for first, last in plan:
+                if self._fill_cancel.is_set():
+                    return
+                self._fill_range(first, last)
+        except (RemoteError, OSError) as e:
+            self.fill_error = str(e)
+        finally:
+            with self._cond:
+                self._fill_running = False
+                self._cond.notify_all()
+
+    def _fill_range(self, first: int, last: int) -> None:
+        b = first
+        while b <= last and not self._fill_cancel.is_set():
+            with self._lock:
+                while b <= last and b in self._blocks:
+                    b += 1
+                if b > last:
+                    return
+                run_last = b
+                while run_last + 1 <= last and run_last + 1 not in self._blocks:
+                    run_last += 1
+                self._fill_next, self._fill_run_last = b, run_last
+                self.last_progress = time.monotonic()
+                self.fill_requests += 1
+            end = min((run_last + 1) * BLOCK - 1, self.content_length - 1)
+            n = b
+            pieces = self._stream(self.url, self.headers, b * BLOCK, end)
+            try:
+                for piece in pieces:
+                    if self._fill_cancel.is_set():
+                        return
+                    with self._cond:
+                        if n not in self._blocks:              # an on-demand read may have stored it already
+                            self._blocks[n] = piece
+                        self.fill_bytes += len(piece)
+                        n += 1
+                        self._fill_next = n
+                        self.last_progress = time.monotonic()
+                        self._cond.notify_all()
+            finally:
+                close = getattr(pieces, 'close', None)
+                if close:
+                    close()
+            if n != run_last + 1:
+                raise RemoteError(f'the fill got {n - b} of {run_last + 1 - b} blocks')
+            b = run_last + 1
+
+    def _block_from_index(self, b: int) -> bytes | None:
+        if not self.index_span or self._index is None:
+            return None
+        i_start, i_size = self.index_span
+        lo, hi = b * BLOCK, min((b + 1) * BLOCK, self.content_length)
+        if lo >= i_start and hi <= i_start + i_size:
+            return self._index[lo - i_start:hi - i_start]
+        return None
+
+    def iter_blocks(self):
+        """Every block of the file in order, as the fill delivers them; each is dropped from memory once handed over.
+        Raises RemoteError when the fill is over (or stalls) before a block arrives."""
+        for b in range((self.content_length + BLOCK - 1) // BLOCK):
+            with self._cond:
+                while True:
+                    if b in self._blocks:
+                        data = self._blocks.pop(b)
+                        break
+                    data = self._block_from_index(b)
+                    if data is not None:
+                        break
+                    if not self._fill_active():
+                        raise RemoteError(self.fill_error or f'the background fill did not deliver block {b}')
+                    if time.monotonic() - self.last_progress > self.stall_seconds:
+                        raise RemoteError(f'no data for {self.stall_seconds:g} s while waiting for block {b}')
+                    self._cond.wait(timeout=min(0.2, self.stall_seconds))
+            yield data
 
     def read(self, start: int, end: int) -> bytes:
         """Bytes start..end (inclusive) of the remote file, from memory where already held."""
@@ -247,6 +396,12 @@ class CacheRelay:
         return self.local_url
 
     def close(self) -> None:
+        self._fill_cancel.set()
+        with self._cond:
+            self._cond.notify_all()
+        if self._fill_thread is not None:
+            self._fill_thread.join(timeout=5)
+            self._fill_thread = None
         if self._server is not None:
             self._server.shutdown()
             self._server.server_close()
@@ -258,5 +413,8 @@ class CacheRelay:
         self._index = None
 
     def summary(self) -> str:
-        return (f'{self.remote_requests} remote request(s), {self.remote_bytes / 1048576:.1f} MB '
+        text = (f'{self.remote_requests} remote request(s), {self.remote_bytes / 1048576:.1f} MB '
                 f'(index {self.index_bytes / 1048576:.1f} MB fetched once)')
+        if self.fill_requests:
+            text += f'; background fill: {self.fill_requests} request(s), {self.fill_bytes / 1048576:.1f} MB'
+        return text

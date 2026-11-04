@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts'))
@@ -30,6 +31,32 @@ class FakeOrigin:
         if self.fail:
             raise rcr.RemoteError('boom')
         return self.data[start:end + 1]
+
+
+class StreamOrigin(FakeOrigin):
+    """FakeOrigin that can also stream: one stream() call is one remote request, yielded block by block. `pause` is an
+    optional callable(block_number) run before each block is delivered, to hold the stream back."""
+    def __init__(self, data, pause=None):
+        super().__init__(data)
+        self.streams: list[tuple[int, int]] = []
+        self.pause = pause
+
+    def stream(self, url, headers, start, end, timeout=60):
+        self.streams.append((start, end))
+        pos = start
+        while pos <= end:
+            if self.pause:
+                self.pause(pos // rcr.BLOCK)
+            stop = min(pos + rcr.BLOCK - 1, end)
+            yield self.data[pos:stop + 1]
+            pos = stop + 1
+
+
+def make_fill_relay(size=2 * MB, pause=None, **kw):
+    origin = StreamOrigin(random.Random(3).randbytes(size), pause)
+    relay = rcr.CacheRelay('https://cdn.example/x.mkv', {}, len(origin.data), None, fetch=origin.fetch,
+                           stream=origin.stream, **kw)
+    return relay, origin
 
 
 def make_relay(size=3 * MB, index_span=(1 * MB, 600 * 1024), origin=None):
@@ -152,6 +179,122 @@ class MemoryLimitTests(unittest.TestCase):
             relay.read(b * rcr.BLOCK, b * rcr.BLOCK + 9)
         self.assertEqual(len(origin.calls), n)           # all 20 were still held
         self.assertGreaterEqual(len(relay._blocks), 20)
+
+
+def wait_until(cond, seconds=5):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if cond():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+class BackgroundFillTests(unittest.TestCase):
+    def test_priority_ranges_are_fetched_first_then_the_gaps_in_order_each_block_once(self):
+        relay, origin = make_fill_relay()
+        relay.start()
+        self.addCleanup(relay.close)
+        B = rcr.BLOCK
+        relay.start_fill([(10 * B, 11 * B + 5), (3 * B, 3 * B)])
+        self.assertTrue(wait_until(lambda: not relay._fill_running))
+        starts = [a for a, _ in origin.streams]
+        self.assertEqual(starts[0], 10 * B)                  # priority range 1 (two blocks) in one request
+        self.assertEqual(origin.streams[0][1], 12 * B - 1)
+        self.assertEqual(starts[1], 3 * B)                   # priority range 2
+        self.assertEqual(starts[2], 0)                       # then the gaps, ascending
+        self.assertEqual(sorted(a for a, _ in origin.streams[2:]), [a for a, _ in origin.streams[2:]])
+        self.assertEqual(relay.fill_bytes, len(origin.data) - rcr.BLOCK)   # every byte once; the tail came from start()
+        self.assertEqual(relay.read(0, len(origin.data) - 1), origin.data)
+        self.assertEqual(origin.calls, [(len(origin.data) - rcr.BLOCK, len(origin.data) - 1)])   # only start()'s probe
+
+    def test_iter_blocks_yields_the_file_in_order_and_frees_memory(self):
+        relay, origin = make_fill_relay(size=2 * MB + 777)
+        relay.start()
+        self.addCleanup(relay.close)
+        relay.start_fill([(1 * MB, 1 * MB + 10)])
+        data = b''.join(relay.iter_blocks())
+        self.assertEqual(data, origin.data)
+        self.assertEqual(len(relay._blocks), 0)
+
+    def test_a_read_just_ahead_of_the_fill_waits_instead_of_requesting(self):
+        gate = threading.Event()
+        relay, origin = make_fill_relay(pause=lambda n: gate.wait(5) if n == 1 else None, wait_ahead_mb=2)
+        relay.start()
+        self.addCleanup(relay.close)
+        origin.calls.clear()
+        relay.start_fill([(0, 0)])
+        result = {}
+        t = threading.Thread(target=lambda: result.update(d=relay.read(2 * rcr.BLOCK, 2 * rcr.BLOCK + 99)))
+        self.assertTrue(wait_until(lambda: relay._fill_next == 1))
+        t.start()
+        time.sleep(0.2)
+        self.assertTrue(t.is_alive())                        # waiting for the fill, not fetching
+        gate.set()
+        t.join(5)
+        self.assertEqual(result['d'], origin.data[2 * rcr.BLOCK:2 * rcr.BLOCK + 100])
+        self.assertEqual(origin.calls, [])
+
+    def test_waiting_ends_only_after_a_stall_not_after_a_total_time(self):
+        # one block every 0.15 s: reaching block 6 takes ~0.9 s, well over the 0.5 s stall limit
+        relay, origin = make_fill_relay(pause=lambda n: time.sleep(0.15) if n > 0 else None, wait_ahead_mb=2, stall_seconds=0.5)
+        relay.start()
+        self.addCleanup(relay.close)
+        origin.calls.clear()
+        relay.start_fill([(0, 0)])
+        self.assertTrue(wait_until(lambda: relay._fill_next == 1))
+        self.assertEqual(relay.read(6 * rcr.BLOCK, 6 * rcr.BLOCK + 9), origin.data[6 * rcr.BLOCK:6 * rcr.BLOCK + 10])
+        self.assertEqual(origin.calls, [])
+
+    def test_a_stalled_fill_gives_up_the_wait_and_fetches_the_block(self):
+        gate = threading.Event()
+        relay, origin = make_fill_relay(pause=lambda n: gate.wait(10) if n == 1 else None, wait_ahead_mb=2, stall_seconds=0.4)
+        relay.start()
+        self.addCleanup(lambda: (gate.set(), relay.close()))
+        origin.calls.clear()
+        relay.start_fill([(0, 0)])
+        self.assertTrue(wait_until(lambda: relay._fill_next == 1))
+        started = time.monotonic()
+        self.assertEqual(relay.read(2 * rcr.BLOCK, 2 * rcr.BLOCK + 9), origin.data[2 * rcr.BLOCK:2 * rcr.BLOCK + 10])
+        self.assertGreaterEqual(time.monotonic() - started, 0.35)
+        self.assertEqual(len(origin.calls), 1)
+
+    def test_wait_ahead_zero_or_a_far_block_means_an_ordinary_request(self):
+        for wait_mb, block in ((0, 2), (0.25, 10)):
+            gate = threading.Event()
+            relay, origin = make_fill_relay(pause=lambda n: gate.wait(10) if n == 1 else None, wait_ahead_mb=wait_mb)
+            relay.start()
+            self.addCleanup(lambda g=gate, r=relay: (g.set(), r.close()))
+            origin.calls.clear()
+            relay.start_fill([(0, 0)])
+            self.assertTrue(wait_until(lambda: relay._fill_next == 1))
+            relay.read(block * rcr.BLOCK, block * rcr.BLOCK + 9)
+            self.assertEqual(len(origin.calls), 1, (wait_mb, block))
+
+    def test_close_stops_the_fill_quickly(self):
+        gate = threading.Event()
+        relay, origin = make_fill_relay(pause=lambda n: gate.wait(10) if n == 2 else None)
+        relay.start()
+        relay.start_fill([])
+        self.assertTrue(wait_until(lambda: relay._fill_next == 2))
+        started = time.monotonic()
+        gate.set()
+        relay.close()
+        self.assertLess(time.monotonic() - started, 3)
+
+    def test_a_failing_stream_ends_the_fill_and_iter_blocks_says_so(self):
+        relay, origin = make_fill_relay()
+        relay.start()
+        self.addCleanup(relay.close)
+
+        def broken(url, headers, start, end, timeout=60):
+            raise rcr.RemoteError('boom')
+            yield b''
+        relay._stream = broken
+        relay.start_fill([])
+        self.assertTrue(wait_until(lambda: not relay._fill_running))
+        with self.assertRaises(rcr.RemoteError):
+            list(relay.iter_blocks())
 
 
 class HttpLayerTests(unittest.TestCase):
