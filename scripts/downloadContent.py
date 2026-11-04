@@ -6584,6 +6584,10 @@ def _match_links_to_funscripts(links: list[str], funscript_paths: list[str]) -> 
     return result
 
 
+# Link outcomes a later run should attempt again, so they never count as "already seen".
+_RETRY_STATUSES = {'failed', 'deferred_mega', 'previously_failed'}
+
+
 def _previously_seen_links(folder: str) -> set[str]:
     """Return every link URL recorded by the most recent 'downloadContent'
     folder_log entry for *folder*, or an empty set if there isn't one.
@@ -6602,10 +6606,15 @@ def _previously_seen_links(folder: str) -> set[str]:
     records = [r for r in folder_log.read(folder) if r.get('script') == 'downloadContent']
     if not records:
         return set()
-    return {
+    seen = {
         entry['url'] for entry in records[-1].get('links', [])
-        if isinstance(entry, dict) and entry.get('url')
+        if isinstance(entry, dict) and entry.get('url') and entry.get('status') not in _RETRY_STATUSES
     }
+    # Every link failed last time: still a "seen" run (so the post isn't skipped outright), just one with nothing
+    # settled -- a placeholder no real link can equal keeps the set non-empty.
+    if not seen and records[-1].get('links'):
+        seen.add('')
+    return seen
 
 
 def _claimed_links(folder: str) -> set[str]:
@@ -8033,14 +8042,17 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
         if 'discord_browser' in sys.modules:
             sys.modules['discord_browser'].close()
         if completed_cleanly:
-            _failure_folders = {f.get('save_directory') for f in failures}
             _uncertain_folders = {u.get('save_directory') for u in uncertain}
             _logged = 0
             for task in tasks:
                 _folder = task['folder']
-                if _folder in _failure_folders or _folder in _uncertain_folders:
+                if _folder in _uncertain_folders:
                     continue
-                if not all(tracker.is_done(_folder, lnk) for lnk in task['links']):
+                # A post whose links were all attempted is logged even when some failed: otherwise it comes back as
+                # a task on every run (hundreds of posts, each just re-skipping its known failures). The failed
+                # links are kept out of the "seen" set (_previously_seen_links), so they still get retried.
+                if not tracker.is_folder_done(_folder) and \
+                        not all(tracker.is_done(_folder, lnk) for lnk in task['links']):
                     continue
                 _saved = [os.path.basename(f) for f in newly_downloaded
                           if os.path.abspath(os.path.dirname(f)) == os.path.abspath(_folder)]
