@@ -6995,7 +6995,8 @@ def _best_video_match(folder: str) -> tuple[str, float]:
 
 # The settings recorded with every run's statistics (never a secret: only these named, behaviour-shaping ones).
 _RUN_SETTINGS = ('MAX_RESOLUTION', 'SKIP_KNOWN_FAILURES', 'MEGA_RETRY_MINUTES', 'MEGA_MAX_WAIT_MINUTES', 'BROWSER_HEADLESS',
-                 'BROWSER_PERSISTENT_PROFILE', 'PROTECT_AV1', 'FORCE_RERUN', 'SKIP_TITLE_KEYWORDS', 'RELAY_MEMORY_MB')
+                 'BROWSER_PERSISTENT_PROFILE', 'PROTECT_AV1', 'FORCE_RERUN', 'SKIP_TITLE_KEYWORDS', 'RELAY_MEMORY_MB',
+                 'RELAY_PREFETCH', 'RELAY_PREFETCH_MAX_MB', 'RELAY_WAIT_AHEAD_MB', 'RELAY_STALL_SECONDS')
 
 # Set by find_and_download while its browser is up: reads what that (logged-in) browser is showing for a failed link
 # on a gated site -- it never navigates, the handler already loaded the page.

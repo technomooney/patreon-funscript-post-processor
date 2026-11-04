@@ -113,6 +113,38 @@ def _keyring_set(key: str, value: str) -> None:
 # Prompt helpers  (press Enter to keep the value shown in brackets)
 # ---------------------------------------------------------------------------
 
+def _total_ram_mb() -> int | None:
+    """Installed RAM in MB (Linux/macOS via sysconf, Windows via GlobalMemoryStatusEx), or None when it cannot be read."""
+    try:
+        if os.name == 'nt':
+            import ctypes
+
+            class _MemStatus(ctypes.Structure):
+                _fields_ = [('dwLength', ctypes.c_ulong), ('dwMemoryLoad', ctypes.c_ulong),
+                            ('ullTotalPhys', ctypes.c_ulonglong), ('ullAvailPhys', ctypes.c_ulonglong),
+                            ('ullTotalPageFile', ctypes.c_ulonglong), ('ullAvailPageFile', ctypes.c_ulonglong),
+                            ('ullTotalVirtual', ctypes.c_ulonglong), ('ullAvailVirtual', ctypes.c_ulonglong),
+                            ('sullAvailExtendedVirtual', ctypes.c_ulonglong)]
+            status = _MemStatus()
+            status.dwLength = ctypes.sizeof(_MemStatus)
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return None
+            return int(status.ullTotalPhys // (1024 * 1024))
+        return int(os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') // (1024 * 1024))
+    except (AttributeError, ValueError, OSError, OverflowError):
+        return None
+
+
+def default_prefetch_max_mb(ram_mb: int | None) -> int:
+    """Suggested RELAY_PREFETCH_MAX_MB: 15 GB on a machine with 32 GB of RAM or more (a video over 10 GB is rare: VR or
+    very long), otherwise a quarter of the RAM (at least 1 GB); 2 GB when the RAM cannot be read."""
+    if ram_mb is None:
+        return 2048
+    if ram_mb >= 32 * 1024 - 512:       # a "32 GB" machine reports a little less than 32768 MB
+        return 15 * 1024
+    return max(1024, ram_mb // 4)
+
+
 def _ask(label: str, current: str) -> str:
     """Prompt with the current value in brackets; Enter keeps it."""
     hint  = f'[{current}]' if current else '[not set]'
@@ -606,6 +638,40 @@ def main():
     )
     _write_env('SKIP_KNOWN_FAILURES', 'true' if skip_known else 'false',
                comment='Skip previously-failed links recorded in the library database (downloader_link_outcomes).')
+
+    relay_mem = _ask(
+        'How much memory (MB) may the pre-check\'s local relay keep of remote files? (0 = no limit)\n'
+        '  The relay remembers what the pre-check reads so the server is asked as few times as possible',
+        current=_read_env('RELAY_MEMORY_MB') or '64')
+    _write_env('RELAY_MEMORY_MB', relay_mem if relay_mem.isdigit() else '64',
+               comment='Memory in MB the pre-check relay may use to remember remote file data. 0 = no limit.')
+
+    prefetch = _ask_bool(
+        'Load each remote video into memory in the background during the pre-check? (true/false)\n'
+        '  Fetches what the checks need first, then the rest, and the download is then served from memory:\n'
+        '  fewer requests to the server, at the cost of RAM (and of bandwidth if the video turns out to be a duplicate)',
+        current=_read_env('RELAY_PREFETCH').lower() in ('true', '1', 'yes'),
+    )
+    _write_env('RELAY_PREFETCH', 'true' if prefetch else 'false',
+               comment='Fill the whole remote video into memory in the background during the pre-check and serve the download from it.')
+    if prefetch:
+        suggested = default_prefetch_max_mb(_total_ram_mb())
+        prefetch_max = _ask(
+            f'Largest video (MB) to load into memory this way? (0 = no limit; suggested {suggested} for this machine)',
+            current=_read_env('RELAY_PREFETCH_MAX_MB') or str(suggested))
+        _write_env('RELAY_PREFETCH_MAX_MB', prefetch_max if prefetch_max.isdigit() else str(suggested),
+                   comment='Videos larger than this (MB) are not loaded into memory ahead of the download. 0 = no limit.')
+        wait_ahead = _ask(
+            'A check that needs data the background fill is about to reach waits for it when it is within this many MB\n'
+            '  (0 = never wait, always ask the server; lower it for servers that slow down during long downloads)',
+            current=_read_env('RELAY_WAIT_AHEAD_MB') or '2')
+        _write_env('RELAY_WAIT_AHEAD_MB', wait_ahead if wait_ahead.isdigit() else '2',
+                   comment='MB ahead of the background fill within which a read waits for the fill instead of making its own request.')
+        stall = _ask(
+            'Stop waiting for the background fill when it delivers no data at all for this many seconds',
+            current=_read_env('RELAY_STALL_SECONDS') or '15')
+        _write_env('RELAY_STALL_SECONDS', stall if stall.isdigit() and int(stall) > 0 else '15',
+                   comment='Seconds without any data from the background fill before a waiting read gives up and asks the server itself.')
 
     protect_av1 = _ask_bool(
         'Never replace a local AV1 video with a non-AV1 one? (true/false)\n'
