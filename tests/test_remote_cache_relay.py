@@ -104,9 +104,25 @@ class CacheLogicTests(unittest.TestCase):
         relay.read(0, 100)
         self.assertEqual(len([c for c in origin.calls if c[0] == 0 and c[1] == 400 * 1024 - 1]), len(index_calls))
 
-    def test_no_relay_without_a_known_index_or_when_it_is_too_big_or_unfetchable(self):
+    def test_no_index_still_gets_a_relay_that_keeps_what_it_probed_with(self):
+        relay, origin = make_relay(index_span=None)
+        self.assertTrue(relay.start())
+        self.addCleanup(relay.close)
+        self.assertEqual(len(origin.calls), 1)                       # the tail block, fetched to prove ranges work
+        self.assertEqual(relay.read(3 * MB - 100, 3 * MB - 1), origin.data[-100:])
+        self.assertEqual(relay.read(0, 99), origin.data[:100])
+        self.assertEqual(relay.read(0, 99), origin.data[:100])
+        self.assertEqual(len(origin.calls), 2)                       # the repeat and the tail came from memory
+        self.assertTrue(relay.local_url.endswith('/relay.mp4'))
+
+    def test_no_index_and_a_server_that_cannot_range_means_no_relay(self):
+        origin = FakeOrigin(random.Random(1).randbytes(MB))
+        origin.fail = True
+        self.assertIsNone(rcr.CacheRelay('u', {}, MB, None, fetch=origin.fetch).start())
+
+    def test_no_relay_when_the_index_is_empty_or_too_big_or_unfetchable(self):
         data = random.Random(1).randbytes(MB)
-        for span in (None, (0, 0), (0, rcr.INDEX_LIMIT + 1)):
+        for span in ((0, 0), (0, rcr.INDEX_LIMIT + 1)):
             relay = rcr.CacheRelay('u', {}, len(data), span, fetch=FakeOrigin(data).fetch)
             self.assertIsNone(relay.start())
         origin = FakeOrigin(data)

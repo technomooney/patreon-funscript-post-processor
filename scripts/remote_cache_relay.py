@@ -63,11 +63,12 @@ class _Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
 
 class CacheRelay:
     def __init__(self, url: str, headers: dict, content_length: int, index_span: tuple[int, int] | None = None,
-                 content_type: str = 'video/mp4', fetch=default_fetch):
+                 content_type: str = 'video/mp4', fetch=default_fetch, filename: str = 'relay.mp4'):
         self.url, self.headers = url, dict(headers)
         self.content_length = content_length
         self.index_span = index_span                  # (offset, size) of the moov box, or None
         self.content_type = content_type
+        self.filename = filename                      # the last part of the local URL: ffmpeg takes a hint from its extension
         self._fetch = fetch
         self._lock = threading.RLock()
         self._index: bytes | None = None
@@ -157,13 +158,20 @@ class CacheRelay:
 
     # -- local side -------------------------------------------------------------------------------------------
     def start(self) -> str | None:
-        """Fetch the index once and start serving. Returns the local URL, or None when no relay can be used (no known
-        index, one too large to hold, or the index could not be fetched)."""
-        if not self.index_span or not (0 < self.index_span[1] <= INDEX_LIMIT) or self.content_length <= 0:
+        """Start serving. With a known index it is fetched once first; without one (any other container) the last block
+        of the file is read instead, which proves the server can do ranged reads and is usually wanted anyway (the
+        index of an MKV or AVI sits at the end), and is kept. Returns the local URL, or None when no relay can be
+        used (no size, an index too large to hold, or the first remote read failed)."""
+        if self.content_length <= 0:
+            return None
+        if self.index_span and not (0 < self.index_span[1] <= INDEX_LIMIT):
             return None
         try:
             with self._lock:
-                self._ensure_index()
+                if self.index_span:
+                    self._ensure_index()
+                else:
+                    self._read_blocks(max(0, self.content_length - BLOCK), self.content_length - 1)
         except (RemoteError, OSError):
             return None
         relay = self
@@ -233,7 +241,7 @@ class CacheRelay:
         self._thread = threading.Thread(target=self._server.serve_forever, kwargs={'poll_interval': POLL_INTERVAL},
                                         daemon=True, name='cache-relay')
         self._thread.start()
-        self.local_url = f'http://127.0.0.1:{self._server.server_address[1]}/{self._token}/relay.mp4'
+        self.local_url = f'http://127.0.0.1:{self._server.server_address[1]}/{self._token}/{self.filename}'
         return self.local_url
 
     def close(self) -> None:

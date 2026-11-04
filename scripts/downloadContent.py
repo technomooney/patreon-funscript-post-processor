@@ -16,6 +16,7 @@ import sys
 import time
 import glob
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse, quote, unquote, parse_qs
@@ -1889,15 +1890,21 @@ def _precheck_av(url: str, headers: dict[str, str], download_dir: str, url_dur: 
         return None  # no duration match — proceed with download
 
     relay = None
-    if _remote_index_span and content_length > 0:
-        print(f'  [pre-check] reading the index once ({_remote_index_span[1] / 1048576:.1f} MB)...', flush=True)
-        relay = remote_cache_relay.CacheRelay(url, headers, content_length, _remote_index_span)
+    if content_length > 0:
+        # Always try the relay, MP4 index or not: whatever one check reads, the next reuses from memory.
+        if _remote_index_span:
+            print(f'  [pre-check] reading the index once ({_remote_index_span[1] / 1048576:.1f} MB)...', flush=True)
+        ext = os.path.splitext(urllib.parse.urlparse(url).path)[1].lower()
+        ext = ext if re.fullmatch(r'\.[a-z0-9]{1,5}', ext) else '.mp4'
+        relay = remote_cache_relay.CacheRelay(url, headers, content_length, _remote_index_span,
+                                              content_type=mimetypes.guess_type('x' + ext)[0] or 'video/mp4',
+                                              filename='relay' + ext)
         local_url = relay.start()
         if local_url:
             url, headers = local_url, {}
         else:
             relay = None
-            print('  [pre-check] could not cache the index -- reading it directly', flush=True)
+            print('  [pre-check] could not set up the local cache -- reading directly', flush=True)
     global _remote_index_bytes
     held_index_bytes = _remote_index_bytes
     if relay is not None:
