@@ -5440,7 +5440,8 @@ def _eroscripts_video_links(cooked_html: str) -> list[str]:
         try:
             check_domain(href)
         except UnknownDomainError:
-            if any(domain == h or domain.endswith('.' + h) for h in _EROSCRIPTS_YTDLP_HOSTS):
+            if (any(domain == h or domain.endswith('.' + h) for h in _EROSCRIPTS_YTDLP_HOSTS)
+                    and not _is_youtube_channel_url(href)):
                 generic.append(href)
             continue
         found.append(href)
@@ -5811,6 +5812,32 @@ def _ytdlp_video_name(ytdlp_prefix: list[str], url: str) -> str | None:
         return None
 
 
+_YOUTUBE_HOSTS = ('youtube.com', 'youtu.be', 'youtube-nocookie.com')
+
+
+def _is_youtube_channel_url(url: str) -> bool:
+    """True for a YouTube URL that names neither one video nor one playlist (a channel, @handle, /c/, /user/, the
+    home page...). yt-dlp would happily walk a whole channel, which is never what a post link means."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    host = (parsed.hostname or '').lower()
+    if not any(host == h or host.endswith('.' + h) for h in _YOUTUBE_HOSTS):
+        return False
+    segs = [x for x in parsed.path.split('/') if x]
+    query = parse_qs(parsed.query)
+    if host == 'youtu.be' or host.endswith('.youtu.be'):
+        return not segs
+    if segs and segs[0] == 'watch':
+        return not query.get('v')
+    if segs and segs[0] == 'playlist':
+        return not query.get('list')
+    if segs and segs[0] in ('shorts', 'live', 'embed', 'v'):
+        return len(segs) < 2
+    return True
+
+
 def download_ytdlp(_driver, url: str, download_dir: str) -> bool:
     """Generic video extractor using yt-dlp for sites without a dedicated handler.
 
@@ -5824,6 +5851,9 @@ def download_ytdlp(_driver, url: str, download_dir: str) -> bool:
     Install yt-dlp with:  pip install yt-dlp  or  pipx install yt-dlp
     """
     global _last_fetch_original_name
+    if _is_youtube_channel_url(url):
+        print('  [yt-dlp] skipping YouTube channel/profile link (only watch and playlist URLs are downloaded)')
+        return False
     ytdlp_prefix = _ytdlp_cmd()
     if ytdlp_prefix is None:
         print('  [yt-dlp] not found — install with: pip install yt-dlp')
