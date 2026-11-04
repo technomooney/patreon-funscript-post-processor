@@ -1237,11 +1237,14 @@ def _quality_is_replacement_candidate(remote_q: dict, local_q: dict,
                                        remote_size: int, local_size: int) -> bool:
     """Return True if the remote file is worth downloading to replace the local one.
 
-    Replacement is only warranted when the remote file is the same resolution
-    (within 2 %) AND strictly smaller in file size — i.e. better-compressed
-    same content.  Resolution upgrades are intentionally ignored: the user's
-    MAX_RESOLUTION setting controls what gets downloaded, and a higher-resolution
-    remote would bypass that preference.
+    Replacement is warranted in two cases, both bounded by MAX_RESOLUTION:
+      * the remote is a higher resolution than the local file AND fits within
+        MAX_RESOLUTION (an upgrade towards the requested resolution);
+      * the remote is the same resolution (within 2 %) and strictly smaller in
+        file size, i.e. better-compressed same content.
+    A local file already above MAX_RESOLUTION is never replaced, and a remote
+    above MAX_RESOLUTION is never an upgrade.  Resolution is the short side
+    (1080 for 1920x1080 and for 1080x1920).
 
     remote_size / local_size of 0 means unknown — treated conservatively.
 
@@ -1260,10 +1263,14 @@ def _quality_is_replacement_candidate(remote_q: dict, local_q: dict,
     r_w, r_h = remote_q.get('width', 0), remote_q.get('height', 0)
     l_w, l_h = local_q.get('width', 0), local_q.get('height', 0)
 
-    # If we know both resolutions, require them to match within 2 %
+    # Both resolutions known: upgrade towards MAX_RESOLUTION, otherwise require a match within 2 %
     if r_w and r_h and l_w and l_h:
+        max_res = _get_max_resolution()
+        r_res, l_res = min(r_w, r_h), min(l_w, l_h)
+        if l_res > max_res:
+            return False  # already above what was asked for — never re-download
         if abs(r_w * r_h - l_w * l_h) > l_w * l_h * 0.02:
-            return False  # different resolution — skip regardless of size
+            return l_res < r_res <= max_res  # different resolution: only a real upgrade within the cap
 
     # Same (or unknown) resolution: replace only if remote is smaller
     if 0 < remote_size < local_size:
@@ -1652,7 +1659,10 @@ def _decide_skip_or_replace(match_path: str, url: str, headers: dict[str, str],
 
     if (_quality_is_replacement_candidate(remote_q, local_q, content_length, local_size)
             and not _protected_from_replace(match_path)):
-        if content_length > 0:
+        r_h, l_h = min(remote_q.get('width', 0), remote_q.get('height', 0)), min(local_q.get('width', 0), local_q.get('height', 0))
+        if r_h > l_h > 0 and abs(remote_q['width'] * remote_q['height'] - local_q['width'] * local_q['height']) > local_q['width'] * local_q['height'] * 0.02:
+            note = f'higher resolution {r_h}p vs {l_h}p'
+        elif content_length > 0:
             note = (f'smaller file {content_length / 1024 / 1024:.1f} MB '
                     f'vs {local_size / 1024 / 1024:.1f} MB')
         else:
