@@ -1898,9 +1898,29 @@ def _env_number(name: str, default: float, minimum: float = 0) -> float:
     return value if value >= minimum else default
 
 
-def _relay_prefetch_wanted(content_length: int) -> bool:
-    """RELAY_PREFETCH on, and the file no bigger than RELAY_PREFETCH_MAX_MB (0 = no limit; default 2048)."""
+# Hosts whose background fill failed earlier in this run (refused or cut the long ranged stream): their later
+# files are not filled again, so a server that cannot do it is asked once, not once per file.
+_fill_refused_hosts: set[str] = set()
+
+
+def _note_fill_outcome(url: str, headers: dict[str, str], relay) -> None:
+    """If *relay*'s background fill ended in an error, log it (fetch_failures.log) and stop filling from that host."""
+    error = getattr(relay, 'fill_error', '')
+    if not error:
+        return
+    host = urllib.parse.urlparse(url).netloc
+    fetch_diagnostics.log_fetch_failure(url, headers, remote_cache_relay.RemoteError(error), 'FILL')
+    if host not in _fill_refused_hosts:
+        _fill_refused_hosts.add(host)
+        print(f'  [relay] background fill failed on {host} ({error}) -- not filling from it again this run', flush=True)
+
+
+def _relay_prefetch_wanted(content_length: int, url: str = '') -> bool:
+    """RELAY_PREFETCH on, the host not one whose fill already failed this run, and the file no bigger than
+    RELAY_PREFETCH_MAX_MB (0 = no limit; default 2048)."""
     if os.getenv('RELAY_PREFETCH', '').strip().lower() not in ('true', '1', 'yes'):
+        return False
+    if url and urllib.parse.urlparse(url).netloc in _fill_refused_hosts:
         return False
     cap_mb = _env_number('RELAY_PREFETCH_MAX_MB', 2048)
     return cap_mb == 0 or content_length <= cap_mb * 1024 * 1024
@@ -1984,13 +2004,13 @@ def _precheck_av(url: str, headers: dict[str, str], download_dir: str, url_dur: 
         if existing_dur is not None and abs(url_dur - existing_dur) <= 1.0:
             duration_candidates.append(full)
 
-    prefetch = _relay_prefetch_wanted(content_length)
+    prefetch = _relay_prefetch_wanted(content_length, url)
     if not duration_candidates:
         print('  [pre-check] no duration match — proceeding with download', flush=True)
         if prefetch:         # nothing to compare, so the download is certain: start it in memory now
             relay, _ = _open_relay(url, headers, content_length, url_dur, True)
             if relay is not None:
-                _held_relay = {'url': url, 'relay': relay, 'head_headers': head_headers, 'size': content_length}
+                _held_relay = {'url': url, 'relay': relay, 'head_headers': head_headers, 'size': content_length, 'headers': headers}
         return None  # no duration match — proceed with download
 
     relay, local_url = _open_relay(url, headers, content_length, url_dur, prefetch)
@@ -2008,8 +2028,9 @@ def _precheck_av(url: str, headers: dict[str, str], download_dir: str, url_dur: 
         _remote_index_bytes = held_index_bytes
         if relay is not None:
             print(f'  [pre-check] remote reads for these checks: {relay.summary()}', flush=True)
+            _note_fill_outcome(url, headers, relay)
             if finished and verdict is None and prefetch:
-                _held_relay = {'url': url, 'relay': relay, 'head_headers': head_headers, 'size': content_length}
+                _held_relay = {'url': url, 'relay': relay, 'head_headers': head_headers, 'size': content_length, 'headers': headers}
             else:
                 relay.close()
 
@@ -2135,6 +2156,7 @@ def _write_from_held_relay(video_url: str, writing_path: str, override_name: str
             print(f'  the background fill did not finish ({e}) -- downloading normally', flush=True)
             written = -1
         print(f'  [relay] {relay.summary()}', flush=True)
+        _note_fill_outcome(video_url, held.get('headers') or {}, relay)
         if written != size:
             if os.path.exists(writing_path):
                 os.remove(writing_path)

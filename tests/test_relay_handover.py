@@ -112,6 +112,28 @@ class HandOverTests(unittest.TestCase):
         self.assertIsNone(dc._write_from_held_relay('https://cdn.example/v.mkv', self.part, None))
 
 
+class FailedFillMemoryTests(unittest.TestCase):
+    def setUp(self):
+        dc._fill_refused_hosts.clear()
+        self.addCleanup(dc._fill_refused_hosts.clear)
+
+    def test_a_failed_fill_is_logged_and_the_host_is_not_filled_again(self):
+        relay = mock.Mock(fill_error='the server ignored the Range header (HTTP 200)')
+        with mock.patch.object(dc.fetch_diagnostics, 'log_fetch_failure') as log, mock.patch('builtins.print'):
+            dc._note_fill_outcome('https://cdn.example/a.mp4', {}, relay)
+        log.assert_called_once()
+        self.assertEqual(log.call_args[0][3], 'FILL')
+        with mock.patch.dict(os.environ, {'RELAY_PREFETCH': 'true'}):
+            self.assertFalse(dc._relay_prefetch_wanted(10 * MB, 'https://cdn.example/b.mp4'))
+            self.assertTrue(dc._relay_prefetch_wanted(10 * MB, 'https://other.example/b.mp4'))
+
+    def test_a_clean_fill_is_not_logged(self):
+        with mock.patch.object(dc.fetch_diagnostics, 'log_fetch_failure') as log:
+            dc._note_fill_outcome('https://cdn.example/a.mp4', {}, mock.Mock(fill_error=''))
+        log.assert_not_called()
+        self.assertEqual(dc._fill_refused_hosts, set())
+
+
 class KeepOrCloseTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
@@ -120,6 +142,7 @@ class KeepOrCloseTests(unittest.TestCase):
         dc._held_relay = None
         self.relay = mock.Mock()
         self.relay.summary.return_value = ''
+        self.relay.fill_error = ''
         open(os.path.join(self.dir, 'a.mp4'), 'wb').close()
 
     def run_av(self, verdict, prefetch=True, candidates=True):
