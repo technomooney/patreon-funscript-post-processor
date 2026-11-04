@@ -1561,6 +1561,22 @@ def _stream_frame(url: str, headers: dict[str, str], timestamp: str) -> bytes | 
     return None
 
 
+_FRAME_EXTRACT_RETRIES = 3        # extra attempts per frame before it counts as a failed extraction
+_FRAME_RETRY_PAUSE = 1.0          # seconds between attempts
+
+
+def _extract_with_retries(extract, *args) -> bytes | None:
+    """Call *extract* (a frame extractor returning bytes or None), retrying up to
+    _FRAME_EXTRACT_RETRIES more times, with a short pause, while it returns None."""
+    for attempt in range(_FRAME_EXTRACT_RETRIES + 1):
+        frame = extract(*args)
+        if frame:
+            return frame
+        if attempt < _FRAME_EXTRACT_RETRIES:
+            time.sleep(_FRAME_RETRY_PAUSE)
+    return None
+
+
 def _remote_visually_similar(url: str, headers: dict[str, str],
                               url_dur: float, local_path: str) -> bool:
     """Return True if the remote video at *url* is visually similar to *local_path*.
@@ -1585,8 +1601,8 @@ def _remote_visually_similar(url: str, headers: dict[str, str],
     thirds: dict[int, list[int]] = {}      # which third of the video -> [matched, compared]
     for i, ts in enumerate(timestamps, start=1):
         print(f'  [pre-check] frame sample {i}/{n} at {ts}...', end='\r', flush=True)
-        remote_frame = _stream_frame(url, headers, ts)
-        local_frame  = _video_frame_hash(local_path, ts)
+        remote_frame = _extract_with_retries(_stream_frame, url, headers, ts)
+        local_frame  = _extract_with_retries(_video_frame_hash, local_path, ts) if remote_frame else None
         if remote_frame and local_frame:
             total_count += 1
             sim = _frame_similarity(remote_frame, local_frame)

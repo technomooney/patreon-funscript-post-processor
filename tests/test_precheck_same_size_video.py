@@ -407,9 +407,24 @@ class LongVideoIndexTests(unittest.TestCase):
         frames = []
         with mock.patch.object(dc, '_stream_frame', side_effect=lambda u, h, ts: frames.append(ts)), \
                 mock.patch.object(dc, '_video_frame_hash', return_value=None), \
+                mock.patch.object(dc.time, 'sleep'), \
                 contextlib.redirect_stdout(io.StringIO()):
             dc._remote_visually_similar('https://cdn.example/x.mp4', {}, 3 * 3600.0, '/nonexistent.mp4')
-        self.assertEqual(len(frames), 5)
+        self.assertEqual(len(set(frames)), 5)
+
+
+class FrameExtractRetryTests(unittest.TestCase):
+    def test_a_frame_is_retried_three_times_before_it_counts_as_failed(self):
+        calls = []
+        with mock.patch.object(dc.time, 'sleep'):
+            result = dc._extract_with_retries(lambda: calls.append(1))
+        self.assertIsNone(result)
+        self.assertEqual(len(calls), 4)          # first try + 3 retries
+
+    def test_a_retry_that_succeeds_stops_retrying(self):
+        results = iter([None, None, b'x' * 1024])
+        with mock.patch.object(dc.time, 'sleep'):
+            self.assertEqual(dc._extract_with_retries(lambda: next(results)), b'x' * 1024)
 
 
 if __name__ == '__main__':
