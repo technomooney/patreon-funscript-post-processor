@@ -30,6 +30,8 @@ BLOCK = 128 * 1024            # remote data is fetched and remembered in blocks 
 SERVE_CHUNK = 1024 * 1024     # a response is produced piece by piece, so a client that stops early costs nothing more
 POLL_INTERVAL = 0.02          # serve_forever's tick: shutdown() waits for one, and the default (0.5 s) made every close slow
 MAX_CACHED_BLOCKS = 512       # 64 MB of remembered sample data; the index is kept separately and never evicted
+FILL_MIN_RUN_BLOCKS = 8        # a fill request is never shrunk below this (1 MB)
+FILL_MAX_FAILURES = 3          # requests in a row that deliver nothing before the fill gives up
 INDEX_LIMIT = 96 * 1024 * 1024  # an index bigger than this is not worth holding in memory: no relay
 
 
@@ -89,7 +91,7 @@ class CacheRelay:
     def __init__(self, url: str, headers: dict, content_length: int, index_span: tuple[int, int] | None = None,
                  content_type: str = 'video/mp4', fetch=default_fetch, filename: str = 'relay.mp4',
                  max_blocks: int | None = MAX_CACHED_BLOCKS, stream=default_stream,
-                 wait_ahead_mb: float = 2, stall_seconds: float = 15):
+                 wait_ahead_mb: float = 2, stall_seconds: float = 15, retry_pause: float = 1.0):
         self.url, self.headers = url, dict(headers)
         self.content_length = content_length
         self.index_span = index_span                  # (offset, size) of the moov box, or None
@@ -99,6 +101,7 @@ class CacheRelay:
         self._stream = stream
         self.wait_ahead_blocks = int(wait_ahead_mb * 1024 * 1024) // BLOCK   # 0 = never wait for the fill
         self.stall_seconds = stall_seconds
+        self.retry_pause = retry_pause                # between a failed fill request and the next one
         self.max_blocks = max_blocks                  # remembered sample blocks kept; None = no limit
         self._lock = threading.RLock()
         self._cond = threading.Condition(self._lock)  # signalled whenever the fill stores a block or ends
@@ -115,6 +118,8 @@ class CacheRelay:
         self.fill_requests = 0
         self.fill_bytes = 0
         self.fill_error = ''
+        self.fill_continuations = 0      # requests that carried on after a stream was cut or refused
+        self.fill_run_cap: int | None = None   # blocks per request once the server has shown it will not do longer ones
         self.remote_requests = 0
         self.remote_bytes = 0
         self.index_bytes = 0
@@ -221,7 +226,12 @@ class CacheRelay:
                 self._cond.notify_all()
 
     def _fill_range(self, first: int, last: int) -> None:
+        """Fill every missing block in first..last. A request that is cut short or refused is not the end: the blocks it
+        delivered are kept and the next request carries on from the first missing one, at the length the server has shown
+        it will serve (cut after N blocks -> N from then on; refused outright -> half as many, down to a floor). The fill
+        only gives up after FILL_MAX_FAILURES requests in a row that deliver nothing."""
         b = first
+        failures = 0
         while b <= last and not self._fill_cancel.is_set():
             with self._lock:
                 while b <= last and b in self._blocks:
@@ -229,13 +239,15 @@ class CacheRelay:
                 if b > last:
                     return
                 run_last = b
-                while run_last + 1 <= last and run_last + 1 not in self._blocks:
+                while run_last + 1 <= last and run_last + 1 not in self._blocks and \
+                        (self.fill_run_cap is None or run_last + 1 - b < self.fill_run_cap):
                     run_last += 1
                 self._fill_next, self._fill_run_last = b, run_last
                 self.last_progress = time.monotonic()
                 self.fill_requests += 1
             end = min((run_last + 1) * BLOCK - 1, self.content_length - 1)
             n = b
+            error = ''
             pieces = self._stream(self.url, self.headers, b * BLOCK, end)
             try:
                 for piece in pieces:
@@ -249,13 +261,30 @@ class CacheRelay:
                         self._fill_next = n
                         self.last_progress = time.monotonic()
                         self._cond.notify_all()
+            except (RemoteError, OSError) as e:
+                error = str(e) or type(e).__name__
             finally:
                 close = getattr(pieces, 'close', None)
                 if close:
                     close()
-            if n != run_last + 1:
-                raise RemoteError(f'the fill got {n - b} of {run_last + 1 - b} blocks')
-            b = run_last + 1
+            if n == run_last + 1 and not error:
+                failures = 0
+                b = run_last + 1
+                continue
+            # cut short, refused or ended early
+            error = error or f'the stream ended after {n - b} of {run_last + 1 - b} blocks'
+            self.fill_continuations += 1
+            if n > b:
+                failures = 0
+                self.fill_run_cap = max(FILL_MIN_RUN_BLOCKS, n - b)      # the length the server was willing to serve
+            else:
+                failures += 1
+                if failures >= FILL_MAX_FAILURES:
+                    raise RemoteError(error)
+                self.fill_run_cap = max(FILL_MIN_RUN_BLOCKS, (run_last + 1 - b) // 2)
+            if self._fill_cancel.wait(self.retry_pause):
+                return
+            b = n
 
     def _block_from_index(self, b: int) -> bytes | None:
         if not self.index_span or self._index is None:
@@ -417,4 +446,6 @@ class CacheRelay:
                 f'(index {self.index_bytes / 1048576:.1f} MB fetched once)')
         if self.fill_requests:
             text += f'; background fill: {self.fill_requests} request(s), {self.fill_bytes / 1048576:.1f} MB'
+            if self.fill_continuations:
+                text += f' ({self.fill_continuations} carried on after a cut or refused stream)'
         return text

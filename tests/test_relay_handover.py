@@ -35,7 +35,7 @@ class Origin:
 
 
 def held_relay(origin, url='https://cdn.example/v.mkv', name='Real Title.mkv'):
-    relay = rcr.CacheRelay(url, {}, len(origin.data), None, fetch=origin.fetch, stream=origin.stream)
+    relay = rcr.CacheRelay(url, {}, len(origin.data), None, fetch=origin.fetch, stream=origin.stream, retry_pause=0)
     relay.start()
     relay.start_fill([(1 * MB, 1 * MB + 10)])
     headers = email.message.Message()
@@ -95,7 +95,7 @@ class HandOverTests(unittest.TestCase):
         self.assertLessEqual(len(origin.streams), 3)           # the priority range, and the gaps around it
 
     def test_a_fill_that_fails_leaves_no_partial_file_and_signals_a_normal_download(self):
-        origin = Origin(2 * MB, fail_after=3)
+        origin = Origin(2 * MB, fail_after=0)      # a server that never delivers: after a few tries the fill gives up
         dc._held_relay = held_relay(origin)
         with mock.patch('builtins.print'):
             self.assertIsNone(dc._write_from_held_relay('https://cdn.example/v.mkv', self.part, None))
@@ -111,6 +111,16 @@ class HandOverTests(unittest.TestCase):
     def test_nothing_held_means_a_normal_download(self):
         dc._held_relay = None
         self.assertIsNone(dc._write_from_held_relay('https://cdn.example/v.mkv', self.part, None))
+
+
+    def test_a_server_that_cuts_the_stream_still_gets_the_whole_file_written(self):
+        origin = Origin(2 * MB + 500, fail_after=3)             # every request is cut after 3 blocks
+        dc._held_relay = held_relay(origin)
+        with mock.patch('builtins.print'):
+            ext = dc._write_from_held_relay('https://cdn.example/v.mkv', self.part, None)
+        self.assertEqual(ext, '.mkv')
+        with open(self.part, 'rb') as f:
+            self.assertEqual(f.read(), origin.data)
 
 
 class FailedFillMemoryTests(unittest.TestCase):

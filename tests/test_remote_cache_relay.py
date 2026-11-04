@@ -271,6 +271,58 @@ class BackgroundFillTests(unittest.TestCase):
             relay.read(block * rcr.BLOCK, block * rcr.BLOCK + 9)
             self.assertEqual(len(origin.calls), 1, (wait_mb, block))
 
+    def test_a_server_that_cuts_long_streams_is_followed_request_by_request(self):
+        origin = StreamOrigin(random.Random(9).randbytes(3 * MB))
+        real = origin.stream
+        cut_after = 10
+
+        def cutting(url, headers, start, end, timeout=60):
+            for n, piece in enumerate(real(url, headers, start, end)):
+                if n >= cut_after:
+                    raise rcr.RemoteError('connection reset')
+                yield piece
+        relay = rcr.CacheRelay('u', {}, len(origin.data), None, fetch=origin.fetch, stream=cutting, retry_pause=0)
+        relay.start()
+        self.addCleanup(relay.close)
+        relay.start_fill([])
+        self.assertEqual(b''.join(relay.iter_blocks()), origin.data)
+        self.assertEqual(relay.fill_error, '')
+        self.assertGreater(relay.fill_continuations, 0)
+        self.assertEqual(relay.fill_run_cap, cut_after)                  # learned the length it will serve
+        later = [e - s_ + 1 for s_, e in origin.streams[2:]]
+        self.assertTrue(all(length <= cut_after * rcr.BLOCK for length in later))
+
+    def test_a_server_that_refuses_long_ranges_gets_shorter_requests(self):
+        origin = StreamOrigin(random.Random(4).randbytes(3 * MB))
+        real = origin.stream
+
+        def picky(url, headers, start, end, timeout=60):
+            if end - start + 1 > 16 * rcr.BLOCK:
+                raise rcr.RemoteError('416 range too long')
+            yield from real(url, headers, start, end)
+        relay = rcr.CacheRelay('u', {}, len(origin.data), None, fetch=origin.fetch, stream=picky, retry_pause=0)
+        relay.start()
+        self.addCleanup(relay.close)
+        relay.start_fill([])
+        self.assertEqual(b''.join(relay.iter_blocks()), origin.data)
+        self.assertEqual(relay.fill_error, '')
+
+    def test_a_server_that_never_delivers_ends_the_fill_after_a_few_tries(self):
+        calls = []
+
+        def dead(url, headers, start, end, timeout=60):
+            calls.append(start)
+            raise rcr.RemoteError('refused')
+            yield b''
+        origin = StreamOrigin(random.Random(2).randbytes(1 * MB))
+        relay = rcr.CacheRelay('u', {}, len(origin.data), None, fetch=origin.fetch, stream=dead, retry_pause=0)
+        relay.start()
+        self.addCleanup(relay.close)
+        relay.start_fill([])
+        self.assertTrue(wait_until(lambda: not relay._fill_running))
+        self.assertEqual(len(calls), rcr.FILL_MAX_FAILURES)
+        self.assertEqual(relay.fill_error, 'refused')
+
     def test_close_stops_the_fill_quickly(self):
         gate = threading.Event()
         relay, origin = make_fill_relay(pause=lambda n: gate.wait(10) if n == 2 else None)
@@ -291,6 +343,7 @@ class BackgroundFillTests(unittest.TestCase):
             raise rcr.RemoteError('boom')
             yield b''
         relay._stream = broken
+        relay.retry_pause = 0
         relay.start_fill([])
         self.assertTrue(wait_until(lambda: not relay._fill_running))
         with self.assertRaises(rcr.RemoteError):
