@@ -14,6 +14,7 @@ import socket
 import subprocess
 import sys
 import time
+import types
 import glob
 import urllib.error
 import urllib.parse
@@ -1585,6 +1586,17 @@ def _extract_with_retries(extract, *args) -> bytes | None:
     return None
 
 
+def _visual_sample_positions(url_dur: float) -> list[float]:
+    """Seconds into the video at which the visual check samples frames; [] when the video is too short to sample."""
+    # Longer videos get more frames (6 for a short clip, +1 per 10 minutes, up to 12), never closer than 5 s apart.
+    wanted = min(12, 6 + int(url_dur // 600))
+    n = max(1, min(wanted, _frame_samples_for_index(), int(url_dur * 0.87 // 5) + 1))
+    first, last = max(url_dur * 0.05, 2.0), url_dur * 0.92
+    if last <= first:
+        return []
+    return [first + (last - first) * i / (n - 1) for i in range(n)] if n > 1 else [first]
+
+
 def _remote_visually_similar(url: str, headers: dict[str, str],
                               url_dur: float, local_path: str,
                               remote_frames: dict[str, bytes | None] | None = None) -> bool:
@@ -1597,13 +1609,10 @@ def _remote_visually_similar(url: str, headers: dict[str, str],
     requests.  *remote_frames* (timestamp -> frame) lets several candidates share one extraction of each remote frame.
     At least 85 % of compared frames must match (and at least half the planned ones must be readable), and every third of the video must agree at 75 %.
     """
-    # Longer videos get more frames (6 for a short clip, +1 per 10 minutes, up to 12), never closer than 5 s apart.
-    wanted = min(12, 6 + int(url_dur // 600))
-    n = max(1, min(wanted, _frame_samples_for_index(), int(url_dur * 0.87 // 5) + 1))
-    first, last = max(url_dur * 0.05, 2.0), url_dur * 0.92
-    if last <= first:
+    positions = _visual_sample_positions(url_dur)
+    if not positions:
         return False
-    positions = [first + (last - first) * i / (n - 1) for i in range(n)] if n > 1 else [first]
+    n = len(positions)
     timestamps = [_format_ts(t) for t in positions]
 
     match_count = 0
@@ -1767,11 +1776,14 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
     print('  [pre-check] HEAD request...', end='\r', flush=True)
     content_length = 0
     head_name: str | None = None
+    head_headers = None
+    _close_held_relay()      # a relay kept for a download that never happened
     try:
         req = urllib.request.Request(url, headers=headers, method='HEAD')
         with net_stats.urlopen(req, timeout=15) as resp:
             content_length = int(resp.headers.get('Content-Length', 0))
             head_name = _name_from_response(resp, url)
+            head_headers = resp.headers
     except urllib.error.HTTPError as e:
         fetch_diagnostics.log_fetch_failure(url, headers, e, 'HEAD')
     except (urllib.error.URLError, OSError, ValueError):
@@ -1864,7 +1876,7 @@ def _precheck_url(url: str, headers: dict[str, str], download_dir: str) -> str |
         return None  # can't probe — proceed with download
     print(f'  [pre-check] remote duration: {url_dur:.1f}s')
 
-    return _precheck_av(url, headers, download_dir, url_dur, content_length)
+    return _precheck_av(url, headers, download_dir, url_dur, content_length, head_headers)
 
 
 def _relay_memory_blocks() -> int | None:
@@ -1878,11 +1890,87 @@ def _relay_memory_blocks() -> int | None:
     return None if mb == 0 else max(1, mb * 1024 // (remote_cache_relay.BLOCK // 1024))
 
 
-def _precheck_av(url: str, headers: dict[str, str], download_dir: str, url_dur: float, content_length: int) -> str | None:
+def _env_number(name: str, default: float, minimum: float = 0) -> float:
+    try:
+        value = float(os.getenv(name, ''))
+    except ValueError:
+        return default
+    return value if value >= minimum else default
+
+
+def _relay_prefetch_wanted(content_length: int) -> bool:
+    """RELAY_PREFETCH on, and the file no bigger than RELAY_PREFETCH_MAX_MB (0 = no limit; default 2048)."""
+    if os.getenv('RELAY_PREFETCH', '').strip().lower() not in ('true', '1', 'yes'):
+        return False
+    cap_mb = _env_number('RELAY_PREFETCH_MAX_MB', 2048)
+    return cap_mb == 0 or content_length <= cap_mb * 1024 * 1024
+
+
+_RELAY_PRIORITY_WINDOW = 2 * 1024 * 1024    # bytes read either side of each expected sample position
+
+
+def _relay_priority_ranges(content_length: int, url_dur: float) -> list[tuple[int, int]]:
+    """Byte ranges the pre-check's stages are expected to read, in the order they will want them: the start of the file,
+    the audio-fingerprint stretches, then the sampled frames. A position in the video is mapped to the same fraction
+    of the file, which is an estimate (bitrates vary), so a miss only costs an ordinary request later."""
+    fractions = [0.0]
+    for start, length in _audio_segments(url_dur):
+        fractions += [start / url_dur, (start + length) / url_dur]
+    fractions += [t / url_dur for t in _visual_sample_positions(url_dur)]
+    ranges = []
+    for f in fractions:
+        centre = int(min(max(f, 0.0), 1.0) * content_length)
+        ranges.append((max(0, centre - _RELAY_PRIORITY_WINDOW), min(content_length - 1, centre + _RELAY_PRIORITY_WINDOW)))
+    return ranges
+
+
+# A relay whose background fill is still running (or finished) when the pre-check decided to download: the download is
+# served from its memory instead of asking the server for the file again.
+_held_relay: dict | None = None
+
+
+def _close_held_relay() -> None:
+    global _held_relay
+    held, _held_relay = _held_relay, None
+    if held is not None:
+        held['relay'].close()
+
+
+def _open_relay(url: str, headers: dict[str, str], content_length: int, url_dur: float, prefetch: bool):
+    """Start a local relay for *url*; returns (relay, local_url), or (None, None) when it cannot be used (the checks then
+    read the remote directly). With *prefetch* the whole file starts filling in the background, the ranges the
+    checks will read first."""
+    if content_length <= 0:
+        return None, None
+    if _remote_index_span:
+        print(f'  [pre-check] reading the index once ({_remote_index_span[1] / 1048576:.1f} MB)...', flush=True)
+    ext = os.path.splitext(urllib.parse.urlparse(url).path)[1].lower()
+    ext = ext if re.fullmatch(r'\.[a-z0-9]{1,5}', ext) else '.mp4'
+    relay = remote_cache_relay.CacheRelay(
+        url, headers, content_length, _remote_index_span,
+        content_type=mimetypes.guess_type('x' + ext)[0] or 'video/mp4', filename='relay' + ext,
+        max_blocks=_relay_memory_blocks(), wait_ahead_mb=_env_number('RELAY_WAIT_AHEAD_MB', 2),
+        stall_seconds=_env_number('RELAY_STALL_SECONDS', 15, minimum=1))
+    local_url = relay.start()
+    if not local_url:
+        print('  [pre-check] could not set up the local cache -- reading directly', flush=True)
+        return None, None
+    if prefetch:
+        print(f'  [pre-check] filling the file into memory in the background ({content_length / 1048576:.0f} MB)...',
+              flush=True)
+        relay.start_fill(_relay_priority_ranges(content_length, url_dur))
+    return relay, local_url
+
+
+def _precheck_av(url: str, headers: dict[str, str], download_dir: str, url_dur: float, content_length: int,
+                 head_headers=None) -> str | None:
     """Steps 3-4 of the pre-check (audio fingerprint, visual sampling) for a remote video whose duration is known.
 
     For an MP4 these run ffmpeg/ffprobe several times, and every run would read the whole index again from a CDN that
-    throttles. So the index is fetched ONCE into a local relay (remote_cache_relay) and all the runs read from that."""
+    throttles. So the remote file is read through a local relay (remote_cache_relay): the index is fetched ONCE and every
+    block read is remembered. With RELAY_PREFETCH on, the relay also fills the whole file in the background and, when the
+    verdict is "download", is kept (`_held_relay`) so the download is served from its memory."""
+    global _held_relay, _remote_index_bytes
     duration_candidates: list[str] = []
     for entry in os.listdir(download_dir):
         if _is_temp_file(entry):
@@ -1896,37 +1984,34 @@ def _precheck_av(url: str, headers: dict[str, str], download_dir: str, url_dur: 
         if existing_dur is not None and abs(url_dur - existing_dur) <= 1.0:
             duration_candidates.append(full)
 
+    prefetch = _relay_prefetch_wanted(content_length)
     if not duration_candidates:
         print('  [pre-check] no duration match — proceeding with download', flush=True)
+        if prefetch:         # nothing to compare, so the download is certain: start it in memory now
+            relay, _ = _open_relay(url, headers, content_length, url_dur, True)
+            if relay is not None:
+                _held_relay = {'url': url, 'relay': relay, 'head_headers': head_headers, 'size': content_length}
         return None  # no duration match — proceed with download
 
-    relay = None
-    if content_length > 0:
-        # Always try the relay, MP4 index or not: whatever one check reads, the next reuses from memory.
-        if _remote_index_span:
-            print(f'  [pre-check] reading the index once ({_remote_index_span[1] / 1048576:.1f} MB)...', flush=True)
-        ext = os.path.splitext(urllib.parse.urlparse(url).path)[1].lower()
-        ext = ext if re.fullmatch(r'\.[a-z0-9]{1,5}', ext) else '.mp4'
-        relay = remote_cache_relay.CacheRelay(url, headers, content_length, _remote_index_span,
-                                              content_type=mimetypes.guess_type('x' + ext)[0] or 'video/mp4',
-                                              filename='relay' + ext, max_blocks=_relay_memory_blocks())
-        local_url = relay.start()
-        if local_url:
-            url, headers = local_url, {}
-        else:
-            relay = None
-            print('  [pre-check] could not set up the local cache -- reading directly', flush=True)
-    global _remote_index_bytes
+    relay, local_url = _open_relay(url, headers, content_length, url_dur, prefetch)
+    check_url, check_headers = (local_url, {}) if relay is not None else (url, headers)
     held_index_bytes = _remote_index_bytes
     if relay is not None:
         _remote_index_bytes = 0     # the index is local now: normal frame count and limits, not the big-index ones
+    verdict = None
+    finished = False
     try:
-        return _precheck_av_stages(url, headers, url_dur, content_length, duration_candidates)
+        verdict = _precheck_av_stages(check_url, check_headers, url_dur, content_length, duration_candidates)
+        finished = True
+        return verdict
     finally:
         _remote_index_bytes = held_index_bytes
         if relay is not None:
             print(f'  [pre-check] remote reads for these checks: {relay.summary()}', flush=True)
-            relay.close()
+            if finished and verdict is None and prefetch:
+                _held_relay = {'url': url, 'relay': relay, 'head_headers': head_headers, 'size': content_length}
+            else:
+                relay.close()
 
 
 def _audio_segments(duration: float) -> list[tuple[float, int]]:
@@ -2023,6 +2108,45 @@ def _direct_fetch(*args, **kwargs) -> bool:
 _links_handled: dict[tuple[str, str], str] = {}
 
 
+def _write_from_held_relay(video_url: str, writing_path: str, override_name: str | None) -> str | None:
+    """Write *writing_path* from the relay the pre-check kept for *video_url*, whose background fill has been loading the
+    file into memory: no new request for the data the fill already has. Returns the file extension, or None when there
+    is no such relay or it could not deliver the whole file (the caller then downloads normally)."""
+    global _held_relay, _last_fetch_original_name
+    held, _held_relay = _held_relay, None
+    if held is None:
+        return None
+    relay = held['relay']
+    if held['url'] != video_url:
+        relay.close()
+        return None
+    try:
+        head = types.SimpleNamespace(headers=held['head_headers']) if held['head_headers'] is not None else None
+        size = held['size']
+        print(f'  file size: {size / 1048576:.1f} MB (from the background fill)')
+        written = 0
+        try:
+            with open(writing_path, 'wb') as f:
+                for block in relay.iter_blocks():
+                    f.write(block)
+                    written += len(block)
+                    _set_status(f'  downloading... {written / (1 << 20):.1f} / {size / (1 << 20):.1f} MB (memory)')
+        except (remote_cache_relay.RemoteError, OSError) as e:
+            print(f'  the background fill did not finish ({e}) -- downloading normally', flush=True)
+            written = -1
+        print(f'  [relay] {relay.summary()}', flush=True)
+        if written != size:
+            if os.path.exists(writing_path):
+                os.remove(writing_path)
+            return None
+        if head is None:
+            return None
+        _last_fetch_original_name = override_name or _name_from_response(head, video_url)
+        return _ext_from_response(head, video_url)
+    finally:
+        relay.close()
+
+
 def _direct_fetch_inner(video_url: str, download_dir: str, temp_prefix: str, headers: dict[str, str],
                         override_name: str | None = None) -> bool:
     """Download *video_url* straight to *download_dir* using urllib, no browser needed.
@@ -2067,28 +2191,30 @@ def _direct_fetch_inner(video_url: str, download_dir: str, temp_prefix: str, hea
         return False
 
     writing_path = os.path.join(download_dir, f'{temp_prefix}.part')
-    req = urllib.request.Request(video_url, headers=headers)
-    try:
-        response_cm = net_stats.urlopen(req)
-    except urllib.error.HTTPError as e:
-        fetch_diagnostics.log_fetch_failure(video_url, headers, e)
-        raise
-    with response_cm as response:
-        ext = _ext_from_response(response, video_url)
-        _last_fetch_original_name = override_name or _name_from_response(response, video_url)
-        size_mb = int(response.headers.get('Content-Length', 0)) / 1024 / 1024
-        if size_mb:
-            print(f'  file size: {size_mb:.1f} MB')
-        done_bytes = 0
-        with open(writing_path, 'wb') as f:
-            while chunk := response.read(65536):
-                f.write(chunk)
-                done_bytes += len(chunk)
-                done_mb = done_bytes / (1 << 20)
-                if size_mb:
-                    _set_status(f'  downloading... {done_mb:.1f} / {size_mb:.1f} MB')
-                else:
-                    _set_status(f'  downloading... {done_mb:.1f} MB')
+    ext = _write_from_held_relay(video_url, writing_path, override_name)
+    if ext is None:
+        req = urllib.request.Request(video_url, headers=headers)
+        try:
+            response_cm = net_stats.urlopen(req)
+        except urllib.error.HTTPError as e:
+            fetch_diagnostics.log_fetch_failure(video_url, headers, e)
+            raise
+        with response_cm as response:
+            ext = _ext_from_response(response, video_url)
+            _last_fetch_original_name = override_name or _name_from_response(response, video_url)
+            size_mb = int(response.headers.get('Content-Length', 0)) / 1024 / 1024
+            if size_mb:
+                print(f'  file size: {size_mb:.1f} MB')
+            done_bytes = 0
+            with open(writing_path, 'wb') as f:
+                while chunk := response.read(65536):
+                    f.write(chunk)
+                    done_bytes += len(chunk)
+                    done_mb = done_bytes / (1 << 20)
+                    if size_mb:
+                        _set_status(f'  downloading... {done_mb:.1f} / {size_mb:.1f} MB')
+                    else:
+                        _set_status(f'  downloading... {done_mb:.1f} MB')
     final_temp = os.path.join(download_dir, f'{temp_prefix}{ext}')
     os.rename(writing_path, final_temp)
     _links_handled[_handled_key] = 'downloaded earlier'
