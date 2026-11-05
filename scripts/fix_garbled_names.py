@@ -192,6 +192,14 @@ def _resolve_new_name(filename: str, folder_name: str) -> tuple[str, str] | None
         if fixed_full is not None:
             return fixed_full, 'wide cp1252 reversal (full filename, lossy)'
 
+    # Strategy 6: lossy reversal on the stem alone, for a genuine extension.
+    # Names cut at the filesystem byte limit end in a partial UTF-8 sequence
+    # (or have it before a trailing tag like ' (SMOOTH)'), so the strict
+    # reversals above fail even though the rest is clean mojibake.
+    fixed_stem = _try_wide_reversal_lossy(stem)
+    if fixed_stem is not None:
+        return fixed_stem + ext, 'wide cp1252 reversal (stem, lossy)'
+
     return None
 
 
