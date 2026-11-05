@@ -222,6 +222,71 @@ def _trim_prefix_to_boundary(prefix: str) -> str:
 # -- tighter than _duration_matches' generous percentage-based allowance,
 # which is fine for a single lone-video sanity check but not for telling two
 # similarly-long videos apart.
+_MAX_LABEL_LEN = 40
+
+
+def _family_split(core: str, other: str) -> str | None:
+    """If *other* is *core* plus a short label glued to the front or back
+    (e.g. 'HARD Goat-chan' / 'Goat-chan_540p' around 'Goat-chan'), return that
+    label; None when it isn't such a name.  Compared on the real strings, so
+    only clean prefix/suffix relationships count."""
+    if other == core:
+        return None
+    if other.endswith(core):
+        label = other[:-len(core)]
+    elif other.startswith(core):
+        label = other[len(core):]
+    else:
+        return None
+    label = label.strip(' -_')
+    if not label or len(label) > _MAX_LABEL_LEN:
+        return None
+    return label
+
+
+def _script_family(candidates: list[str]) -> tuple[str, dict[str, str]] | None:
+    """Group script base stems that are really one script's name variants.
+
+    Returns (core, {other_base: label}) when every candidate is the shortest
+    one (the core) with a short label glued to its front or back; None when
+    they are unrelated names (a genuinely ambiguous match).
+    """
+    core = min(candidates, key=len)
+    labels: dict[str, str] = {}
+    for base in candidates:
+        if base == core:
+            continue
+        label = _family_split(core, base)
+        if label is None:
+            return None
+        labels[base] = label
+    return core, labels
+
+
+def _fold_label_into_variant(stem: str, label: str) -> str:
+    """Add *label* to a script stem's trailing variant tag:
+    'video (smooth)' + 'hard' -> 'video (smooth - hard)'; with no tag yet,
+    'video' + 'hard' -> 'video (hard)'."""
+    m = re.search(r'\(([^()]+)\)\s*$', stem)
+    if m:
+        return stem[:m.start()] + f'({m.group(1)} - {label})'
+    return f'{stem} ({label})'
+
+
+def _family_script_name(filename: str, core: str, label: str) -> str:
+    """New filename for a script *filename* whose base is *core* + *label*:
+    the core name, with the label folded into the variant tag."""
+    stem = Path(filename).stem
+    axis = next((sfx for sfx in _AXIS_SUFFIXES if stem.endswith(sfx)), '')
+    if axis:
+        stem = stem[:-len(axis)]
+    tags = stem[len(_strip_variants(stem)):]   # trailing ' (SMOOTH)' style tags
+    # Rebuild from the core plus the original variant tags, folding the
+    # label into the last tag.
+    new_stem = _fold_label_into_variant(core + tags, label)
+    return f'{new_stem}{axis}{Path(filename).suffix}'
+
+
 _REVERSE_MATCH_TOLERANCE = 5.0
 
 
@@ -339,6 +404,26 @@ class FolderResult:
     @property
     def ok(self) -> bool:
         return not (self.unmatched_videos or self.orphan_scripts or self.duration_mismatches)
+
+
+
+def _apply_family_labels(folder: str, video: str, scripts: list[str], script_bases: dict,
+                         script_names: dict, core: str, labels: dict[str, str],
+                         result: 'FolderResult') -> None:
+    """Rename the label-carrying scripts of a script family to the core name,
+    folding each label into the variant tag ('HARD x (SMOOTH)' ->
+    'x (SMOOTH - HARD)'), so every variant sits under the video's name."""
+    label_for_key = {_match_key(b): l for b, l in labels.items()}
+    for key, label in label_for_key.items():
+        for f in script_bases.get(key, []):
+            new_name = _family_script_name(f, core, label)
+            old_path = os.path.join(folder, f)
+            new_path = os.path.join(folder, new_name)
+            if new_name == f or os.path.exists(new_path):
+                continue
+            os.rename(old_path, new_path)
+            action_log.record('rename', old_path=old_path, new_path=new_path)
+            result.reverse_renamed.append({'video': video, 'from': f, 'to': new_name})
 
 
 def _check_folder(folder: str, do_rename: bool = False) -> FolderResult | None:
@@ -475,6 +560,14 @@ def _check_folder(folder: str, do_rename: bool = False) -> FolderResult | None:
                         if fs_dur and _duration_matches(video_s, fs_dur):
                             dur_candidates.append((script_names.get(fbase, fbase), fs_dur))
 
+                    # Several length-matching names that are just one script
+                    # with labels glued on ('HARD x', 'x_540p') are one match.
+                    family = None
+                    if len(dur_candidates) > 1:
+                        family = _script_family([b for b, _ in dur_candidates])
+                    if family is not None:
+                        core, labels = family
+                        dur_candidates = [dc for dc in dur_candidates if dc[0] == core]
                     if len(dur_candidates) == 1:
                         match_base, match_dur = dur_candidates[0]
                         duration_match = True
@@ -486,6 +579,10 @@ def _check_folder(folder: str, do_rename: bool = False) -> FolderResult | None:
                                 os.rename(video_path, new_path)
                                 action_log.record('rename', old_path=video_path, new_path=new_path)
                                 renamed_to = new_name
+                                if family is not None:
+                                    _apply_family_labels(folder, new_name, scripts,
+                                                         script_bases, script_names,
+                                                         core, labels, result)
 
             if renamed_to:
                 result.renamed.append({
