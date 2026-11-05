@@ -23,6 +23,7 @@ Usage
 
 import json
 import os
+import unicodedata
 import re
 import sys
 from pathlib import Path
@@ -89,6 +90,16 @@ def _video_base(video_filename: str) -> str:
          'example.mp4'          → 'example'
     """
     return _strip_variants(Path(video_filename).stem)
+
+
+def _match_key(base: str) -> str:
+    """Normalised form of a base stem, used ONLY to decide whether a video and
+    a funscript share a name.  Case, apostrophes/quotes, underscores, spacing,
+    other punctuation and full-width/compat forms are ignored, so
+    "Don't Stop" == "Dont Stop" == "don_t stop".  Never used to build a
+    filename -- renames keep the real stems."""
+    return ''.join(ch for ch in unicodedata.normalize('NFKC', base).casefold()
+                   if ch.isalnum())
 
 
 def _tokenize(s: str) -> set[str]:
@@ -363,22 +374,32 @@ def _check_folder(folder: str, do_rename: bool = False) -> FolderResult | None:
 
     # Build lookup: base_stem → list of funscript filenames
     # base_stem strips axis suffixes AND parenthetical variant suffixes.
+    # Keyed by _match_key so punctuation/case differences don't hide a match;
+    # script_names keeps the real (first-seen) base stem for display/renames.
     script_bases: dict[str, list[str]] = {}
+    script_names: dict[str, str] = {}
     for s in scripts:
         base = _base_stem(s)
-        script_bases.setdefault(base, []).append(s)
+        key = _match_key(base)
+        script_bases.setdefault(key, []).append(s)
+        script_names.setdefault(key, base)
 
     # Build lookup: video_base → list of video filenames
     # video_base strips parenthetical variant suffixes so 'example (SMOOTH).mp4'
     # and 'example.mp4' both map to the same base 'example'.
     video_base_map: dict[str, list[str]] = {}
+    video_names: dict[str, str] = {}
     for v in videos:
-        base = _video_base(v)
-        video_base_map.setdefault(base, []).append(v)
+        vkey = _match_key(_video_base(v))
+        video_base_map.setdefault(vkey, []).append(v)
+        video_names.setdefault(vkey, _video_base(v))
 
     # --- Scripts without a video (every variant/axis of a base together) ---
     orphan_bases = {fbase: ffiles for fbase, ffiles in script_bases.items()
                      if fbase not in video_base_map}
+    # The reverse matcher works on real stems (it strips shared prefixes), so
+    # hand it name-keyed orphans rather than normalised keys.
+    orphan_bases = {script_names[k]: v for k, v in orphan_bases.items()}
 
     # A multi-video folder's orphan scripts might still fit one of those
     # videos by duration even though their name doesn't match anything --
@@ -390,7 +411,7 @@ def _check_folder(folder: str, do_rename: bool = False) -> FolderResult | None:
             folder, videos, orphan_bases, do_rename)
 
     for fbase, ffiles in sorted(orphan_bases.items()):
-        result.orphan_scripts.append({'base': fbase, 'scripts': sorted(ffiles)})
+        result.orphan_scripts.append({'base': script_names.get(fbase, fbase), 'scripts': sorted(ffiles)})
 
     # --- Name-matched scripts whose length doesn't fit the video ---
     # Every variant is checked on its own (main script only; an axis file
@@ -420,7 +441,7 @@ def _check_folder(folder: str, do_rename: bool = False) -> FolderResult | None:
         # Find best fuzzy match across all funscript base stems
         best_script, best_score = '', 0.0
         for fbase, ffiles in script_bases.items():
-            score = _fuzzy_score(vbase, fbase)
+            score = _fuzzy_score(video_names.get(vbase, vbase), script_names.get(fbase, fbase))
             if score > best_score:
                 best_score = score
                 best_script = ffiles[0]
@@ -452,7 +473,7 @@ def _check_folder(folder: str, do_rename: bool = False) -> FolderResult | None:
                         rep = _pick_representative(ffiles)
                         fs_dur = _funscript_duration(os.path.join(folder, rep))
                         if fs_dur and _duration_matches(video_s, fs_dur):
-                            dur_candidates.append((fbase, fs_dur))
+                            dur_candidates.append((script_names.get(fbase, fbase), fs_dur))
 
                     if len(dur_candidates) == 1:
                         match_base, match_dur = dur_candidates[0]
