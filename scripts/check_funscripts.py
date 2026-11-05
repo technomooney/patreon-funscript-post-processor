@@ -50,6 +50,17 @@ _VARIANT_RE = re.compile(r'\s*\([^)]+\)\s*$')
 # Helpers
 # ---------------------------------------------------------------------------
 
+_RES_TAIL_RE = re.compile(r'[_\s-]*\d{3,4}p$', re.IGNORECASE)
+
+
+def _strip_res(base: str) -> str:
+    """Drop a trailing resolution tag ('_1080p', ' 480p', '-720p') from a base
+    stem.  The resolution is read from the video itself when needed, never
+    from its name, so the tag is just noise that stops names matching."""
+    stripped = _RES_TAIL_RE.sub('', base)
+    return stripped if stripped.strip(' _-') else base
+
+
 def _strip_variants(stem: str) -> str:
     """Strip trailing parenthetical variant suffixes repeatedly.
 
@@ -80,7 +91,7 @@ def _base_stem(funscript_path: str) -> str:
         if stem.endswith(suffix):
             stem = stem[: -len(suffix)]
             break
-    return _strip_variants(stem)
+    return _strip_res(_strip_variants(stem))
 
 
 def _video_base(video_filename: str) -> str:
@@ -89,7 +100,7 @@ def _video_base(video_filename: str) -> str:
     e.g. 'example (SMOOTH).mp4' → 'example'
          'example.mp4'          → 'example'
     """
-    return _strip_variants(Path(video_filename).stem)
+    return _strip_res(_strip_variants(Path(video_filename).stem))
 
 
 def _match_key(base: str) -> str:
@@ -432,7 +443,7 @@ def _rename_orphans_to_lone_video(folder: str, video: str, orphan_bases: dict[st
     form of it) and whose length fits the video are renamed to the video's
     name, the label folded into the variant tag ('HARD x' -> 'x (HARD)').
     Returns (renamed rows, orphans that were left alone)."""
-    video_stem = Path(video).stem
+    video_stem = _strip_res(Path(video).stem)
     video_s = _video_duration(os.path.join(folder, video))
     renamed: list[dict] = []
     leftover = dict(orphan_bases)
@@ -484,6 +495,37 @@ def _apply_family_labels(folder: str, video: str, scripts: list[str], script_bas
             result.reverse_renamed.append({'video': video, 'from': f, 'to': new_name})
 
 
+def _strip_resolution_tags(folder: str, entries: list[str], do_rename: bool) -> list[dict]:
+    """Remove trailing resolution tags from video and funscript names
+    ('x_1080p.mp4' -> 'x.mp4', 'x_1080p (max interval).funscript' ->
+    'x (max interval).funscript').  Skips a file whose cleaned name is taken.
+    Returns {'video', 'from', 'to'} rows (renamed, or would-be on a dry run)."""
+    rows: list[dict] = []
+    for f in entries:
+        path = os.path.join(folder, f)
+        is_video = Path(f).suffix.lower() in _VIDEO_EXTS
+        if not (is_video or f.lower().endswith(_SCRIPT_EXT)) or not os.path.isfile(path):
+            continue
+        stem, ext = Path(f).stem, Path(f).suffix
+        axis = next((sfx for sfx in _AXIS_SUFFIXES if stem.endswith(sfx)), '')
+        if axis:
+            stem = stem[:-len(axis)]
+        base = _strip_variants(stem)
+        tags = stem[len(base):]
+        new_base = _strip_res(base)
+        if new_base == base:
+            continue
+        new_name = f'{new_base}{tags}{axis}{ext}'
+        new_path = os.path.join(folder, new_name)
+        if os.path.exists(new_path):
+            continue
+        if do_rename:
+            os.rename(path, new_path)
+            action_log.record('rename', old_path=path, new_path=new_path)
+        rows.append({'video': f, 'from': f, 'to': new_name})
+    return rows
+
+
 def _check_folder(folder: str, do_rename: bool = False) -> FolderResult | None:
     """
     Analyse one folder.  Returns None if the folder has no videos.
@@ -504,6 +546,15 @@ def _check_folder(folder: str, do_rename: bool = False) -> FolderResult | None:
     # (bogus) orphan scripts.
     entries = [f for f in entries if not f.startswith('._')]
 
+    # Resolution tags are noise: take them off first so everything below sees
+    # (and matches on) the clean names.
+    res_renamed = _strip_resolution_tags(folder, entries, do_rename)
+    if res_renamed and do_rename:
+        try:
+            entries = [f for f in os.listdir(folder) if not f.startswith('._')]
+        except OSError:
+            return None
+
     videos = [f for f in entries if Path(f).suffix.lower() in _VIDEO_EXTS
               and os.path.isfile(os.path.join(folder, f))]
     scripts = [f for f in entries if f.lower().endswith(_SCRIPT_EXT)
@@ -514,6 +565,7 @@ def _check_folder(folder: str, do_rename: bool = False) -> FolderResult | None:
 
     result = FolderResult(folder)
     result.total_videos = len(videos)
+    result.reverse_renamed.extend(res_renamed)
 
     # Build lookup: base_stem → list of funscript filenames
     # base_stem strips axis suffixes AND parenthetical variant suffixes.
