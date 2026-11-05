@@ -58,5 +58,50 @@ class LoneVideoFamilyRename(unittest.TestCase):
             self.assertIn('v.mp4', os.listdir(d))
 
 
+class LoneVideoOrphanLabels(unittest.TestCase):
+    def _run(self, names, do_rename=True):
+        with tempfile.TemporaryDirectory() as d:
+            for n in names:
+                with open(os.path.join(d, n), 'wb') as fh:
+                    fh.write(b'x')
+            with mock.patch.object(c, '_video_duration', return_value=100.0), \
+                 mock.patch.object(c, '_funscript_duration', return_value=100.0), \
+                 mock.patch.object(c.action_log, 'record'):
+                r = c._check_folder(d, do_rename=do_rename)
+            return sorted(os.listdir(d)), r
+
+    def test_real_case_prefix_and_truncated_name(self):
+        files, r = self._run([
+            'krystal-hmv-conchita-warning_1080p.mp4',
+            'krystal-hmv-conchita-warning_1080p (max interval).funscript',
+            'krystal-hmv-conchita-warning (SMOOTH).funscript',
+            'HARD krystal-hmv-conchita-warning.funscript'])
+        self.assertEqual(files, [
+            'krystal-hmv-conchita-warning_1080p (HARD).funscript',
+            'krystal-hmv-conchita-warning_1080p (SMOOTH).funscript',
+            'krystal-hmv-conchita-warning_1080p (max interval).funscript',
+            'krystal-hmv-conchita-warning_1080p.mp4'])
+        self.assertEqual(r.orphan_scripts, [])
+
+    def test_prefix_folded_into_existing_tag(self):
+        files, _ = self._run(['some long video name_1080p.mp4', 'some long video name_1080p (max interval).funscript',
+                              'hard some long video name (smooth).funscript'])
+        self.assertIn('some long video name_1080p (smooth - hard).funscript', files)
+
+    def test_dry_run_changes_nothing(self):
+        names = ['krystal-hmv-conchita-warning_1080p.mp4',
+                 'krystal-hmv-conchita-warning_1080p (max interval).funscript',
+                 'HARD krystal-hmv-conchita-warning.funscript']
+        files, r = self._run(names, do_rename=False)
+        self.assertEqual(files, sorted(names))
+        self.assertEqual(len(r.reverse_renamed), 1)
+
+    def test_unrelated_orphan_left_alone(self):
+        files, r = self._run(['long video name here.mp4', 'long video name here.funscript',
+                              'something completely different.funscript'])
+        self.assertIn('something completely different.funscript', files)
+        self.assertEqual(len(r.orphan_scripts), 1)
+
+
 if __name__ == '__main__':
     unittest.main()

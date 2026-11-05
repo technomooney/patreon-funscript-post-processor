@@ -402,6 +402,69 @@ class FolderResult:
 
 
 
+_MAX_VIDEO_TAIL = 15
+
+
+def _split_label_against_video(video_stem: str, base: str) -> str | None:
+    """Is script *base* the video's name (or a leading part of it) with an
+    optional short label glued on the front?  Returns the label ('' for none)
+    or None when it isn't related.  The video name is taken as canonical, so
+    whatever the video has beyond the script's name (a short tail) is simply
+    the video's own; nothing in it is interpreted."""
+    v = video_stem.casefold()
+    for i in range(len(base)):
+        part = base[i:]
+        if len(part) < 8:
+            break
+        pc = part.casefold()
+        if v.startswith(pc) and len(v) - len(pc) <= _MAX_VIDEO_TAIL:
+            label = base[:i].strip(' -_')
+            if len(label) <= _MAX_LABEL_LEN and (i == 0 or label):
+                return label
+            return None
+    return None
+
+
+def _rename_orphans_to_lone_video(folder: str, video: str, orphan_bases: dict[str, list[str]],
+                                  do_rename: bool) -> tuple[list[dict], dict[str, list[str]]]:
+    """In a folder with one video that already has its own script by name,
+    orphan scripts that are that video's name plus a label (or a truncated
+    form of it) and whose length fits the video are renamed to the video's
+    name, the label folded into the variant tag ('HARD x' -> 'x (HARD)').
+    Returns (renamed rows, orphans that were left alone)."""
+    video_stem = Path(video).stem
+    video_s = _video_duration(os.path.join(folder, video))
+    renamed: list[dict] = []
+    leftover = dict(orphan_bases)
+    if not video_s:
+        return renamed, leftover
+    for base, files in orphan_bases.items():
+        label = _split_label_against_video(video_stem, base)
+        if label is None:
+            continue
+        dur = _funscript_duration(os.path.join(folder, _pick_representative(files)))
+        if not dur or not _duration_matches(video_s, dur):
+            continue
+        del leftover[base]
+        for f in files:
+            stem = Path(f).stem
+            axis = next((sfx for sfx in _AXIS_SUFFIXES if stem.endswith(sfx)), '')
+            if axis:
+                stem = stem[:-len(axis)]
+            tags = stem[len(_strip_variants(stem)):]
+            new_stem = _fold_label_into_variant(video_stem + tags, label) if label else video_stem + tags
+            new_name = f'{new_stem}{axis}{Path(f).suffix}'
+            old_path = os.path.join(folder, f)
+            new_path = os.path.join(folder, new_name)
+            if new_name == f or os.path.exists(new_path):
+                continue
+            if do_rename:
+                os.rename(old_path, new_path)
+                action_log.record('rename', old_path=old_path, new_path=new_path)
+            renamed.append({'video': video, 'from': f, 'to': new_name})
+    return renamed, leftover
+
+
 def _apply_family_labels(folder: str, video: str, scripts: list[str], script_bases: dict,
                          script_names: dict, core: str, labels: dict[str, str],
                          result: 'FolderResult') -> None:
@@ -489,6 +552,11 @@ def _check_folder(folder: str, do_rename: bool = False) -> FolderResult | None:
     if orphan_bases and len(videos) > 1:
         result.reverse_renamed, orphan_bases = _reverse_match_orphan_scripts(
             folder, videos, orphan_bases, do_rename)
+    elif orphan_bases and len(videos) == 1 and _match_key(_video_base(videos[0])) in script_bases:
+        # The lone video already has its own script; its other scripts that
+        # are just differently labelled copies of its name belong with it.
+        moved, orphan_bases = _rename_orphans_to_lone_video(folder, videos[0], orphan_bases, do_rename)
+        result.reverse_renamed.extend(moved)
 
     for fbase, ffiles in sorted(orphan_bases.items()):
         result.orphan_scripts.append({'base': script_names.get(fbase, fbase), 'scripts': sorted(ffiles)})
