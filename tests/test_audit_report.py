@@ -48,6 +48,19 @@ class AuditReportTests(unittest.TestCase):
         self.assertIn('3 video_without_funscript', html)
         self.assertIn('2 funscript_without_video', html)
 
+    def test_folder_filters_come_from_the_funscript_check_report(self):
+        report_store.replace_report(self.root, 'funscript_check', [
+            {'folder': self.post, 'issue': 'video_without_funscript', 'file': 'a.mp4'},
+            {'folder': self.post, 'issue': 'funscript_without_video', 'file': 'b.funscript'}])
+        html = generate_audit_report.generate(self.root)
+        folder_tag = html[html.index('<details class="fi"'):].split('>', 1)[0]
+        self.assertIn('missing-fs', folder_tag)
+        self.assertIn('orphan-fs', folder_tag)
+        self.assertNotIn('length-mismatch', folder_tag)
+        self.assertIn('data-filter="orphan-fs"', html)                  # a filter button
+        self.assertIn('Funscripts missing videos (1 folders)', html)
+        self.assertIn('onclick="cardFilter(this)"', html)               # cards act as filter shortcuts
+
     def test_cells_carry_the_full_value_to_copy(self):
         report_store.record_outcome(self.root, 'https://mega.nz/file/AbCdEfGh#KEY', self.post, domain='mega.nz')
         html = generate_audit_report.generate(self.root)

@@ -148,6 +148,15 @@ _CSV_META: dict[str, dict] = {
 }
 
 
+# funscript_check issue -> folder filter tag.  The folder filter buttons and the
+# stat cards share these, so a card and its filter always agree.
+_FS_FILTER_TAGS = {
+    'video_without_funscript': 'missing-fs',
+    'funscript_without_video': 'orphan-fs',
+    'length_mismatch':         'length-mismatch',
+}
+
+
 # Columns shown for the link outcomes kept in the database, in display order.
 _OUTCOME_COLS = {
     'failed': ('link', 'funscript_name', 'save_directory', 'domain', 'reason', 'http_status', 'permanent',
@@ -487,8 +496,13 @@ def generate(base: str) -> str:
     n_with_log         = 0
     # Funscript-check findings come from the stored report, one count per issue.
     fs_issues: dict[str, int] = {}
+    fs_folder_tags: dict[str, set[str]] = {}
     for r in report_store.read_report(base, 'funscript_check'):
-        fs_issues[r.get('issue', '')] = fs_issues.get(r.get('issue', ''), 0) + 1
+        issue = r.get('issue', '')
+        fs_issues[issue] = fs_issues.get(issue, 0) + 1
+        tag = _FS_FILTER_TAGS.get(issue)
+        if tag and r.get('folder'):
+            fs_folder_tags.setdefault(os.path.normpath(r['folder']), set()).add(tag)
 
     for e in entries:
         log = e['log']
@@ -519,7 +533,13 @@ def generate(base: str) -> str:
     now = time.strftime('%Y-%m-%d %H:%M:%S')
 
     # --- stat cards ---
-    def card(value, label, extra_cls=''):
+    def card(value, label, extra_cls='', filt=''):
+        if filt:
+            return (f'<div class="stat-card clickable {extra_cls}" data-filter="{_ea(filt)}" '
+                    f'title="Show these folders" onclick="cardFilter(this)">'
+                    f'<div class="stat-val">{_e(value)}</div>'
+                    f'<div class="stat-lbl">{_e(label)}</div>'
+                    f'</div>')
         return (f'<div class="stat-card {extra_cls}">'
                 f'<div class="stat-val">{_e(value)}</div>'
                 f'<div class="stat-lbl">{_e(label)}</div>'
@@ -535,11 +555,11 @@ def generate(base: str) -> str:
         card(n_files_saved,     'Files saved'),
         card(n_renames,         'Files renamed'),
         card(fs_issues.get('video_without_funscript', 0), 'Videos missing funscripts',
-             'warn' if fs_issues.get('video_without_funscript') else ''),
+             'warn' if fs_issues.get('video_without_funscript') else '', 'missing-fs'),
         card(fs_issues.get('funscript_without_video', 0), 'Funscripts missing videos',
-             'warn' if fs_issues.get('funscript_without_video') else ''),
+             'warn' if fs_issues.get('funscript_without_video') else '', 'orphan-fs'),
         card(fs_issues.get('length_mismatch', 0), 'Funscript length mismatches',
-             'warn' if fs_issues.get('length_mismatch') else ''),
+             'warn' if fs_issues.get('length_mismatch') else '', 'length-mismatch'),
         card(fs_issues.get('renamed', 0) + fs_issues.get('reverse_renamed', 0),
              'Funscript check renames'),
         card(n_forced,          'Force-rerun entries', 'warn' if n_forced else ''),
@@ -579,9 +599,7 @@ def generate(base: str) -> str:
                 status_tags.append('complete')
             else:
                 status_tags.append('partial')
-        last_fs_run = next((r for r in reversed(log) if r.get('script') == 'check_funscripts'), None)
-        if last_fs_run and last_fs_run.get('missing'):
-            status_tags.append('missing-fs')
+        status_tags.extend(sorted(fs_folder_tags.get(os.path.normpath(folder_path), ())))
         status_str = ' '.join(status_tags)
 
         file_uri = Path(folder_path).as_uri()
@@ -612,6 +630,8 @@ def generate(base: str) -> str:
         )
 
     folders_html = '\n'.join(folder_items)
+    filter_counts = {tag: sum(1 for e in entries if tag in fs_folder_tags.get(os.path.normpath(e['folder']), ()))
+                     for tag in _FS_FILTER_TAGS.values()}
 
     # Reports as (order, key, rows, label), all kept in the library database.
     sections: list[tuple[int, str, list[dict], str | None]] = []
@@ -636,7 +656,7 @@ def generate(base: str) -> str:
 
     return _build_page(base=_e(base), generated=_e(now),
                        cards=cards_html, bars=bars_html, folders=folders_html,
-                       reports=reports_html)
+                       reports=reports_html, filter_counts=filter_counts)
 
 
 # ---------------------------------------------------------------------------
@@ -700,6 +720,8 @@ body {
     border-radius: 6px; padding: .75rem 1rem;
     min-width: 110px; text-align: center;
 }
+.stat-card.clickable { cursor: pointer; }
+.stat-card.clickable:hover { border-color: #6060b0; }
 .stat-card.warn { border-color: #5a4a20; background: #26221a; }
 .stat-val { font-size: 1.6rem; font-weight: 700; color: #b0b0e0; }
 .stat-lbl { font-size: .7rem; color: #606080; margin-top: .2rem; }
@@ -988,6 +1010,13 @@ function setStatusFilter(btn) {
     filterFolders(document.querySelector('.folder-search').value);
 }
 
+function cardFilter(card) {
+    const btn = document.querySelector('.sf-btn[data-filter="' + card.dataset.filter + '"]');
+    if (!btn) return;
+    setStatusFilter(btn);
+    document.querySelector('.folders-section').scrollIntoView({behavior: 'smooth'});
+}
+
 function copyPath(btn) {
     const path = btn.closest('.fi').dataset.path;
     navigator.clipboard.writeText(path).then(() => {
@@ -1027,7 +1056,10 @@ document.addEventListener('click', function(e) {
 """
 
 
-def _build_page(*, base, generated, cards, bars, folders, reports='') -> str:
+def _build_page(*, base, generated, cards, bars, folders, reports='', filter_counts=None) -> str:
+    fc = filter_counts or {}
+    def _n(tag):
+        return f' ({fc[tag]} folders)' if fc.get(tag) is not None else ''
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1049,7 +1081,7 @@ def _build_page(*, base, generated, cards, bars, folders, reports='') -> str:
     <div class="tips-grid">
       <div class="tip"><span class="tip-key">Folders</span><span class="tip-val">Click any folder row to expand its run history.</span></div>
       <div class="tip"><span class="tip-key">Search</span><span class="tip-val">Type in the search box to filter folders by name.</span></div>
-      <div class="tip"><span class="tip-key">Status filter</span><span class="tip-val">Use the All / Not started / Partial / Complete / Missing funscript buttons to filter the folder list. Works together with the search box.</span></div>
+      <div class="tip"><span class="tip-key">Status filter</span><span class="tip-val">Use the All / Not started / Partial / Complete / funscript-check buttons to filter the folder list (the funscript cards above act as shortcuts to the same filters). Works together with the search box.</span></div>
       <div class="tip"><span class="tip-key">Open folder</span><span class="tip-val">Click <b>open</b> on any folder row to open it in your file manager.</span></div>
       <div class="tip"><span class="tip-key">Copy path</span><span class="tip-val">Click <b>copy</b> on any folder row to copy the full path to your clipboard.</span></div>
       <div class="tip"><span class="tip-key">Reports</span><span class="tip-val">Click <b>Jump to Reports</b> in the header to skip straight to the CSV report tables at the bottom.</span></div>
@@ -1075,7 +1107,9 @@ def _build_page(*, base, generated, cards, bars, folders, reports='') -> str:
     <button class="sf-btn"           data-filter="no-log"     onclick="setStatusFilter(this)">Not started</button>
     <button class="sf-btn"           data-filter="partial"    onclick="setStatusFilter(this)">Partial</button>
     <button class="sf-btn"           data-filter="complete"   onclick="setStatusFilter(this)">Complete</button>
-    <button class="sf-btn"           data-filter="missing-fs" onclick="setStatusFilter(this)">Missing funscript</button>
+    <button class="sf-btn"           data-filter="missing-fs" onclick="setStatusFilter(this)">Videos missing funscripts{_n('missing-fs')}</button>
+    <button class="sf-btn"           data-filter="orphan-fs"  onclick="setStatusFilter(this)">Funscripts missing videos{_n('orphan-fs')}</button>
+    <button class="sf-btn"           data-filter="length-mismatch" onclick="setStatusFilter(this)">Length mismatches{_n('length-mismatch')}</button>
   </div>
   {folders}
 </section>
