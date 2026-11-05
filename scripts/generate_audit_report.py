@@ -251,11 +251,12 @@ def _render_csv_section(fname: str, rows: list[dict], base: str, label: str | No
     cols = list(rows[0].keys()) if rows else []
 
     # Count by status for the summary badge
-    has_status = 'status' in cols
+    badge_col = 'status' if 'status' in cols else ('issue' if 'issue' in cols else '')
+    has_status = bool(badge_col)
     status_counts: dict[str, int] = {}
     if has_status:
         for row in rows:
-            s = row.get('status', '')
+            s = row.get(badge_col, '')
             status_counts[s] = status_counts.get(s, 0) + 1
         badge_parts = [f'<span class="rpt-badge {_status_cls(s)}">{n} {_e(s)}</span>'
                        for s, n in sorted(status_counts.items(), key=lambda x: -x[1])]
@@ -484,14 +485,16 @@ def generate(base: str) -> str:
     n_renames          = 0
     n_forced           = 0
     n_with_log         = 0
-    n_missing_scripts  = 0  # videos missing funscripts (from most recent check_funscripts run)
+    # Funscript-check findings come from the stored report, one count per issue.
+    fs_issues: dict[str, int] = {}
+    for r in report_store.read_report(base, 'funscript_check'):
+        fs_issues[r.get('issue', '')] = fs_issues.get(r.get('issue', ''), 0) + 1
 
     for e in entries:
         log = e['log']
         if log:
             n_with_log += 1
         scripts_seen: set[str] = set()
-        last_fs_check: dict | None = None
         for run in log:
             s = run.get('script', '')
             scripts_seen.add(s)
@@ -504,12 +507,8 @@ def generate(base: str) -> str:
                 n_renames += len(run.get('renames', []))
             elif s == 'fix_garbled_names':
                 n_renames += sum(1 for c in run.get('changes', []) if c.get('status') == 'renamed')
-            elif s == 'check_funscripts':
-                last_fs_check = run
             elif s == 'check_funscripts_alt_cleanup':
                 n_renames += len(run.get('renamed', []))
-        if last_fs_check is not None:
-            n_missing_scripts += len(last_fs_check.get('missing', []))
         applicable = applicable_steps(e)
         for s in applicable:
             script_total[s] += 1
@@ -535,7 +534,14 @@ def generate(base: str) -> str:
         card(n_downloaded,      'Files downloaded'),
         card(n_files_saved,     'Files saved'),
         card(n_renames,         'Files renamed'),
-        card(n_missing_scripts, 'Missing funscripts', 'warn' if n_missing_scripts else ''),
+        card(fs_issues.get('video_without_funscript', 0), 'Videos missing funscripts',
+             'warn' if fs_issues.get('video_without_funscript') else ''),
+        card(fs_issues.get('funscript_without_video', 0), 'Funscripts missing videos',
+             'warn' if fs_issues.get('funscript_without_video') else ''),
+        card(fs_issues.get('length_mismatch', 0), 'Funscript length mismatches',
+             'warn' if fs_issues.get('length_mismatch') else ''),
+        card(fs_issues.get('renamed', 0) + fs_issues.get('reverse_renamed', 0),
+             'Funscript check renames'),
         card(n_forced,          'Force-rerun entries', 'warn' if n_forced else ''),
     ])
 

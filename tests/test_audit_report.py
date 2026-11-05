@@ -35,6 +35,19 @@ class AuditReportTests(unittest.TestCase):
         self.assertIn('a &lt;b&gt;.mp4', html)      # escaped
         self.assertNotIn('a <b>.mp4', html)
 
+    def test_funscript_check_issue_counts_get_their_own_cards(self):
+        rows = ([{'folder': self.post, 'issue': 'video_without_funscript', 'file': f'v{i}.mp4'} for i in range(3)]
+                + [{'folder': self.post, 'issue': 'funscript_without_video', 'file': f's{i}.funscript'} for i in range(2)]
+                + [{'folder': self.post, 'issue': 'length_mismatch', 'file': 'm.funscript'}])
+        report_store.replace_report(self.root, 'funscript_check', rows)
+        html = generate_audit_report.generate(self.root)
+        for value, label in ((3, 'Videos missing funscripts'), (2, 'Funscripts missing videos'),
+                             (1, 'Funscript length mismatches')):
+            self.assertIn(f'<div class="stat-val">{value}</div><div class="stat-lbl">{label}</div>', html)
+        # the report section's badges break the rows down by issue
+        self.assertIn('3 video_without_funscript', html)
+        self.assertIn('2 funscript_without_video', html)
+
     def test_cells_carry_the_full_value_to_copy(self):
         report_store.record_outcome(self.root, 'https://mega.nz/file/AbCdEfGh#KEY', self.post, domain='mega.nz')
         html = generate_audit_report.generate(self.root)
