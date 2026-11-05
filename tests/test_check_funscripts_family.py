@@ -25,8 +25,10 @@ class LabelFolding(unittest.TestCase):
                          'x (max interval) (SMOOTH - HARD).roll.funscript')
 
     def test_family_detection(self):
-        self.assertEqual(c._script_family(['HARD Goat', 'Goat', 'Goat_540p']),
-                         ('Goat', {'HARD Goat': 'HARD', 'Goat_540p': '540p'}))
+        self.assertEqual(c._script_family(['HARD Goat', 'Goat']),
+                         ('Goat', {'HARD Goat': 'HARD'}))
+        # trailing resolution tags are not labels: stays ambiguous
+        self.assertIsNone(c._script_family(['Goat', 'Goat_540p']))
         self.assertIsNone(c._script_family(['Alpha beta', 'Gamma delta']))
 
 

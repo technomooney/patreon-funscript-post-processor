@@ -226,19 +226,14 @@ _MAX_LABEL_LEN = 40
 
 
 def _family_split(core: str, other: str) -> str | None:
-    """If *other* is *core* plus a short label glued to the front or back
-    (e.g. 'HARD Goat-chan' / 'Goat-chan_540p' around 'Goat-chan'), return that
-    label; None when it isn't such a name.  Compared on the real strings, so
-    only clean prefix/suffix relationships count."""
-    if other == core:
+    """If *other* is *core* plus a short label glued to the FRONT
+    (e.g. 'HARD Goat-chan' around 'Goat-chan'), return that label; None when
+    it isn't such a name.  Compared on the real strings.  Trailing text
+    (resolution tags like '_540p', etc.) is deliberately not treated as a
+    label -- such names stay ambiguous."""
+    if other == core or not other.endswith(core):
         return None
-    if other.endswith(core):
-        label = other[:-len(core)]
-    elif other.startswith(core):
-        label = other[len(core):]
-    else:
-        return None
-    label = label.strip(' -_')
+    label = other[:-len(core)].strip(' -_')
     if not label or len(label) > _MAX_LABEL_LEN:
         return None
     return label
@@ -248,7 +243,7 @@ def _script_family(candidates: list[str]) -> tuple[str, dict[str, str]] | None:
     """Group script base stems that are really one script's name variants.
 
     Returns (core, {other_base: label}) when every candidate is the shortest
-    one (the core) with a short label glued to its front or back; None when
+    one (the core) with a short label glued to its front; None when
     they are unrelated names (a genuinely ambiguous match).
     """
     core = min(candidates, key=len)
