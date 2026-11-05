@@ -151,6 +151,32 @@ def _try_wide_reversal_lossy(s: str) -> str | None:
     return None
 
 
+_FOLDER_PREFIX_RE = re.compile(r'^\[\d+\]\s+\d{4}-\d{2}-\d{2}\s+')
+
+
+def _complete_from_folder(decoded: str, folder_name: str) -> str | None:
+    """
+    If the cleanly decoded part of a truncated name is a prefix of the post
+    title (the folder name minus its '[id] date ' prefix), rebuild the full
+    name from the title, keeping any trailing tag such as ' (SMOOTH)'.
+    """
+    title = _FOLDER_PREFIX_RE.sub('', folder_name)
+    if not title:
+        return None
+    n = 0
+    for a, b in zip(decoded, title):
+        if a != b:
+            break
+        n += 1
+    if n < 4:
+        return None
+    rest = decoded[n:]
+    # What's left must be nothing or a tag; a letter means a different name.
+    if rest and rest[0] not in ' ([_-':
+        return None
+    return title + rest
+
+
 def _resolve_new_name(filename: str, folder_name: str) -> tuple[str, str] | None:
     """
     Try all fix strategies for *filename*.
@@ -198,6 +224,9 @@ def _resolve_new_name(filename: str, folder_name: str) -> tuple[str, str] | None
     # reversals above fail even though the rest is clean mojibake.
     fixed_stem = _try_wide_reversal_lossy(stem)
     if fixed_stem is not None:
+        completed = _complete_from_folder(fixed_stem, folder_name)
+        if completed is not None:
+            return completed + ext, 'wide cp1252 reversal (stem, lossy) + folder-name completion'
         return fixed_stem + ext, 'wide cp1252 reversal (stem, lossy)'
 
     return None
