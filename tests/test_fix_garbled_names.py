@@ -7,8 +7,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 import fix_garbled_names as f
 
 
-def _moji(s: str) -> str:
-    return s.encode('utf-8').decode('cp1252', errors='replace')
+def _garble(raw: bytes) -> str:
+    out = []
+    for b in raw:
+        try:
+            out.append(bytes([b]).decode('cp1252'))
+        except UnicodeDecodeError:
+            out.append(chr(b))
+    return ''.join(out)
 
 
 class TruncatedNameFolderCompletion(unittest.TestCase):
@@ -16,8 +22,7 @@ class TruncatedNameFolderCompletion(unittest.TestCase):
     FOLDER = '[126989065] 2025-05-08 ' + TITLE
 
     def _truncated(self, tag=''):
-        raw = self.TITLE.encode('utf-8')[:70]
-        return ''.join(chr(b) for b in raw) + tag
+        return _garble(self.TITLE.encode('utf-8')[:70]) + tag
 
     def test_completes_from_folder(self):
         name = self._truncated() + '.funscript'
@@ -33,6 +38,12 @@ class TruncatedNameFolderCompletion(unittest.TestCase):
         name = self._truncated() + '.funscript'
         new, _ = f._resolve_new_name(name, '[1] 2025-01-01 something else')
         self.assertNotIn('something else', new)
+
+    def test_completes_from_clean_sibling_with_mid_tag(self):
+        full = '53.【定制ntr】ラプラス・ダークネス ライブで中出しされた'
+        name = '53 (SMOOTH).' + _garble(full[3:].encode('utf-8')[:-2]) + '.funscript'
+        new, _ = f._resolve_new_name(name, '[9] 2025-01-01 other', [full + '.funscript', full + '.mp4'])
+        self.assertEqual(new, '53 (SMOOTH).' + full[3:] + '.funscript')
 
 
 if __name__ == '__main__':

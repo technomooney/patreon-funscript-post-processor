@@ -154,30 +154,54 @@ def _try_wide_reversal_lossy(s: str) -> str | None:
 _FOLDER_PREFIX_RE = re.compile(r'^\[\d+\]\s+\d{4}-\d{2}-\d{2}\s+')
 
 
-def _complete_from_folder(decoded: str, folder_name: str) -> str | None:
-    """
-    If the cleanly decoded part of a truncated name is a prefix of the post
-    title (the folder name minus its '[id] date ' prefix), rebuild the full
-    name from the title, keeping any trailing tag such as ' (SMOOTH)'.
-    """
-    title = _FOLDER_PREFIX_RE.sub('', folder_name)
-    if not title:
-        return None
-    n = 0
-    for a, b in zip(decoded, title):
-        if a != b:
-            break
-        n += 1
-    if n < 4:
-        return None
-    rest = decoded[n:]
-    # What's left must be nothing or a tag; a letter means a different name.
-    if rest and rest[0] not in ' ([_-':
-        return None
-    return title + rest
+_TAG_RE = re.compile(r' \([A-Z0-9_]+\)')
 
 
-def _resolve_new_name(filename: str, folder_name: str) -> tuple[str, str] | None:
+def _complete_from_folder(decoded: str, folder_name: str,
+                          siblings: list[str] | None = None) -> str | None:
+    """
+    If the cleanly decoded part of a truncated name is a prefix of a known-good
+    name, rebuild the full name from it.  Candidates are the post title (the
+    folder name minus its '[id] date ' prefix) and the stems of the clean
+    sibling files in the same folder.  A tag such as ' (SMOOTH)' is set aside
+    while matching and put back at its original position.
+    """
+    candidates = [_FOLDER_PREFIX_RE.sub('', folder_name)]
+    for sib in siblings or ():
+        sstem, sext = os.path.splitext(sib)
+        candidates.append(sstem if _is_real_ext(sext) else sib)
+
+    tag = _TAG_RE.search(decoded)
+    core = _TAG_RE.sub('', decoded, count=1)
+    best = None
+    for cand in candidates:
+        cand = _TAG_RE.sub('', cand)
+        if not cand or cand == core or len(cand) <= len(core):
+            continue
+        if cand.startswith(core) and len(core) >= 4:
+            if best is None or len(cand) > len(best):
+                best = cand
+    if best is None:
+        # Fall back to a tag left after the matching prefix (' (SMOOTH)' suffix
+        # after a partially matching title).
+        n = 0
+        for x, y in zip(decoded, candidates[0]):
+            if x != y:
+                break
+            n += 1
+        rest = decoded[n:]
+        if n >= 4 and (not rest or rest[0] in ' ([_-') and candidates[0]:
+            return candidates[0] + rest
+        return None
+    if tag and tag.end() >= len(decoded):
+        return best + tag.group(0)
+    if tag:
+        return best[:tag.start()] + tag.group(0) + best[tag.start():]
+    return best
+
+
+def _resolve_new_name(filename: str, folder_name: str,
+                      siblings: list[str] | None = None) -> tuple[str, str] | None:
     """
     Try all fix strategies for *filename*.
     Returns (new_filename, strategy_label) or None if no fix found.
@@ -224,7 +248,7 @@ def _resolve_new_name(filename: str, folder_name: str) -> tuple[str, str] | None
     # reversals above fail even though the rest is clean mojibake.
     fixed_stem = _try_wide_reversal_lossy(stem)
     if fixed_stem is not None:
-        completed = _complete_from_folder(fixed_stem, folder_name)
+        completed = _complete_from_folder(fixed_stem, folder_name, siblings)
         if completed is not None:
             return completed + ext, 'wide cp1252 reversal (stem, lossy) + folder-name completion'
         return fixed_stem + ext, 'wide cp1252 reversal (stem, lossy)'
@@ -246,7 +270,7 @@ def process(root_dir: str, dry_run: bool, skip_folders: set[str] | None = None) 
             continue
         folder_name = os.path.basename(dirpath)
         for filename in filenames:
-            result = _resolve_new_name(filename, folder_name)
+            result = _resolve_new_name(filename, folder_name, filenames)
             if result is None:
                 continue
 
