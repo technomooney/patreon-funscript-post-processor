@@ -45,6 +45,13 @@ class TruncatedNameFolderCompletion(unittest.TestCase):
         new, _ = f._resolve_new_name(name, '[9] 2025-01-01 other', [full + '.funscript', full + '.mp4'])
         self.assertEqual(new, '53 (SMOOTH).' + full[3:] + '.funscript')
 
+    def test_variant_tag_never_changed(self):
+        for tag in (' (SMOOTH)', ' (Smooth)', ' (SMOOTH 2)', ' (v2)', ' [SMOOTH]', ' (SMOOTH) (HARD)'):
+            name = self._truncated(tag) + '.funscript'
+            new, _ = f._resolve_new_name(name, self.FOLDER)
+            self.assertTrue(new.endswith(tag + '.funscript'), (tag, new))
+            self.assertEqual(new.count(tag.strip()), 1, (tag, new))
+
 
 if __name__ == '__main__':
     unittest.main()
