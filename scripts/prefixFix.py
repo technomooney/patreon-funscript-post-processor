@@ -191,6 +191,7 @@ def processAndRename(fileList: list, fileRoots: list) -> list[dict]:
         # Step 1: percent-decode %xx sequences if present.
         percent_decoded = _try_percent_decode(working_name)
         if percent_decoded is not None:
+            print()
             print(f"  percent-decoded: {working_name!r}")
             print(f"               → {percent_decoded!r}")
             working_name = percent_decoded
@@ -200,10 +201,12 @@ def processAndRename(fileList: list, fileRoots: list) -> list[dict]:
         if _has_mojibake(working_name):
             repaired = _try_fix_mojibake(working_name)
             if repaired:
+                print()
                 print(f"  repaired: {original_basename!r}")
                 print(f"       → {repaired!r}")
                 working_name = repaired
             else:
+                print()
                 print(f"  garbled (could not repair): {original_basename!r}")
 
         # Step 3: strip the Patreon prefix (type_id_) if present.

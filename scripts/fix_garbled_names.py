@@ -279,6 +279,7 @@ def process(root_dir: str, dry_run: bool, skip_folders: set[str] | None = None) 
             new_path = os.path.join(dirpath, new_name)
 
             if os.path.exists(new_path):
+                print()
                 print(f'  SKIP (target exists)  {filename}')
                 print(f'                     -> {new_name}')
                 report.append({'old_path': old_path, 'new_path': new_path,
@@ -286,12 +287,14 @@ def process(root_dir: str, dry_run: bool, skip_folders: set[str] | None = None) 
                 continue
 
             if dry_run:
+                print()
                 print(f'  WOULD RENAME [{strategy}]')
                 print(f'    {filename}')
                 print(f'    -> {new_name}')
                 report.append({'old_path': old_path, 'new_path': new_path,
                                 'strategy': strategy, 'status': 'would rename'})
             else:
+                print()
                 print(f'  RENAME [{strategy}]')
                 print(f'    {old_path}')
                 print(f'    -> {new_path}')
@@ -544,18 +547,21 @@ def find_media_misnames(root_dir: str, dry_run: bool, skip_folders: set[str] | N
             new_path = os.path.join(dirpath, new_name)
 
             if os.path.exists(new_path):
+                print()
                 print(f'  SKIP (target exists)  {filename}')
                 report.append({'old_path': old_path, 'new_path': new_path,
                                 'status': 'skipped: target exists'})
                 continue
 
             if dry_run:
+                print()
                 print(f'  WOULD RENAME [media content fix]')
                 print(f'    {filename}')
                 print(f'    -> {new_name}')
                 report.append({'old_path': old_path, 'new_path': new_path,
                                 'status': 'would rename'})
             else:
+                print()
                 print(f'  RENAME [media content fix]')
                 print(f'    {old_path}')
                 print(f'    -> {new_path}')
@@ -620,6 +626,7 @@ def find_funscript_misnames(root_dir: str, dry_run: bool, skip_folders: set[str]
             new_path = os.path.join(dirpath, new_name)
 
             if os.path.exists(new_path):
+                print()
                 print(f'  SKIP (target exists)  {filename}')
                 print(f'                     -> {new_name}')
                 report.append({'old_path': old_path, 'new_path': new_path,
@@ -627,12 +634,14 @@ def find_funscript_misnames(root_dir: str, dry_run: bool, skip_folders: set[str]
                 continue
 
             if dry_run:
+                print()
                 print(f'  WOULD RENAME [funscript fix]')
                 print(f'    {filename}')
                 print(f'    -> {new_name}')
                 report.append({'old_path': old_path, 'new_path': new_path,
                                 'status': 'would rename'})
             else:
+                print()
                 print(f'  RENAME [funscript fix]')
                 print(f'    {old_path}')
                 print(f'    -> {new_path}')
@@ -728,12 +737,14 @@ def find_funscript_video_mismatches(
 
             if best_score >= threshold:
                 if os.path.exists(new_path):
+                    print()
                     print(f'  SKIP (target exists)  {fs_name}')
                     report.append({'funscript': old_path, 'suggested': new_path,
                                    'video': best_video, 'score': score_str,
                                    'status': 'skipped: target exists'})
                     continue
                 if dry_run:
+                    print()
                     print(f'  WOULD RENAME [video match {score_str}]')
                     print(f'    {fs_name}')
                     print(f'    -> {new_name}')
@@ -741,6 +752,7 @@ def find_funscript_video_mismatches(
                                    'video': best_video, 'score': score_str,
                                    'status': 'would rename'})
                 else:
+                    print()
                     print(f'  RENAME [video match {score_str}]')
                     print(f'    {old_path}')
                     print(f'    -> {new_path}')
