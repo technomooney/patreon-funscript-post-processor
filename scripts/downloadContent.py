@@ -7726,7 +7726,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                         'previously_done' if tracker.is_done(folder, link) else 'previously_failed')
                 print(f"\n[{task_idx}/{total}] {_safe(basename)} — already processed, skipping")
                 continue
-            print(f"\n[{task_idx}/{total}] {_safe(basename)}")
+            print(f"\n{'━' * 72}\n[{task_idx}/{total}] {_safe(basename)}")
             _cleanup_temp_files(folder, base_path, protected=_protected())
 
             # Health-check the browser before touching the task; restart if dead.
@@ -7746,6 +7746,7 @@ def find_and_download(base_path: str, tasks: list | None = None, failures: list 
                 fetch_diagnostics.reset_capture()
                 _last_download_skipped = False
 
+                print()   # blank line between links so each link's output reads as its own block
                 if tracker.is_done(folder, link):
                     link_statuses.setdefault(folder, {})[link] = 'previously_done'
                     print(f"  [resume] already done — skipping: {link}")
